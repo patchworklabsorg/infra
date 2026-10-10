@@ -41,12 +41,23 @@
     # Fallback build; deploys write /var/lib/krater/source-rev instead.
     rev = "4f130ca51137aa8d7f65e408e04ab8f589fe9eae";
 
+    # Proposed names. One level under patchworklabs.org: the records are
+    # proxied through Cloudflare, whose edge certificate covers only one
+    # subdomain level. Added by a PR to patchworklabsorg/dns, like weave's.
     domain = "krater.patchworklabs.org";
-    storage.domain = "storage.krater.patchworklabs.org";
-    skypilot.domain = "sky.krater.patchworklabs.org";
+    storage.domain = "krater-storage.patchworklabs.org";
+    skypilot.domain = "krater-sky.patchworklabs.org";
+
+    # With Cloudflare in front of Traefik, the client's address is not the
+    # last X-Forwarded-For hop the module's default (1) assumes. Set this to
+    # the number of proxies that append to X-Forwarded-For once Traefik's
+    # forwardedHeaders.trustedIPs are known, or rate limits key on
+    # Cloudflare's edge addresses.
+    # extraEnv.KRATER_TRUSTED_PROXY_COUNT = "2";
 
     weave = {
-      issuer = "https://idp.patchworklabs.org";
+      # Exactly the `issuer` in Weave's discovery document.
+      issuer = "https://weave.patchworklabs.org";
       # Not secret, but only known once the apps exist in Weave. The module
       # refuses to build while these are empty.
       clientId = "";

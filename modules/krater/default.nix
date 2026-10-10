@@ -66,7 +66,8 @@ let
     KRATER_BASE_URL = baseUrl;
     # The launch gate's base URL. Members' own `sky` CLIs call it, so it's the public one.
     KRATER_PUBLIC_URL = baseUrl;
-    # Traefik is the one proxy in front; rate limits key on the client address it forwards.
+    # Proxies that append to X-Forwarded-For: Traefik. Raise it through extraEnv when another proxy
+    # (Cloudflare) is in front too; rate limits key on the client address this picks out.
     KRATER_TRUSTED_PROXY_COUNT = "1";
     KRATER_WEAVE_MODE = "live";
     KRATER_WEAVE_ISSUER = cfg.weave.issuer;
@@ -233,7 +234,7 @@ in
     weave = {
       issuer = lib.mkOption {
         type = lib.types.str;
-        example = "https://idp.patchworklabs.org";
+        example = "https://weave.patchworklabs.org";
         description = "Weave's OIDC issuer URL, exactly as its discovery document states it.";
       };
       clientId = lib.mkOption {
@@ -249,7 +250,7 @@ in
     storage = {
       domain = lib.mkOption {
         type = lib.types.str;
-        example = "storage.krater.patchworklabs.org";
+        example = "krater-storage.patchworklabs.org";
         description = "Public hostname of the screenshot bucket. Browsers upload to it directly.";
       };
       port = lib.mkOption {
@@ -267,7 +268,7 @@ in
     skypilot = {
       domain = lib.mkOption {
         type = lib.types.str;
-        example = "sky.krater.patchworklabs.org";
+        example = "krater-sky.patchworklabs.org";
         description = "Public hostname of the SkyPilot API server (`sky api login -e https://<this>`).";
       };
       port = lib.mkOption {
@@ -361,8 +362,11 @@ in
             ];
 
         # ── State ───────────────────────────────────────────────────────────────
+        # /var/lib/krater itself stays 0755 (as in the Weave module) so krater-deploy can reach
+        # source-rev. Backups hold the whole database and secrets hold tokens: root only.
         systemd.tmpfiles.rules = [
           "d ${secretsDir} 0700 root root -"
+          "d ${stateDir}/backups 0700 root root -"
         ]
         ++ lib.optionals (cfg.deployAuthorizedKeys != [ ]) [
           "f ${revFile} 0644 krater-deploy users -"
@@ -378,8 +382,10 @@ in
           serviceConfig = {
             Type = "oneshot";
             RemainAfterExit = true;
-            StateDirectory = "krater krater/db krater/storage krater/skypilot krater/backups";
-            StateDirectoryMode = "0750";
+            # Not backups/ or secrets/: StateDirectoryMode is reapplied on every start, and those
+            # two stay 0700 (tmpfiles rules above).
+            StateDirectory = "krater krater/db krater/storage krater/skypilot";
+            StateDirectoryMode = "0755";
             ExecStart = pkgs.writeShellScript "krater-network-create" ''
               ${dockerBin} network inspect krater >/dev/null 2>&1 || \
                 ${dockerBin} network create krater
@@ -672,6 +678,7 @@ in
           };
           script = ''
             set -euo pipefail
+            umask 077
             dir=${stateDir}/backups
             name="krater-$(date -u +%Y%m%dT%H%M%SZ).dump"
             trap 'rm -f "$dir/$name.partial"' EXIT

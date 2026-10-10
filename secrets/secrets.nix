@@ -29,4 +29,18 @@ in
     jsp
     alastor
   ];
+
+  # Krater (Project Ganymede portal) runtime env. The keys it must contain are
+  # listed at the top of ../modules/krater/default.nix.
+  "krater-env.age".publicKeys = [
+    jsp
+    alastor
+  ];
+
+  # The Vast.ai API key Krater's SkyPilot server launches with: the bare key,
+  # nothing else in the file.
+  "krater-vast-key.age".publicKeys = [
+    jsp
+    alastor
+  ];
 }

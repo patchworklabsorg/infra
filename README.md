@@ -9,6 +9,8 @@ Declarative infrastructure for Patchwork Labs: the NixOS modules for Patchwork s
 | `flake.nix` | Flake outputs. |
 | `modules/weave/` | The Weave service module. Exported as `nixosModules.weave`. |
 | `hosts/alastor/weave.nix` | Weave as it runs on alastor. Exported as `nixosModules.weave-alastor`. |
+| `modules/krater/` | The Krater service module (portal, worker, Postgres, screenshot storage, SkyPilot). Exported as `nixosModules.krater`. |
+| `hosts/alastor/krater.nix` | Krater as it would run on alastor. Exported as `nixosModules.krater-alastor`; not imported by alastor yet. |
 | `secrets/` | agenix secrets. `secrets.nix` lists the recipients of each file. |
 
 ## How the repos connect
@@ -44,6 +46,12 @@ To change Weave on alastor:
 3. Deploy alastor from `jaspermayone/infra` (`deploy .#alastor`).
 
 alastor also rebuilds itself at 04:00 from `jaspermayone/infra` `main`. It uses the revision in that repo's `flake.lock`, so a merge here does nothing on alastor until step 2.
+
+## Krater on alastor
+
+Krater has no registry image. `krater-build` fetches one commit of `patchworklabsorg/krater` and builds it on the host with the repo's own Dockerfile. A deploy writes the commit to `/var/lib/krater/source-rev`, then runs `systemctl start krater-build` (the running site keeps serving) and `systemctl restart krater-web`. So Krater releases don't need a change here; only the module and its settings do.
+
+Before alastor imports `nixosModules.krater-alastor`: DNS for its three hostnames, the Weave client ids in `hosts/alastor/krater.nix`, and the secrets `krater-env.age` and `krater-vast-key.age`. Krater's `docs/dev/production.md` has the full checklist.
 
 ## Commands
 

@@ -17,6 +17,11 @@
         # Weave as it runs on alastor: instance settings, deploy key, Traefik
         # routes and agenix secrets. jaspermayone/infra's alastor imports it.
         weave-alastor = ./hosts/alastor/weave.nix;
+        # The Krater service module alone, with no instance settings.
+        krater = ./modules/krater;
+        # Krater as it runs on alastor: instance settings, Traefik routes and
+        # agenix secrets. Not imported by alastor yet.
+        krater-alastor = ./hosts/alastor/krater.nix;
       };
 
       formatter.x86_64-linux = nixpkgs.legacyPackages.x86_64-linux.nixfmt-tree;

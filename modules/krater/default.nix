@@ -260,8 +260,8 @@ in
       };
       image = lib.mkOption {
         type = lib.types.str;
-        default = "chrislusf/seaweedfs:latest";
-        description = "SeaweedFS image. Pin a version once staging has run against one.";
+        default = "chrislusf/seaweedfs:4.47";
+        description = "SeaweedFS image. 4.47 is the version Krater's staging ran; bump it only after a staging run.";
       };
     };
 

@@ -601,6 +601,9 @@ in
                   OAUTH2_PROXY_SCOPE = "openid email profile";
                   OAUTH2_PROXY_EMAIL_DOMAINS = "*";
                   OAUTH2_PROXY_CODE_CHALLENGE_METHOD = "S256";
+                  # SkyPilot reads X-Auth-Request-Email from /oauth2/auth; oauth2-proxy only sends it with
+                  # this on. Without it `sky api login` fails with a 500 (found on staging, 2026-10-10).
+                  OAUTH2_PROXY_SET_XAUTHREQUEST = "true";
                   OAUTH2_PROXY_COOKIE_EXPIRE = "8h";
                   OAUTH2_PROXY_COOKIE_SECURE = "true";
                 }

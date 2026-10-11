@@ -594,7 +594,8 @@ in
           name = "worker";
           description = "Krater worker (procrastinate)";
           # Runs the image and env krater-web just prepared, after its migrations. partOf carries a
-          # deploy's `restart krater-web` over to the worker, as in the Weave module.
+          # deploy's `restart krater-web` over to the worker, as in the Weave module. Two tasks at a time, so
+          # the minute's compute scheduler pass never waits behind the slow price-history run.
           after = [ "krater-web.service" ];
           requires = [ "krater-web.service" ];
           partOf = [ "krater-web.service" ];
@@ -607,7 +608,7 @@ in
               ${envArgs appEnv} \
               --restart no \
               "$(cat ${envDir}/image)" \
-              procrastinate --app=krater.worker.app.app worker
+              procrastinate --app=krater.worker.app.app worker --concurrency=2
           '';
         };
 

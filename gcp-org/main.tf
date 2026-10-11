@@ -101,6 +101,9 @@ locals {
     "admins-orgviewer"    = { member = local.g.admins, role = "roles/resourcemanager.organizationViewer" }
     "admins-folderviewer" = { member = local.g.admins, role = "roles/resourcemanager.folderViewer" }
     "admins-secreviewer"  = { member = local.g.admins, role = "roles/iam.securityReviewer" }
+    "admins-policyviewer" = { member = local.g.admins, role = "roles/orgpolicy.policyViewer" }
+    "admins-pamviewer"    = { member = local.g.admins, role = "roles/privilegedaccessmanager.viewer" }
+    "admins-logviewer"    = { member = local.g.admins, role = "roles/logging.viewer" }
     "board-browser"       = { member = local.g.board, role = "roles/browser" }
   }
 }
@@ -152,7 +155,7 @@ resource "google_logging_project_bucket_config" "org" {
   project        = google_project.logging.project_id
   location       = "global"
   bucket_id      = "org-audit-logs"
-  retention_days = 90
+  retention_days = 30
 }
 
 resource "google_logging_organization_sink" "audit" {

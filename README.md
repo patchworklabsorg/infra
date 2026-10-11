@@ -9,7 +9,7 @@ Declarative infrastructure for Patchwork Labs: the NixOS modules for Patchwork s
 | `flake.nix` | Flake outputs. |
 | `modules/weave/` | The Weave service module. Exported as `nixosModules.weave`. |
 | `hosts/alastor/weave.nix` | Weave as it runs on alastor. Exported as `nixosModules.weave-alastor`. |
-| `modules/krater/` | The Krater service module (portal, worker, Postgres, screenshot storage, SkyPilot). Exported as `nixosModules.krater`. |
+| `modules/krater/` | The Krater service module (portal, worker, Postgres, storage; Krater Compute off by default). Exported as `nixosModules.krater`. |
 | `hosts/alastor/krater.nix` | Krater as it would run on alastor. Exported as `nixosModules.krater-alastor`; not imported by alastor yet. |
 | `secrets/` | agenix secrets. `secrets.nix` lists the recipients of each file. |
 

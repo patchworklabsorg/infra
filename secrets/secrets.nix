@@ -37,9 +37,17 @@ in
     alastor
   ];
 
-  # The Vast.ai API key Krater rents with: the bare key, nothing else in the
-  # file. Not used on alastor while Krater's compute is off.
+  # The Vast.ai API key Krater Compute rents with: the bare key, nothing else
+  # in the file. Only Krater's worker reads it. Not used on alastor while
+  # Krater's compute is off.
   "krater-vast-key.age".publicKeys = [
+    jsp
+    alastor
+  ];
+
+  # Krater's project-secrets keys: Fernet keys, one per line, newest first.
+  # Only Krater's portal reads it. Losing it loses every stored project secret.
+  "krater-project-secrets-key.age".publicKeys = [
     jsp
     alastor
   ];

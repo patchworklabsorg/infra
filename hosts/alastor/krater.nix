@@ -9,7 +9,7 @@
 #   - Docker, with the buildx plugin (krater-build uses BuildKit)
 #   - Traefik with the file provider on /etc/traefik/conf.d and a `cloudflare`
 #     cert resolver and `hsts` middleware (infra's modules/traefik)
-#   - loopback ports 3010-3012 free (see the module's port options)
+#   - loopback ports 3010-3011 free (see the module's port options)
 #
 # Before the first deploy:
 #   - DNS for the two hostnames below (patchworklabsorg/dns)
@@ -17,10 +17,17 @@
 #   - secrets/krater-env.age
 # The full checklist is in Krater's docs/dev/production.md.
 #
-# SkyPilot stays off (KRATER_COMPUTE_MODE=off): Krater launches nothing until
-# Krater Compute, its own Vast layer, replaces it. So no SkyPilot Weave app,
-# bootstrap, krater-sky hostname or Vast key yet (krater-vast-key.age comes
-# back with Compute, for Krater's worker).
+# Krater Compute stays off (KRATER_COMPUTE_MODE=off) until Krater's paid checks
+# pass (its docs/compute/README.md). Turning it on: rotate the Vast key, put it
+# in secrets/krater-vast-key.age, uncomment the krater-vast-key secret below,
+# and set compute.enable and compute.vastKeyFile.
+#
+# Project secrets (a member's HF_TOKEN for their jobs) need
+# secrets/krater-project-secrets-key.age: one Fernet key per line, newest
+# first. Make one with
+#   python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
+# Back it up with the other agenix secrets: losing it loses every stored
+# project secret.
 { config, ... }:
 {
   imports = [ ../../modules/krater ];
@@ -31,6 +38,14 @@
       file = ../../secrets/krater-env.age;
       mode = "400";
     };
+    # krater-project-secrets-key = {
+    #   file = ../../secrets/krater-project-secrets-key.age;
+    #   mode = "400";
+    # };
+    # krater-vast-key = {
+    #   file = ../../secrets/krater-vast-key.age;
+    #   mode = "400";
+    # };
   };
 
   patchwork.services.krater = {
@@ -45,7 +60,13 @@
     # subdomain level. Added by a PR to patchworklabsorg/dns, like weave's.
     domain = "krater.patchworklabs.org";
     storage.domain = "krater-storage.patchworklabs.org";
-    skypilot.enable = false;
+
+    # Krater Compute (see the comment at the top). The label prefix must be
+    # unique to this deployment on the Vast account.
+    compute.enable = false;
+    # compute.vastKeyFile = config.age.secrets.krater-vast-key.path;
+    # compute.labelPrefix = "krater-prod-";
+    # projectSecretsKeyFile = config.age.secrets.krater-project-secrets-key.path;
 
     # With Cloudflare in front of Traefik, the client's address is not the
     # last X-Forwarded-For hop the module's default (1) assumes. Set this to
@@ -60,6 +81,9 @@
       # Not secret, but only known once the app exists in Weave. The module
       # refuses to build while it is empty.
       clientId = "";
+      # The `krater` CLI's public Weave app (Krater's docs/compute/cli.md).
+      # Empty keeps the CLI's API off.
+      cliClientId = "";
     };
 
     # CI (krater repo, .github/workflows/deploy.yml) SSHes as krater-deploy.

@@ -1,6 +1,6 @@
 # modules/krater/default.nix
 # Krater — the Project Ganymede portal (proposal review, compute budgets, gallery) — as Docker
-# containers on a dedicated network, next to the SkyPilot API server it enforces budgets on. Exported
+# containers on a dedicated network, optionally next to the SkyPilot API server it enforces budgets on. Exported
 # by this flake as nixosModules.krater; alastor imports nixosModules.krater-alastor
 # (hosts/alastor/krater.nix), which sets the instance options below.
 #
@@ -9,9 +9,14 @@
 #   krater-storage     SeaweedFS S3 gateway for gallery screenshots (temporary; see Krater's SPEC)
 #   krater-web         the portal; runs migrations first        127.0.0.1:<port>
 #   krater-worker      procrastinate worker (reconciler, Slack, pricing)
-#   krater-auth-proxy  oauth2-proxy: members sign in to SkyPilot with Weave
-#   krater-skypilot    SkyPilot API server, Vast only                127.0.0.1:<skypilot.port>
+#   krater-auth-proxy  oauth2-proxy: members sign in to SkyPilot with Weave   (skypilot.enable only)
+#   krater-skypilot    SkyPilot API server, Vast only, 127.0.0.1:<skypilot.port> (skypilot.enable only)
 # plus krater-build (builds the image) and krater-backup (nightly pg_dump).
+#
+# SkyPilot is off by default (`skypilot.enable = false`): its Vast support can't rent a machine and
+# copies the Vast key onto members' hosts, so Krater runs with KRATER_COMPUTE_MODE=off until Krater
+# Compute, its own Vast layer, replaces it. Off, Krater launches nothing and needs none of the SkyPilot
+# secrets, host files, Weave app or hostname below.
 #
 # No registry: the image is built on this host from source. krater-build fetches one commit of
 # `repo` (a full SHA, read from /var/lib/krater/source-rev, falling back to `rev`), builds it with the
@@ -32,11 +37,12 @@
 #   KRATER_SLACK_SIGNING_SECRET=...
 #   KRATER_S3_ACCESS_KEY_ID=...
 #   KRATER_S3_SECRET_ACCESS_KEY=...
+# and, only with skypilot.enable:
 #   KRATER_SKYPILOT_POLICY_TOKEN=...          # >= 32 chars
 #   KRATER_SKYPILOT_AUTH_CLIENT_SECRET=...    # the SkyPilot sign-in app's secret in Weave
 #   KRATER_SKYPILOT_AUTH_COOKIE_SECRET=...    # 32 random bytes, urlsafe base64
-# Two more values only exist after the first start, so they're host state files rather than agenix
-# secrets (no infra round trip to set them):
+# With skypilot.enable, two more values only exist after the first start, so they're host state files
+# rather than agenix secrets (no infra round trip to set them):
 #   /var/lib/krater/secrets/skypilot-basic-auth-password   present only for the one-time bootstrap
 #   /var/lib/krater/secrets/skypilot-service-token         Krater's SkyPilot admin token
 # The bootstrap is in Krater's docs/dev/production.md.
@@ -72,13 +78,18 @@ let
     KRATER_WEAVE_MODE = "live";
     KRATER_WEAVE_ISSUER = cfg.weave.issuer;
     KRATER_WEAVE_CLIENT_ID = cfg.weave.clientId;
+    KRATER_COMPUTE_MODE = if cfg.skypilot.enable then "skypilot" else "off";
+    # Live even with SkyPilot off: the budget estimator's GPU prices come from SkyPilot's public
+    # catalog, which needs no server.
     KRATER_SKYPILOT_MODE = "live";
-    KRATER_SKYPILOT_API_URL = "http://krater-skypilot:46580";
     KRATER_SLACK_MODE = "live";
     KRATER_SLACK_FEED_CHANNEL_ID = cfg.slackFeedChannelId;
     KRATER_S3_MODE = "live";
     KRATER_S3_ENDPOINT_URL = "http://krater-storage:8333";
     KRATER_S3_PUBLIC_ENDPOINT_URL = "https://${cfg.storage.domain}";
+  }
+  // lib.optionalAttrs cfg.skypilot.enable {
+    KRATER_SKYPILOT_API_URL = "http://krater-skypilot:46580";
   }
   // cfg.extraEnv;
 
@@ -118,9 +129,11 @@ let
     {
       grep -E '^KRATER_' ${cfg.environmentFile} | grep -vE '^KRATER_SKYPILOT_AUTH_(CLIENT_SECRET|COOKIE_SECRET)=' || true
       echo "KRATER_DATABASE_URL=postgresql+psycopg://krater:$password@krater-db:5432/krater"
-      if [ -s ${serviceTokenFile} ]; then
-        echo "KRATER_SKYPILOT_SERVICE_TOKEN=$(cat ${serviceTokenFile})"
-      fi
+      ${lib.optionalString cfg.skypilot.enable ''
+        if [ -s ${serviceTokenFile} ]; then
+          echo "KRATER_SKYPILOT_SERVICE_TOKEN=$(cat ${serviceTokenFile})"
+        fi
+      ''}
     } > ${envDir}/app.env
   '';
 
@@ -243,7 +256,8 @@ in
       };
       skypilotClientId = lib.mkOption {
         type = lib.types.str;
-        description = "Client id of the separate Weave app for the SkyPilot sign-in proxy.";
+        default = "";
+        description = "Client id of the separate Weave app for the SkyPilot sign-in proxy. Only with skypilot.enable.";
       };
     };
 
@@ -266,10 +280,15 @@ in
     };
 
     skypilot = {
+      enable = lib.mkEnableOption ''
+        the SkyPilot API server and its sign-in proxy, with KRATER_COMPUTE_MODE=skypilot. Off, Krater
+        runs with KRATER_COMPUTE_MODE=off and launches nothing
+      '';
       domain = lib.mkOption {
-        type = lib.types.str;
+        type = lib.types.nullOr lib.types.str;
+        default = null;
         example = "krater-sky.patchworklabs.org";
-        description = "Public hostname of the SkyPilot API server (`sky api login -e https://<this>`).";
+        description = "Public hostname of the SkyPilot API server (`sky api login -e https://<this>`). Only with enable.";
       };
       port = lib.mkOption {
         type = lib.types.port;
@@ -355,11 +374,19 @@ in
               assertion = cfg.weave.${name} != "";
               message = "patchwork.services.krater.weave.${name} must be set";
             })
-            [
-              "issuer"
-              "clientId"
-              "skypilotClientId"
-            ];
+            (
+              [
+                "issuer"
+                "clientId"
+              ]
+              ++ lib.optional cfg.skypilot.enable "skypilotClientId"
+            )
+          ++ [
+            {
+              assertion = cfg.skypilot.enable -> cfg.skypilot.domain != null;
+              message = "patchwork.services.krater.skypilot.domain must be set when skypilot.enable is true";
+            }
+          ];
 
         # ── State ───────────────────────────────────────────────────────────────
         # /var/lib/krater itself stays 0755 (as in the Weave module) so krater-deploy can reach
@@ -384,7 +411,8 @@ in
             RemainAfterExit = true;
             # Not backups/ or secrets/: StateDirectoryMode is reapplied on every start, and those
             # two stay 0700 (tmpfiles rules above).
-            StateDirectory = "krater krater/db krater/storage krater/skypilot";
+            StateDirectory =
+              "krater krater/db krater/storage" + lib.optionalString cfg.skypilot.enable " krater/skypilot";
             StateDirectoryMode = "0755";
             ExecStart = pkgs.writeShellScript "krater-network-create" ''
               ${dockerBin} network inspect krater >/dev/null 2>&1 || \
@@ -566,6 +594,40 @@ in
           '';
         };
 
+        # ── Backups ─────────────────────────────────────────────────────────────
+        # The budget ledger and audit log live only in this database. Copy /var/lib/krater/backups
+        # off the host; screenshots (/var/lib/krater/storage) aren't in these dumps.
+        systemd.services.krater-backup = {
+          description = "Dump the Krater database";
+          after = [ "krater-db.service" ];
+          requires = [ "krater-db.service" ];
+          serviceConfig = {
+            Type = "oneshot";
+            SyslogIdentifier = "krater-backup";
+          };
+          script = ''
+            set -euo pipefail
+            umask 077
+            dir=${stateDir}/backups
+            name="krater-$(date -u +%Y%m%dT%H%M%SZ).dump"
+            trap 'rm -f "$dir/$name.partial"' EXIT
+            ${dockerBin} exec krater-db pg_dump --format=custom -U krater krater > "$dir/$name.partial"
+            mv "$dir/$name.partial" "$dir/$name"
+            echo "backup written: $name"
+            find "$dir" -name 'krater-*.dump' -mtime +${toString cfg.backup.keepDays} -delete
+          '';
+        };
+        systemd.timers.krater-backup = {
+          wantedBy = [ "timers.target" ];
+          timerConfig = {
+            OnCalendar = cfg.backup.onCalendar;
+            Persistent = true;
+          };
+        };
+      }
+
+      # ── SkyPilot (only with skypilot.enable) ──────────────────────────────────
+      (lib.mkIf cfg.skypilot.enable {
         # ── SkyPilot sign-in proxy ──────────────────────────────────────────────
         # Any Weave user can sign in here; private per-project workspaces and Krater's launch gate do
         # the limiting (Krater's docs/skypilot-integration.md section 0).
@@ -667,38 +729,7 @@ in
               ${cfg.skypilot.image} /krater/skypilot-start.sh
           '';
         };
-
-        # ── Backups ─────────────────────────────────────────────────────────────
-        # The budget ledger and audit log live only in this database. Copy /var/lib/krater/backups
-        # off the host; screenshots (/var/lib/krater/storage) aren't in these dumps.
-        systemd.services.krater-backup = {
-          description = "Dump the Krater database";
-          after = [ "krater-db.service" ];
-          requires = [ "krater-db.service" ];
-          serviceConfig = {
-            Type = "oneshot";
-            SyslogIdentifier = "krater-backup";
-          };
-          script = ''
-            set -euo pipefail
-            umask 077
-            dir=${stateDir}/backups
-            name="krater-$(date -u +%Y%m%dT%H%M%SZ).dump"
-            trap 'rm -f "$dir/$name.partial"' EXIT
-            ${dockerBin} exec krater-db pg_dump --format=custom -U krater krater > "$dir/$name.partial"
-            mv "$dir/$name.partial" "$dir/$name"
-            echo "backup written: $name"
-            find "$dir" -name 'krater-*.dump' -mtime +${toString cfg.backup.keepDays} -delete
-          '';
-        };
-        systemd.timers.krater-backup = {
-          wantedBy = [ "timers.target" ];
-          timerConfig = {
-            OnCalendar = cfg.backup.onCalendar;
-            Persistent = true;
-          };
-        };
-      }
+      })
 
       # ── CI deploy user ──────────────────────────────────────────────────────────
       (lib.mkIf (cfg.deployAuthorizedKeys != [ ]) {
@@ -726,8 +757,8 @@ in
       })
 
       # ── Traefik ───────────────────────────────────────────────────────────────
-      # The launch gate (/internal/skypilot/policy) must stay reachable through the portal router:
-      # members' own `sky` CLIs call it before every launch.
+      # With SkyPilot on, the launch gate (/internal/skypilot/policy) must stay reachable through the
+      # portal router: members' own `sky` CLIs call it before every launch.
       (lib.mkIf cfg.traefik.enable {
         environment.etc."traefik/conf.d/krater.toml".source =
           let
@@ -747,11 +778,15 @@ in
               routers = {
                 krater = router cfg.domain "krater";
                 krater-storage = router cfg.storage.domain "krater-storage";
+              }
+              // lib.optionalAttrs cfg.skypilot.enable {
                 krater-skypilot = router cfg.skypilot.domain "krater-skypilot";
               };
               services = {
                 krater = backend cfg.port;
                 krater-storage = backend cfg.storage.port;
+              }
+              // lib.optionalAttrs cfg.skypilot.enable {
                 krater-skypilot = backend cfg.skypilot.port;
               };
             };

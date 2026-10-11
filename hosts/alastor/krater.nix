@@ -12,11 +12,15 @@
 #   - loopback ports 3010-3012 free (see the module's port options)
 #
 # Before the first deploy:
-#   - DNS for the three hostnames below (patchworklabsorg/dns)
-#   - the two Weave apps and Krater's roles; fill in the client ids below
-#   - secrets/krater-env.age and secrets/krater-vast-key.age
-# The full checklist and the SkyPilot bootstrap are in Krater's
-# docs/dev/production.md.
+#   - DNS for the two hostnames below (patchworklabsorg/dns)
+#   - Krater's Weave app and roles; fill in the client id below
+#   - secrets/krater-env.age
+# The full checklist is in Krater's docs/dev/production.md.
+#
+# SkyPilot stays off (KRATER_COMPUTE_MODE=off): Krater launches nothing until
+# Krater Compute, its own Vast layer, replaces it. So no SkyPilot Weave app,
+# bootstrap, krater-sky hostname or Vast key yet (krater-vast-key.age comes
+# back with Compute, for Krater's worker).
 { config, ... }:
 {
   imports = [ ../../modules/krater ];
@@ -27,16 +31,11 @@
       file = ../../secrets/krater-env.age;
       mode = "400";
     };
-    krater-vast-key = {
-      file = ../../secrets/krater-vast-key.age;
-      mode = "400";
-    };
   };
 
   patchwork.services.krater = {
     enable = true;
     environmentFile = config.age.secrets.krater-env.path;
-    vastKeyFile = config.age.secrets.krater-vast-key.path;
 
     # Fallback build; deploys write /var/lib/krater/source-rev instead.
     rev = "4f130ca51137aa8d7f65e408e04ab8f589fe9eae";
@@ -46,7 +45,7 @@
     # subdomain level. Added by a PR to patchworklabsorg/dns, like weave's.
     domain = "krater.patchworklabs.org";
     storage.domain = "krater-storage.patchworklabs.org";
-    skypilot.domain = "krater-sky.patchworklabs.org";
+    skypilot.enable = false;
 
     # With Cloudflare in front of Traefik, the client's address is not the
     # last X-Forwarded-For hop the module's default (1) assumes. Set this to
@@ -58,10 +57,9 @@
     weave = {
       # Exactly the `issuer` in Weave's discovery document.
       issuer = "https://weave.patchworklabs.org";
-      # Not secret, but only known once the apps exist in Weave. The module
-      # refuses to build while these are empty.
+      # Not secret, but only known once the app exists in Weave. The module
+      # refuses to build while it is empty.
       clientId = "";
-      skypilotClientId = "";
     };
 
     # CI (krater repo, .github/workflows/deploy.yml) SSHes as krater-deploy.

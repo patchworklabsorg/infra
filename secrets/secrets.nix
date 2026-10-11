@@ -37,8 +37,8 @@ in
     alastor
   ];
 
-  # The Vast.ai API key Krater's SkyPilot server launches with: the bare key,
-  # nothing else in the file.
+  # The Vast.ai API key Krater rents with: the bare key, nothing else in the
+  # file. Not used on alastor while Krater's compute is off.
   "krater-vast-key.age".publicKeys = [
     jsp
     alastor

@@ -100,7 +100,7 @@ bin/vault-import
 ```
 
 - It creates `~/.vault-pass-patchwork` with a random password if the file does not exist. Keep a copy in your password manager.
-- It copies `vault_ad_svc_ansible_password` and the two LDAP bind passwords (when they exist) into `vault/vault.yml`. The new names drop the `_patchwork` suffix.
+- It copies `vault_ad_svc_ansible_password` into `vault/vault.yml`. The new names drop the `_patchwork` suffix.
 - It writes the join password to `../secrets/ad-join.age` for the recipients in `secrets/secrets.nix`. It is not in the Ansible vault.
 - It keeps keys and files that exist. Use `--force` to replace them.
 
@@ -148,7 +148,7 @@ Every tag is opt-in. A run without `-t` does nothing. Directory changes run once
 | `host-groups` | Creates `lnx-<host>-users` and `lnx-<host>-admins` for every NixOS host in the flake. |
 | `svc-posture` | Sets AES only and "not delegatable" on `svc-ansible` and `svc-lnx-join`. |
 | `user-mail` | Sets the `mail` attribute from `ad_user_mail`. Does nothing while the map is empty. |
-| `ldap-binds` | Creates the read-only LDAP bind accounts `svc-wazuh-ldap` and `svc-netbox-ldap`, for when Wazuh and NetBox arrive. Needs their passwords in the vault. |
+| `ldap-binds` | Creates the read-only LDAP bind accounts in `ad_ldap_bind_accounts` (`group_vars/patchwork.yml`). The list is empty until an app needs one; the comment there shows how to add one. |
 | `ca-check` | Lists the enterprise CAs in AD and the CA certificates on loom, and checks that `ad_ca_subject_match` selects them. Changes nothing. Run it before `ca-chain`. |
 | `ca-chain` | Exports the forest CA chain to `files/pki/patchwork.internal-ca-chain.pem`. |
 | `dns-log` | Enables the DNS Analytical log on every DC. |

@@ -15,8 +15,8 @@
 #   -t host-groups      lnx-<host>-users / lnx-<host>-admins for every NixOS
 #                       host in ../flake.nix (nixosConfigurations)
 #   -t svc-posture      service accounts: AES only, not delegatable
-#   -t ldap-binds       read-only LDAP bind accounts (svc-wazuh-ldap,
-#                       svc-netbox-ldap) for when Wazuh and NetBox arrive
+#   -t ldap-binds       read-only LDAP bind accounts from
+#                       ad_ldap_bind_accounts (empty today)
 #   -t user-mail        fill in the mail attribute from ad_user_mail
 #   -t ca-check         list the CAs in AD and on loom, and check
 #                       ad_ca_subject_match against them. REPORT ONLY
@@ -36,18 +36,8 @@
     ad_audit_service_accounts:
       - svc-ansible
       - svc-lnx-join
-    # Read-only LDAP bind accounts created by -t ldap-binds, in
-    # ad_service_account_ou: AES only, not delegatable, password never
-    # expires, no group membership. Nothing uses them yet; they are ready for
-    # Wazuh and NetBox. The password is set on create only; rotate it with
-    # -e ad_ldap_bind_rotate=true.
-    ad_ldap_bind_accounts:
-      - name: svc-wazuh-ldap
-        description: "Wazuh indexer LDAP realm, read-only bind"
-        password: "{{ vault_wazuh_ldap_bind_password | default('') }}"
-      - name: svc-netbox-ldap
-        description: "NetBox django-auth-ldap, read-only bind"
-        password: "{{ vault_netbox_ldap_bind_password | default('') }}"
+    # -t ldap-binds rotates a bind password only with
+    # -e ad_ldap_bind_rotate=true. The accounts are in group_vars/patchwork.yml.
     ad_ldap_bind_rotate: false
     # The repo root: the directory that holds flake.nix.
     ad_flake_dir: "{{ (playbook_dir ~ '/..') | realpath }}"
@@ -362,6 +352,14 @@
       tags: [user-mail, never]
 
     # ------------------------------------------------------------ ldap-binds
+    - name: LDAP binds | Report that no account is declared
+      ansible.builtin.debug:
+        msg: ad_ldap_bind_accounts is empty. Nothing to do.
+      when:
+        - ad_is_primary_dc
+        - ad_ldap_bind_accounts | length == 0
+      tags: [ldap-binds, never]
+
     - name: LDAP binds | The service-account OU and the passwords are set
       ansible.builtin.assert:
         that:
@@ -369,9 +367,11 @@
           - ad_ldap_bind_accounts | map(attribute='password') | select('eq', '') | list | length == 0
         fail_msg: >-
           Set ad_service_account_ou in group_vars/patchwork.yml and put the
-          bind passwords in the vault (vault_wazuh_ldap_bind_password,
-          vault_netbox_ldap_bind_password) before creating the accounts.
-      when: ad_is_primary_dc
+          password of every account in ad_ldap_bind_accounts in the vault
+          before creating the accounts.
+      when:
+        - ad_is_primary_dc
+        - ad_ldap_bind_accounts | length > 0
       tags: [ldap-binds, never]
 
     - name: LDAP binds | Accounts exist
@@ -410,7 +410,9 @@
               $Ansible.Changed = $true
             }
           }
-      when: ad_is_primary_dc
+      when:
+        - ad_is_primary_dc
+        - ad_ldap_bind_accounts | length > 0
       tags: [ldap-binds, never]
 
     # -------------------------------------------------------------- ca-check

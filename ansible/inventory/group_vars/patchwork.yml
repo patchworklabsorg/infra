@@ -42,6 +42,20 @@ ad_group_ou_admins:    "OU=Box-Admins,OU=Linux-Access-Control,OU=Security-Groups
 # svc-ansible and svc-lnx-join live here.
 ad_service_account_ou: "OU=Service-Accounts,OU=Patchwork-Objects,DC=patchwork,DC=internal"
 
+# --- LDAP bind accounts (ad.yml -t ldap-binds) ---------------------------------
+# Read-only accounts for apps that check logins against AD over LDAP. Each is
+# created in ad_service_account_ou: AES only, not delegatable, password never
+# expires, no group membership. The password is set on create only. Empty
+# until an app needs one. To add one, add an entry, put its password in the
+# vault (pbpaste | bin/vault-set vault_<app>_ldap_bind_password), and run
+# ansible-playbook ad.yml -t ldap-binds. For example:
+#
+#   ad_ldap_bind_accounts:
+#     - name: svc-<app>-ldap
+#       description: "<App> LDAP login, read-only bind"
+#       password: "{{ vault_<app>_ldap_bind_password | default('') }}"
+ad_ldap_bind_accounts: []
+
 # --- Windows ------------------------------------------------------------------
 # svc-ansible: Domain Admins, AES only, not delegatable. group_vars/windows.yml
 # logs in with it.

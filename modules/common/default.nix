@@ -1,5 +1,9 @@
-# Base for every Patchwork NixOS host: accounts, SSH, sudo, Nix, Tailscale and
-# the Proxmox guest agent. Each host in hosts/ imports this.
+# Base for every Patchwork NixOS host: accounts, SSH, sudo, Nix, Tailscale,
+# the Proxmox guest agent and the patchwork.internal join (modules/ad-join).
+# Each host in hosts/ imports this.
+#
+# The local accounts below are the break-glass way in. Staff log in with their
+# AD account (modules/ad-join).
 #
 # Login is by SSH key only (patchworklabsorg/core#9). With mutableUsers = false
 # and no password set, no account can log in with a password, so sudo cannot
@@ -30,6 +34,8 @@ let
   };
 in
 {
+  imports = [ ../ad-join ];
+
   options.patchwork = {
     admins = lib.mkOption {
       type = lib.types.listOf (lib.types.enum (builtins.attrNames keys));

@@ -1,0 +1,4 @@
+---
+# The secrets that templates/vyos/thimble.conf.j2 reads. vyos.yml -t pull
+# writes them to the vault.
+vyos_secrets: "{{ vault_vyos_thimble | default({}) }}"

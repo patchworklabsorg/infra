@@ -42,4 +42,8 @@ in
     jsp
     alastor
   ];
+
+  # svc-lnx-join password only (modules/ad-join, ansible/sync-join-password.yml).
+  # Add each lab host key after its install, then `agenix -r`.
+  "ad-join.age".publicKeys = [ jsp ];
 }

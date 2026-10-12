@@ -16,6 +16,8 @@ def main():
     ap.add_argument("--json", metavar="FIELD", help="stdin holds JSON; take this field")
     ap.add_argument("--file", default=os.path.join(REPO, "vault/vault.yml"))
     ap.add_argument("--password-file", default=os.path.expanduser("~/.vault-pass-patchwork"))
+    ap.add_argument("--object", action="store_true",
+                    help="stdin holds a JSON object of strings; store it as a mapping")
     ap.add_argument("--no-clobber", action="store_true", help="leave an existing key untouched")
     a = ap.parse_args()
 
@@ -23,7 +25,13 @@ def main():
         sys.exit(f"vault-set: bad key name {a.key!r}")
 
     raw = sys.stdin.read()
-    if a.json:
+    if a.object:
+        value = json.loads(raw)
+        if not isinstance(value, dict) or not all(isinstance(v, str) for v in value.values()):
+            sys.exit("vault-set: --object needs a JSON object of strings")
+        # JSON is valid YAML, so the mapping fits on the key's one line.
+        line = f"{a.key}: {json.dumps(value, sort_keys=True)}"
+    elif a.json:
         m = re.search(r"\{.*\}", raw, re.S)
         if not m:
             sys.exit("vault-set: no JSON object on stdin")
@@ -32,8 +40,10 @@ def main():
             value = value[part]
     else:
         value = raw.rstrip("\n")
-    if not isinstance(value, str) or not value:
-        sys.exit("vault-set: empty value, nothing written")
+    if not a.object:
+        if not isinstance(value, str) or not value:
+            sys.exit("vault-set: empty value, nothing written")
+        line = f"{a.key}: {json.dumps(value)}"
 
     with open(a.password_file, "rb") as fh:
         secret = VaultSecret(fh.read().strip())
@@ -47,13 +57,12 @@ def main():
         sys.exit(f"vault-set: {a.file} is not a whole-file vault")
     plain = vault.decrypt(blob).decode()
 
-    line = f"{a.key}: {json.dumps(value)}"
     pat = re.compile(rf"^{re.escape(a.key)}:.*$", re.M)
     if pat.search(plain):
         if a.no_clobber:
             print(f"vault-set: {a.key} already set, left as is (--no-clobber)")
             return
-        plain, n = pat.subn(line, plain, count=1)
+        plain, n = pat.subn(lambda _m: line, plain, count=1)
         action = "replaced"
     else:
         if not plain.endswith("\n"):

@@ -1,5 +1,5 @@
 #!/bin/sh
-# vault-set KEY [--json FIELD] [--file VAULT] [--no-clobber]
+# vault-set KEY [--json FIELD | --object] [--file VAULT] [--no-clobber]
 # Reads a value from stdin and sets KEY in the whole-file Ansible vault
 # (default vault/vault.yml, the infra-vault submodule). Never prints the value.
 #

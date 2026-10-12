@@ -180,6 +180,12 @@ function Set-ADGroup { param($Identity, $Description, [string]$GroupScope, $Serv
         $o.Scope = $GroupScope
     }
 }
+function Remove-ADGroup { param($Identity, $Confirm, $Server)
+    $o = Find-Fake $Identity
+    if ($o.Protected) { throw "Access is denied: $($o.DN) is protected" }
+    foreach ($x in $script:objects) { $x.Members.Remove($o.Id) | Out-Null }
+    $script:objects.Remove($o) | Out-Null
+}
 function Get-ADGroupMember { param($Identity, $Server)
     $g = Find-Fake $Identity
     foreach ($id in $g.Members) { ConvertTo-Fake ($script:objects | Where-Object { $_.Id -eq $id }) }

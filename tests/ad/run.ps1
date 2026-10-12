@@ -56,6 +56,8 @@ Add-FakeObject "CN=member1,OU=Members,$old" 'user' @{ Sam = 'member1' } | Out-Nu
 $stranger = Add-FakeObject "CN=stranger,OU=Governance,$old" 'user' @{ Sam = 'stranger' }
 $lnxUsers = Add-FakeObject "CN=lnx-skein-users,OU=Box-Users,OU=Linux-Access-Control,OU=Security-Groups,$old" 'group' @{ Sam = 'lnx-skein-users'; Scope = 'Global'; Description = 'Linux logon on skein' }
 Add-FakeObject "CN=lnx-skein-admins,OU=Box-Admins,OU=Linux-Access-Control,OU=Security-Groups,$old" 'group' @{ Sam = 'lnx-skein-admins'; Scope = 'Global'; Description = 'Linux sudo on skein' } | Out-Null
+Add-FakeObject "CN=lnx-sampler-users,OU=Box-Users,OU=Linux-Access-Control,OU=Security-Groups,$old" 'group' @{ Sam = 'lnx-sampler-users'; Scope = 'Global'; Protected = $true } | Out-Null
+Add-FakeObject "CN=lnx-swatch-admins,OU=Box-Admins,OU=Linux-Access-Control,OU=Security-Groups,$old" 'group' @{ Sam = 'lnx-swatch-admins'; Scope = 'Global' } | Out-Null
 Add-FakeObject "CN=SKEIN,OU=Member-Servers,OU=Infrastructure,$old" 'computer' | Out-Null
 Add-FakeObject "CN=LAPTOP1,OU=Staff-Computers,OU=Staff-Production,$old" 'computer' | Out-Null
 Add-ADGroupMember -Identity 'Domain Admins' -Members 'jasper'
@@ -94,6 +96,7 @@ Check 'lnx-skein-users holds only GG-Infra' (((MembersOf 'lnx-skein-users') -joi
 Check 'tier 0 group in Domain Admins' ((MembersOf 'Domain Admins') -contains 'GG-Domain-Admins-Tier0')
 Check 'jasper keeps Domain Admins while jasper.adm is disabled' ((MembersOf 'Domain Admins') -contains 'jasper')
 Check 'vi disabled' (-not (U 'vi').Enabled)
+Check 'retired host groups deleted' (-not (G 'lnx-sampler-users') -and -not (G 'lnx-swatch-admins'))
 Check 'new users must change password' ((Get-FakeADState) -match 'CN=Adam Sidwa,[^|]*\|user\|False\|[^|]*\|[^|]*\|[^|]*pwdLastSet=0')
 
 $r = Converge Build

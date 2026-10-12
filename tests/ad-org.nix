@@ -43,6 +43,9 @@ let
         builtins.filter (m: !lib.elem m roleNames) g.members
       )
     ) (org.hostGroups ++ org.resourceGroups)
+    ++ map (h: "${h} is in both linuxHosts and retiredHosts") (
+      builtins.filter (h: lib.elem h org.linuxHosts) org.retiredHosts
+    )
     ++ lib.optional (
       lib.sort lib.lessThan org.linuxHosts != lib.sort lib.lessThan hosts
     ) "linuxHosts (${toString org.linuxHosts}) must match nixosConfigurations (${toString hosts})";

@@ -73,6 +73,7 @@
   ],
 
   "linuxHosts": ["hem", "seam", "skein", "warp"],
+  "retiredHosts": ["sampler", "swatch"],
   "hostGroups": [
     { "name": "lnx-{host}-users", "description": "Linux logon on {host}", "members": ["GG-Infra"] },
     { "name": "lnx-{host}-admins", "description": "Linux sudo on {host}", "members": ["GG-Infra"] }

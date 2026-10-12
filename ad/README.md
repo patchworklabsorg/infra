@@ -90,6 +90,10 @@ Add an entry to `users` in `org.json`, and add the person to their role groups:
 
 Add the host to `flake.nix`, and add its name to `linuxHosts`. `nix flake check` fails until both lists match. Build then makes `lnx-<host>-users` and `lnx-<host>-admins`, with `GG-Infra` in both.
 
+## Retire a lab host
+
+Move its name from `linuxHosts` to `retiredHosts`, and remove it from `flake.nix`. Build deletes its `lnx-<host>-users` and `lnx-<host>-admins` groups. Delete its computer object in AD by hand.
+
 ## Later
 
 - Weave provisioning: a service account with rights on `Users/Members` only, so Weave can create members and set the passwords people choose there.

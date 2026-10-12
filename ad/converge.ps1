@@ -12,8 +12,8 @@
     Three phases. Run each with -WhatIf first.
 
       Build    Make the new tree and groups, create missing users, set
-               attributes and group membership. Moves nothing and deletes
-               nothing.
+               attributes and group membership. Moves nothing. Deletes only
+               the host groups of the hosts in retiredHosts.
       Migrate  Copy GPO links from the old tree, then move every object out of
                the old tree (migration.oldRoot) into the new one. Converts the
                old Linux and app groups to domain local. Objects it cannot map
@@ -320,6 +320,23 @@ function Sync-User($u) {
     }
 }
 
+# Deletes the host groups of hosts that no longer exist (retiredHosts).
+function Remove-RetiredHostGroups {
+    foreach ($h in $data.retiredHosts) {
+        foreach ($t in $data.hostGroups) {
+            $name = $t.name.Replace('{host}', $h)
+            $g = Find-Group $name
+            if (-not $g) { continue }
+            Invoke-Change $g.DistinguishedName "Delete group of retired host $h" {
+                if ($g.ProtectedFromAccidentalDeletion) {
+                    Set-ADObject -Identity $g -ProtectedFromAccidentalDeletion $false @ad
+                }
+                Remove-ADGroup -Identity $g -Confirm:$false @ad
+            }
+        }
+    }
+}
+
 function Sync-Privileged {
     $p = $data.privileged
     $tier0 = Find-Group $p.tier0Group
@@ -383,6 +400,7 @@ function Invoke-Build {
         Sync-Members $g.name @($g.members)
     }
     foreach ($g in Get-ResourceGroups) { Sync-Members $g.name @($g.members) }
+    Remove-RetiredHostGroups
 
     Sync-Privileged
 }

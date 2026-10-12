@@ -20,6 +20,10 @@ let
   #   central-staging-<app>.age     recipients: jsp, hem
   #   restricted-staging-<app>.age  recipients: jsp, hem
   # The app host that connects needs the same file, so add it as a recipient.
+  #
+  # ad-join.age: the svc-lnx-join password only (vault key
+  # vault_ad_join_password_patchwork). Recipients: jsp and every host.
+  # modules/ad-join uses it when the file exists.
 in
 {
   # Weave (Patchwork IDP) runtime env. Must contain:

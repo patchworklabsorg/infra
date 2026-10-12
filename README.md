@@ -12,6 +12,7 @@ Declarative infrastructure for Patchwork Labs: every Patchwork host, the NixOS m
 | `hosts/central-db-schema.nix` | Apps and shared schemas of the central databases. |
 | `hosts/alastor/` | Modules that `jaspermayone/infra` imports for alastor. |
 | `modules/common/` | Accounts, SSH, sudo, Tailscale, Nix. Every host imports it. |
+| `modules/ad-join/` | Joins the host to `patchwork.internal` with sssd. `modules/common` imports it. |
 | `modules/central-db/` | One central PostgreSQL cluster and its access model. |
 | `modules/weave/` | The Weave service module. |
 | `tests/` | NixOS VM tests. |
@@ -38,6 +39,24 @@ flowchart LR
   warp -- "tailnet :5432" --> seam["seam: patchwork_central_restricted"]
   warp -. staging .-> hem["hem: :5432 / :5433"]
 ```
+
+## Login
+
+Every host joins the `patchwork.internal` AD forest (`modules/ad-join`), with the same rules as `roles/linux_ad_join` in the Ansible:
+
+- Members of `lnx-<host>-users` log in with an SSH key from their `altSecurityIdentities` (`SSHKey:<key>`). Passwords do not work over SSH.
+- Members of `lnx-<host>-admins` get sudo with their AD password.
+- The local accounts in `modules/common` are the break-glass way in.
+
+Staff reach the lab over the thimble VPN (AD login through NPS on shuttle) or over Tailscale.
+
+Before a host is installed:
+
+1. Create `lnx-<host>-users` and `lnx-<host>-admins` in AD (`ad.yml -t host-groups`). If a group does not resolve, every AD login fails.
+2. Add the host's A record in AD DNS. sssd does not update DNS.
+3. After the install, add the host key to `secrets/ad-join.age` and run `agenix -r`. `ad-join.service` then joins on the next boot or deploy.
+
+loom and spindle must run. They are the DNS servers, the KDCs and the time source of every host.
 
 ## Central databases
 

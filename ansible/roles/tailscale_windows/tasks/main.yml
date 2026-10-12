@@ -1,0 +1,85 @@
+---
+- name: Download Tailscale installer
+  ansible.windows.win_get_url:
+    url: "{{ tailscale_msi_url }}"
+    dest: 'C:\Windows\Temp\tailscale-setup.msi'
+    force: false
+
+- name: Install Tailscale
+  ansible.windows.win_package:
+    path: 'C:\Windows\Temp\tailscale-setup.msi'
+    creates_path: 'C:\Program Files\Tailscale\tailscale.exe'
+    state: present
+
+# failed_when: false, then decide below. A bare rc=1 here used to abort the
+# host with no explanation, and the two ways this probe fails need different
+# answers. See the next two tasks.
+- name: Check Tailscale login state
+  ansible.windows.win_command: '"C:\Program Files\Tailscale\tailscale.exe" status --json'
+  register: tailscale_status
+  changed_when: false
+  failed_when: false
+
+# tailscaled on Windows serves its LocalAPI to ONE user session at a time.
+# A session with the Tailscale GUI (tailscale-ipn.exe) open owns it, and every
+# other caller, this WinRM session included, gets:
+#   401 Unauthorized: Tailscale already in use by <user>, pid <n>
+# The service is healthy when this happens. Only the API is taken.
+#
+# A DISCONNECTED RDP session still holds it, so the console shows nothing wrong.
+# On one DC an Administrator session, disconnected for two weeks, still held
+# the API through tailscale-ipn. The other DC had no such session and joined
+# in the same run.
+#
+# The role cannot work around this: `tailscale up` below hits the same 401. So
+# the host must still fail. It must fail with the cause.
+- name: Fail when another session owns the Tailscale API
+  ansible.builtin.fail:
+    msg: |
+      {{ inventory_hostname }} has Tailscale installed and tailscaled running,
+      but another Windows session owns the local API, so this run cannot
+      configure it:
+
+        {{ tailscale_probe_output | trim }}
+
+      This is a session conflict, NOT a broken install. Do not reinstall.
+
+      Find the owner and release it, from an admin shell on the host:
+
+        quser
+        Get-Process tailscale-ipn -IncludeUserName | Select-Object Id,UserName
+        Stop-Process -Id <pid> -Force     # GUI returns at the next logon
+        logoff <session-id>               # or clear the stale session outright
+
+      Then re-run this play. A disconnected session is the usual cause, so
+      check `quser` even when nobody is at the console.
+  vars:
+    tailscale_probe_output: >-
+      {{ (tailscale_status.stderr | default('')) ~ (tailscale_status.stdout | default('')) }}
+  when:
+    - tailscale_status.rc != 0
+    - "'already in use by' in tailscale_probe_output"
+
+- name: Fail when the login state cannot be read
+  ansible.builtin.fail:
+    msg: |
+      `tailscale status --json` failed on {{ inventory_hostname }} with
+      rc={{ tailscale_status.rc }}, and the cause is not a session conflict.
+
+        stdout: {{ tailscale_status.stdout | default('') | trim }}
+        stderr: {{ tailscale_status.stderr | default('') | trim }}
+
+      Check that the tailscaled service is running before you look anywhere
+      else: `Get-Service Tailscale`.
+  when: tailscale_status.rc != 0
+
+# --unattended keeps the tunnel up with no user logged in (server mode).
+# --accept-dns=false: these boxes ARE the DNS / rely on AD DNS.
+- name: Authenticate to tailnet
+  ansible.windows.win_command: >-
+    "C:\Program Files\Tailscale\tailscale.exe" up
+    --auth-key={{ tailscale_auth_key }} --accept-dns=false --unattended
+  when:
+    - tailscale_auth_key | length > 0
+    - (tailscale_status.stdout | from_json).BackendState == 'NeedsLogin'
+  no_log: true

@@ -1,0 +1,9 @@
+---
+# Minimum versions, not exact pins. Anything newer is expected to work.
+#   ansible-galaxy collection install -r requirements.yml
+collections:
+  # win_powershell, win_get_url, win_package, win_copy, win_service.
+  - name: ansible.windows
+    version: ">=3.5.0"
+  # pywinrm is the only Python dependency on the control node:
+  #   pip install pywinrm

@@ -1,6 +1,6 @@
 # infra
 
-Declarative infrastructure for Patchwork Labs: every Patchwork host, the NixOS modules for Patchwork services, and their secrets.
+Declarative infrastructure for Patchwork Labs: every Patchwork host, the NixOS modules for Patchwork services, the Ansible for the Windows hosts and AD, and their secrets.
 
 ## Layout
 
@@ -17,10 +17,12 @@ Declarative infrastructure for Patchwork Labs: every Patchwork host, the NixOS m
 | `modules/weave/` | The Weave service module. |
 | `tests/` | NixOS VM tests. |
 | `secrets/` | agenix secrets. `secrets.nix` lists the recipients of each file. |
+| `ansible/` | Ansible for the Windows hosts and AD: `windows.yml`, `ad.yml`. See `ansible/README.md`. |
+| `ansible/vault/` | Git submodule `patchworklabsorg/infra-vault` (private): the Ansible vault. |
 
 ## Hosts
 
-All hosts are NixOS VMs on pve01, VLAN 90 (`patchwork.internal`). alastor is the only public edge. It terminates TLS and proxies to the lab hosts over the tailnet.
+The lab hosts below are NixOS VMs on pve01, VLAN 90 (`patchwork.internal`). alastor is the only public edge. It terminates TLS and proxies to the lab hosts over the tailnet.
 
 | Host | VMID | Address | Memory | Runs |
 |---|---|---|---|---|
@@ -28,6 +30,15 @@ All hosts are NixOS VMs on pve01, VLAN 90 (`patchwork.internal`). alastor is the
 | `skein` | 355 | 10.100.90.55 | 4 GB | `patchwork_central`, prod. LAN + tailnet. |
 | `seam` | 357 | 10.100.90.57 | 2 GB | `patchwork_central_restricted`, prod. Tailnet only. |
 | `hem` | 358 | 10.100.90.58 | 2 GB | Both staging clusters: central on 5432, restricted on 5433. |
+
+The Windows hosts are managed by Ansible (`ansible/`):
+
+| Host | VMID | Address | Runs |
+|---|---|---|---|
+| `loom` | 310 | 10.100.90.10 | DC, PDC emulator, DNS, DHCP |
+| `spindle` | 311 | 10.100.90.11 | DC, DNS |
+| `bobbin` | 312 | 10.100.90.12 | Issuing CA |
+| `shuttle` | 314 | 10.100.90.14 | NPS / RADIUS |
 
 VMIDs 356-358 and their addresses are proposed. Confirm that they are free before you create the VMs. pve01 had 121 of 125.8 GiB committed on 2026-08-25, so free about 14 GiB first.
 
@@ -42,7 +53,7 @@ flowchart LR
 
 ## Login
 
-Every host joins the `patchwork.internal` AD forest (`modules/ad-join`), with the same rules as `roles/linux_ad_join` in the Ansible:
+Every host joins the `patchwork.internal` AD forest (`modules/ad-join`), with the same rules as `roles/linux_ad_join` in the `jaspermayone/infra` Ansible:
 
 - Members of `lnx-<host>-users` log in with an SSH key from their `altSecurityIdentities` (`SSHKey:<key>`). Passwords do not work over SSH.
 - Members of `lnx-<host>-admins` get sudo with their AD password.
@@ -52,7 +63,7 @@ Staff reach the lab over the thimble VPN (AD login through NPS on shuttle) or ov
 
 Before a host is installed:
 
-1. Create `lnx-<host>-users` and `lnx-<host>-admins` in AD (`ad.yml -t host-groups`). If a group does not resolve, every AD login fails.
+1. Add the host to `hosts` in `flake.nix`. Then create `lnx-<host>-users` and `lnx-<host>-admins` in AD: `cd ansible && ansible-playbook ad.yml -t host-groups`. The play reads the host names from the flake. If a group does not resolve, every AD login fails.
 2. Add the host's A record in AD DNS. sssd does not update DNS.
 3. After the install, add the host key to `secrets/ad-join.age` and run `agenix -r`. `ad-join.service` then joins on the next boot or deploy.
 
@@ -87,6 +98,7 @@ flowchart LR
 | `patchworklabsorg/infra` | Every Patchwork host, Patchwork services and their secrets. |
 | `patchworklabsorg/core` | Archived. It held the Core VM, which was never built; `warp` does that job. |
 | `patchworklabsorg/dns` | Patchwork DNS. |
+| `patchworklabsorg/infra-vault` | Private. The Ansible vault, as the submodule `ansible/vault`. |
 | `jaspermayone/infra` | Jasper's hosts (alastor and others) and the lab's physical layer. It imports Patchwork services from this repo as the flake input `patchwork-infra`. |
 
 ## Weave on alastor
@@ -110,4 +122,7 @@ nix build .#checks.x86_64-linux.central-db   # VM test; needs a Linux builder wi
 deploy .#<host>                               # deploy-rs over the tailnet
 cd secrets && agenix -e <name>.age   # create or edit a secret
 cd secrets && agenix -r              # re-key after changing recipients
+git submodule update --init ansible/vault    # the Ansible vault (private repo)
+cd ansible && ansible-playbook windows.yml   # Windows baseline
+cd ansible && ansible-playbook ad.yml -t audit   # AD report, changes nothing
 ```

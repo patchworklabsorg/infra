@@ -1,0 +1,111 @@
+{
+  "domain": "patchwork.internal",
+  "upnSuffix": "patchworklabs.org",
+  "company": "Patchwork Labs inc.",
+  "root": "Patchwork",
+
+  "divisions": {
+    "Programs": ["Programs", "Project Ganymede"],
+    "Sponsored Projects": ["HackBoston", "hackathon.help"],
+    "Operations": ["Governance", "Administration", "Infrastructure"],
+    "Development": ["Grants & Partnerships"]
+  },
+
+  "ous": [
+    { "path": "Users", "description": "People. Placement is for policy, not the org chart." },
+    { "path": "Users/Staff", "description": "Staff and volunteers with operational roles" },
+    { "path": "Users/Board-Only", "description": "Directors with no operational role" },
+    { "path": "Users/Sponsored-Projects", "description": "Fiscally sponsored projects" },
+    { "path": "Users/Sponsored-Projects/HackBoston", "description": "HackBoston (hackboston.dev)" },
+    { "path": "Users/Sponsored-Projects/hackathon.help", "description": "hackathon.help" },
+    { "path": "Users/Members", "description": "Community members. Weave creates and changes these; converge.ps1 does not.", "managed": false },
+    { "path": "Service-Accounts", "description": "Non-human accounts for integrations" },
+    { "path": "Disabled", "description": "Suspended users, all access off (Workspace: Purgatory)" },
+    { "path": "Admin-Accounts", "description": "Tier 0. Separate from daily accounts." },
+    { "path": "Groups", "description": "Security groups (AGDLP)" },
+    { "path": "Groups/Roles", "description": "Global groups. People go here." },
+    { "path": "Groups/Resources", "description": "Domain local groups. Only these get permissions." },
+    { "path": "Computers", "description": "Staff workstations" },
+    { "path": "Servers", "description": "Member servers and lab hosts" }
+  ],
+
+  "users": [
+    { "sam": "jasper", "kind": "person", "ou": "Users/Staff", "givenName": "Jasper", "surname": "Mayone",
+      "division": "Programs", "department": "Programs", "title": "Founder & Director of Programs", "manager": null },
+    { "sam": "adam.sidwa", "kind": "person", "ou": "Users/Staff", "givenName": "Adam", "surname": "Sidwa",
+      "division": "Programs", "department": "Project Ganymede", "title": "Project Ganymede Administrator", "manager": "jasper" },
+    { "sam": "kieran", "kind": "person", "ou": "Users/Board-Only",
+      "division": "Operations", "department": "Governance", "title": "Treasurer & Secretary", "manager": null },
+    { "sam": "dominic", "kind": "person", "ou": "Users/Board-Only",
+      "division": "Operations", "department": "Governance", "title": "Director", "manager": null },
+    { "sam": "cj", "kind": "person", "ou": "Users/Sponsored-Projects/HackBoston",
+      "division": "Sponsored Projects", "department": "HackBoston", "title": "Organizer", "manager": null },
+    { "sam": "daniel", "kind": "person", "ou": "Users/Sponsored-Projects/HackBoston",
+      "division": "Sponsored Projects", "department": "HackBoston", "title": "Organizer", "manager": null },
+    { "sam": "logan", "kind": "person", "ou": "Users/Sponsored-Projects/HackBoston",
+      "division": "Sponsored Projects", "department": "HackBoston", "title": "Organizer", "manager": null },
+    { "sam": "wei", "kind": "person", "ou": "Users/Sponsored-Projects/hackathon.help",
+      "division": "Sponsored Projects", "department": "hackathon.help", "title": "Organizer", "manager": null },
+
+    { "sam": "service", "kind": "service", "ou": "Service-Accounts",
+      "company": "Patchwork Labs inc.", "division": "Operations", "department": "Infrastructure", "title": "Service account", "manager": null },
+    { "sam": "svc-lnx-join", "kind": "service", "ou": "Service-Accounts", "create": false },
+
+    { "sam": "jasper.adm", "kind": "admin", "ou": "Admin-Accounts", "givenName": "Jasper", "surname": "Mayone",
+      "title": "Tier 0 administrator", "manager": null },
+    { "sam": "svc-ansible", "kind": "admin", "ou": "Admin-Accounts", "create": false },
+
+    { "sam": "vi", "kind": "disabled", "ou": "Disabled" },
+    { "sam": "yc", "kind": "disabled", "ou": "Disabled" }
+  ],
+
+  "roleGroups": [
+    { "name": "GG-Board", "description": "Board of Directors", "members": ["jasper", "kieran", "dominic"] },
+    { "name": "GG-President", "description": "President", "members": ["jasper"] },
+    { "name": "GG-Treasurer", "description": "Treasurer", "members": ["kieran"] },
+    { "name": "GG-Secretary", "description": "Secretary", "members": ["kieran"] },
+    { "name": "GG-Ganymede-Admins", "description": "Project Ganymede admins", "members": ["jasper", "adam.sidwa"] },
+    { "name": "GG-Ganymede-Users", "description": "Project Ganymede users", "members": [], "manageMembers": false },
+    { "name": "GG-HackBoston-Organizers", "description": "HackBoston organizers", "members": ["cj", "daniel", "logan", "jasper"] },
+    { "name": "GG-HackathonHelp-Organizers", "description": "hackathon.help organizers", "members": ["wei"] },
+    { "name": "GG-Infra", "description": "Infrastructure", "members": ["jasper"] },
+    { "name": "GG-Domain-Admins-Tier0", "description": "Tier 0 admin accounts. Member of Domain Admins.", "members": ["jasper.adm"] }
+  ],
+
+  "linuxHosts": ["hem", "seam", "skein", "warp"],
+  "hostGroups": [
+    { "name": "lnx-{host}-users", "description": "Linux logon on {host}", "members": ["GG-Infra"] },
+    { "name": "lnx-{host}-admins", "description": "Linux sudo on {host}", "members": ["GG-Infra"] }
+  ],
+  "resourceGroups": [],
+
+  "privileged": {
+    "tier0Group": "GG-Domain-Admins-Tier0",
+    "groups": ["Domain Admins", "Enterprise Admins", "Schema Admins", "Administrators"],
+    "allowedDirectMembers": {
+      "Domain Admins": ["Administrator", "svc-ansible", "GG-Domain-Admins-Tier0"],
+      "Enterprise Admins": ["Administrator"],
+      "Schema Admins": ["Administrator"],
+      "Administrators": ["Administrator", "Domain Admins", "Enterprise Admins"]
+    }
+  },
+
+  "migration": {
+    "oldRoot": "Patchwork-Objects",
+    "ouMap": [
+      { "from": "",                                                "to": "" },
+      { "from": "Staff-Production",                                "to": "Users/Staff" },
+      { "from": "Staff-Production/Staff-Computers",                "to": "Computers" },
+      { "from": "Infrastructure",                                  "to": "Servers" },
+      { "from": "Infrastructure/Member-Servers",                   "to": "Servers" },
+      { "from": "Security-Groups",                                 "to": "Groups" },
+      { "from": "Security-Groups/Linux-Access-Control",            "to": "Groups/Resources" },
+      { "from": "Security-Groups/Linux-Access-Control/Box-Users",  "to": "Groups/Resources" },
+      { "from": "Security-Groups/Linux-Access-Control/Box-Admins", "to": "Groups/Resources" },
+      { "from": "Security-Groups/App-Access-Control",              "to": "Groups/Resources" },
+      { "from": "Service-Accounts",                                "to": "Service-Accounts" },
+      { "from": "Governance",                                      "to": "Users/Board-Only" },
+      { "from": "Members",                                         "to": "Users/Members" }
+    ]
+  }
+}

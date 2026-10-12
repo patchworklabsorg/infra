@@ -87,9 +87,21 @@
         nixpkgs.lib.recursiveUpdate
           (builtins.mapAttrs (_: deployLib: deployLib.deployChecks self.deploy) deploy-rs.lib)
           (
-            nixpkgs.lib.genAttrs [ "x86_64-linux" "aarch64-linux" ] (system: {
-              central-db = import ./tests/central-db.nix { pkgs = nixpkgs.legacyPackages.${system}; };
-            })
+            nixpkgs.lib.genAttrs [ "x86_64-linux" "aarch64-linux" "aarch64-darwin" ] (
+              system:
+              let
+                pkgs = nixpkgs.legacyPackages.${system};
+              in
+              {
+                ad-org = import ./tests/ad-org.nix {
+                  inherit pkgs;
+                  hosts = builtins.attrNames self.nixosConfigurations;
+                };
+              }
+              // nixpkgs.lib.optionalAttrs pkgs.stdenv.isLinux {
+                central-db = import ./tests/central-db.nix { inherit pkgs; };
+              }
+            )
           );
 
       formatter.x86_64-linux = nixpkgs.legacyPackages.x86_64-linux.nixfmt-tree;

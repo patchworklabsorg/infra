@@ -1,0 +1,67 @@
+---
+# ============================================================================
+# patchwork.internal: the Patchwork Labs forest. VLANs 90-92.
+# ---------------------------------------------------------------------------
+# The directory values below (NetBIOS name, OU DNs, DHCP scopes) were read
+# from loom on 2026-08-23. svc-ansible and svc-lnx-join were created in this
+# forest the same day.
+# ============================================================================
+
+domain_name:    patchwork.internal
+domain_realm:   PATCHWORK.INTERNAL
+# From Get-ADDomain on loom.
+domain_netbios: "PATCHWORK"
+
+# Both DCs, in preference order. The PDC emulator is first, because ad.yml
+# runs its directory changes once, on ad_dcs[0], and AD replicates them.
+#
+# Confirmed by SRV lookup against the DCs:
+#   dig @10.100.90.10 _ldap._tcp.dc._msdcs.patchwork.internal SRV
+#     -> loom.patchwork.internal, spindle.patchwork.internal
+#   dig @10.100.90.10 _ldap._tcp.pdc._msdcs.patchwork.internal SRV
+#     -> loom (PDC emulator)
+# AD site: PW-HQ. It is never pinned on a client; the DC gives site affinity.
+ad_dcs:
+  - { name: loom.patchwork.internal,    ip: 10.100.90.10 }   # PDC emulator
+  - { name: spindle.patchwork.internal, ip: 10.100.90.11 }
+
+# --- Linux join ---------------------------------------------------------------
+# The account that joins Linux hosts (modules/ad-join on the NixOS hosts).
+# ad.yml -t join-delegation gives it the join rights on both computer OUs, and
+# -t audit checks them. Its password is not in the Ansible vault: the NixOS
+# hosts read it from secrets/ad-join.age (agenix).
+ad_join_account: svc-lnx-join
+
+# OU root: OU=Patchwork-Objects,DC=patchwork,DC=internal.
+ad_computer_ou_client: "OU=Staff-Computers,OU=Staff-Production,OU=Patchwork-Objects,DC=patchwork,DC=internal"
+ad_computer_ou_server: "OU=Member-Servers,OU=Infrastructure,OU=Patchwork-Objects,DC=patchwork,DC=internal"
+# ad.yml -t host-groups creates lnx-<host>-users here ...
+ad_group_ou_users:     "OU=Box-Users,OU=Linux-Access-Control,OU=Security-Groups,OU=Patchwork-Objects,DC=patchwork,DC=internal"
+# ... and lnx-<host>-admins here.
+ad_group_ou_admins:    "OU=Box-Admins,OU=Linux-Access-Control,OU=Security-Groups,OU=Patchwork-Objects,DC=patchwork,DC=internal"
+# svc-ansible and svc-lnx-join live here.
+ad_service_account_ou: "OU=Service-Accounts,OU=Patchwork-Objects,DC=patchwork,DC=internal"
+
+# --- Windows ------------------------------------------------------------------
+# svc-ansible: Domain Admins, AES only, not delegatable. group_vars/windows.yml
+# logs in with it.
+ad_svc_ansible_account: "{{ domain_netbios }}\\svc-ansible"
+ad_svc_ansible_password: "{{ vault_ad_svc_ansible_password }}"
+
+# --- DHCP scopes (ad.yml -t dhcp) ---------------------------------------------
+# From Get-DhcpServerv4Scope on loom: three scopes, each with the pool
+# .50-.240. The static infrastructure addresses sit inside the VLAN 90 pool,
+# so the .1-.99 exclusion protects them.
+dhcp_scopes:
+  - scope_id: 10.100.90.0
+    exclusions:
+      - { start: 10.100.90.1, end: 10.100.90.99 }
+  - scope_id: 10.100.91.0
+    exclusions: []
+  - scope_id: 10.100.92.0
+    exclusions: []
+
+# --- User mail (ad.yml -t user-mail) ------------------------------------------
+# SamAccountName -> mail address. The play fills in the mail attribute only.
+# It does not create accounts. Empty: the tag does nothing.
+ad_user_mail: {}

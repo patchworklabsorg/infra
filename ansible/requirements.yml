@@ -1,0 +1,18 @@
+---
+# Minimum versions, not exact pins. Anything newer is expected to work.
+#   ansible-galaxy collection install -r requirements.yml
+collections:
+  # win_powershell, win_get_url, win_package, win_copy, win_service.
+  - name: ansible.windows
+    version: ">=3.5.0"
+  # ad.yml -t ldap-binds and sync-join-password.yml (microsoft.ad.user).
+  - name: microsoft.ad
+    version: ">=1.10.0"
+  # vyos.yml (thimble).
+  - name: vyos.vyos
+    version: ">=5.0.0"
+  - name: ansible.netcommon
+    version: ">=7.0.0"
+# Python on the control node: pywinrm (WinRM to the Windows hosts) and
+# paramiko (network_cli to thimble).
+#   pip install pywinrm paramiko

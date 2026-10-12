@@ -1,0 +1,28 @@
+---
+# Deliberately small. The fiddly, once-and-done work (AD CS, the offline-root
+# signing dance, NPS policies, RRAS crypto) stays in the runbook on purpose.
+# This role is for the safe, repeatable, rebuild-me-anytime stuff.
+
+- name: Download windows_exporter
+  ansible.windows.win_get_url:
+    url: "{{ windows_exporter_url }}"
+    dest: 'C:\Windows\Temp\windows_exporter.msi'
+
+- name: Install windows_exporter (with firewall exception)
+  ansible.windows.win_package:
+    path: 'C:\Windows\Temp\windows_exporter.msi'
+    arguments: 'ENABLE=FirewallException LISTEN_PORT=9182'
+    state: present
+
+- name: Write windows_exporter config (single source of truth for collectors)
+  ansible.windows.win_copy:
+    content: |
+      collectors:
+        enabled: {{ windows_exporter_collectors }}
+    dest: 'C:\Program Files\windows_exporter\config.yaml'
+  notify: Restart windows_exporter
+
+# Next candidates for this role (all low-risk, high-repeat):
+#   - DNS records on loom     -> community.windows.win_dns_record
+#   - Windows features state  -> ansible.windows.win_feature
+#   - time / NTP, hostname, static IP on first boot -> ansible.windows.win_*

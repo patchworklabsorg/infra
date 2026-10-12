@@ -1,0 +1,559 @@
+---
+# ============================================================================
+# ad.yml: directory maintenance for patchwork.internal.
+# ---------------------------------------------------------------------------
+# Runs against domain_controllers over WinRM (group_vars/windows.yml). Every
+# tag is opt-in (`never`), so a run without -t does nothing. Jobs that change
+# the directory run ONCE, on the PDC emulator (ad_dcs[0]); AD replicates the
+# rest. The DNS Analytical log is per DC and runs on every DC.
+#
+#   -t dhcp             DHCP static-range exclusions from dhcp_scopes
+#   -t audit            join delegation, Protected Users and service-account
+#                       posture. REPORT ONLY, changes nothing
+#   -t join-delegation  give ad_join_account the computer-join rights on
+#                       both computer OUs (what -t audit checks)
+#   -t host-groups      lnx-<host>-users / lnx-<host>-admins for every NixOS
+#                       host in ../flake.nix (nixosConfigurations)
+#   -t svc-posture      service accounts: AES only, not delegatable
+#   -t ldap-binds       read-only LDAP bind accounts (svc-wazuh-ldap,
+#                       svc-netbox-ldap) for when Wazuh and NetBox arrive
+#   -t user-mail        fill in the mail attribute from ad_user_mail
+#   -t ca-check         list the CAs in AD and on loom, and check
+#                       ad_ca_subject_match against them. REPORT ONLY
+#   -t ca-chain         export the forest CA chain to files/pki/
+#   -t dns-log          Microsoft-Windows-DNSServer/Analytical enabled
+# ============================================================================
+- name: AD maintenance
+  hosts: domain_controllers
+  gather_facts: false
+  vars:
+    # ansible_host is the address in hosts.yml; ad_dcs[0] carries both name and ip.
+    ad_is_primary_dc: >-
+      {{ ansible_host in [ad_dcs[0].ip, ad_dcs[0].name]
+         or inventory_hostname == ad_dcs[0].name.split('.')[0] }}
+    # Accounts that must stay OUT of Protected Users for WinRM/NTLM and adcli
+    # to work, and that must carry AccountNotDelegated + AES-only (24).
+    ad_audit_service_accounts:
+      - svc-ansible
+      - svc-lnx-join
+    # Read-only LDAP bind accounts created by -t ldap-binds, in
+    # ad_service_account_ou: AES only, not delegatable, password never
+    # expires, no group membership. Nothing uses them yet; they are ready for
+    # Wazuh and NetBox. The password is set on create only; rotate it with
+    # -e ad_ldap_bind_rotate=true.
+    ad_ldap_bind_accounts:
+      - name: svc-wazuh-ldap
+        description: "Wazuh indexer LDAP realm, read-only bind"
+        password: "{{ vault_wazuh_ldap_bind_password | default('') }}"
+      - name: svc-netbox-ldap
+        description: "NetBox django-auth-ldap, read-only bind"
+        password: "{{ vault_netbox_ldap_bind_password | default('') }}"
+    ad_ldap_bind_rotate: false
+    # The repo root: the directory that holds flake.nix.
+    ad_flake_dir: "{{ (playbook_dir ~ '/..') | realpath }}"
+  tasks:
+
+    # ------------------------------------------------------------------ dhcp
+    - name: DHCP | The scopes are declared
+      ansible.builtin.assert:
+        that: dhcp_scopes is defined and dhcp_scopes | length > 0
+        fail_msg: >-
+          dhcp_scopes is empty for {{ domain_name }}. Fill it in
+          group_vars/patchwork.yml from Get-DhcpServerv4Scope on loom.
+      when: ad_is_primary_dc
+      tags: [dhcp, never]
+
+    - name: DHCP | Ensure the static-range exclusions exist
+      ansible.windows.win_powershell:
+        script: |
+          $Ansible.Changed = $false
+          $scope = "{{ item.0.scope_id }}"
+          $start = "{{ item.1.start }}"; $end = "{{ item.1.end }}"
+          $have = Get-DhcpServerv4ExclusionRange -ScopeId $scope -ErrorAction Stop |
+                  Where-Object { $_.StartRange.ToString() -eq $start -and $_.EndRange.ToString() -eq $end }
+          if (-not $have) {
+            Add-DhcpServerv4ExclusionRange -ScopeId $scope -StartRange $start -EndRange $end
+            $Ansible.Changed = $true
+          }
+          [PSCustomObject]@{ scope = $scope; range = "$start-$end"; created = [bool](-not $have) }
+      loop: "{{ dhcp_scopes | subelements('exclusions') }}"
+      loop_control:
+        label: "{{ item.0.scope_id }} {{ item.1.start }}-{{ item.1.end }}"
+      when: ad_is_primary_dc
+      tags: [dhcp, never]
+
+    # ----------------------------------------------------------------- audit
+    - name: Audit | Join delegation, Protected Users, service-account posture
+      ansible.windows.win_powershell:
+        script: |
+          $Ansible.Changed = $false
+          Import-Module ActiveDirectory
+          $findings = @()
+
+          # 1. Join delegation: can the join account create/delete computers
+          #    in both computer OUs?
+          $joinAcct = "{{ ad_join_account }}"
+          $computerGuid = [Guid]"bf967a86-0de6-11d0-a285-00aa003049e2"
+          foreach ($ou in @("{{ ad_computer_ou_client }}", "{{ ad_computer_ou_server }}")) {
+            if (-not $ou) { $findings += "computer OU not set in group_vars/patchwork.yml"; continue }
+            $acl = Get-Acl -Path "AD:\$ou"
+            $ok = $acl.Access | Where-Object {
+              $_.IdentityReference -like "*\$joinAcct" -and
+              $_.AccessControlType -eq 'Allow' -and
+              $_.ObjectType -eq $computerGuid -and
+              ($_.ActiveDirectoryRights -band [System.DirectoryServices.ActiveDirectoryRights]::CreateChild)
+            }
+            if (-not $ok) { $findings += "$joinAcct cannot create computer objects in $ou" }
+          }
+
+          # 2. Protected Users: list members, flag any service account.
+          $pu = @()
+          try { $pu = Get-ADGroupMember -Identity 'Protected Users' | Select-Object -ExpandProperty SamAccountName } catch {}
+          foreach ($svc in @({{ ad_audit_service_accounts | map('tojson') | join(', ') }})) {
+            if ($pu -contains $svc) { $findings += "$svc is in Protected Users (breaks NTLM/WinRM and adcli)" }
+          }
+
+          # 3. Service-account posture: AES-only, not delegatable, not expired.
+          $posture = @()
+          foreach ($svc in @({{ ad_audit_service_accounts | map('tojson') | join(', ') }})) {
+            $u = Get-ADUser -Filter "SamAccountName -eq '$svc'" -Properties msDS-SupportedEncryptionTypes, AccountNotDelegated, PasswordNeverExpires, Enabled
+            if (-not $u) { $findings += "$svc does not exist in {{ domain_name }}"; continue }
+            $enc = $u.'msDS-SupportedEncryptionTypes'
+            if ($enc -ne 24) { $findings += "$svc msDS-SupportedEncryptionTypes is $enc, standard is 24 (AES only)" }
+            if (-not $u.AccountNotDelegated) { $findings += "$svc is delegatable (AccountNotDelegated is false)" }
+            if (-not $u.Enabled) { $findings += "$svc is disabled" }
+            $posture += [PSCustomObject]@{ account = $svc; enc = $enc; notDelegated = $u.AccountNotDelegated; enabled = $u.Enabled }
+          }
+
+          [PSCustomObject]@{
+            protectedUsers = $pu
+            posture        = $posture
+            findings       = $findings
+          }
+      register: ad_audit
+      when: ad_is_primary_dc
+      tags: [audit, never]
+
+    - name: Audit | Report
+      ansible.builtin.debug:
+        msg:
+          domain: "{{ domain_name }}"
+          protected_users: "{{ ad_audit.output[0].protectedUsers }}"
+          service_accounts: "{{ ad_audit.output[0].posture }}"
+          findings: "{{ ad_audit.output[0].findings }}"
+      when: ad_is_primary_dc
+      tags: [audit, never]
+
+    - name: Audit | Fail on findings when asked (-e ad_audit_strict=true)
+      ansible.builtin.assert:
+        that: ad_audit.output[0].findings | length == 0
+        fail_msg: "{{ ad_audit.output[0].findings }}"
+      when:
+        - ad_is_primary_dc
+        - ad_audit_strict | default(false) | bool
+      tags: [audit, never]
+
+    # ------------------------------------------------------- join-delegation
+    # Enforce what -t audit checks: ad_join_account can create and delete
+    # computer objects in both computer OUs, and can manage the attributes a
+    # join writes on the computer objects below them (reset password,
+    # validated DNS host name, validated SPN, account restrictions). ACEs are
+    # added one by one and only when missing, so a rerun changes nothing and
+    # hand-made extra rights survive.
+    - name: Join delegation | ad_join_account can join computers
+      ansible.windows.win_powershell:
+        script: |
+          $Ansible.Changed = $false
+          Import-Module ActiveDirectory
+          $acct = Get-ADUser -Identity "{{ ad_join_account }}"
+          $sid  = [System.Security.Principal.SecurityIdentifier]$acct.SID
+          $nt   = $sid.Translate([System.Security.Principal.NTAccount])
+          $computer  = [Guid]"bf967a86-0de6-11d0-a285-00aa003049e2"  # computer class
+          $resetPwd  = [Guid]"00299570-246d-11d0-a768-00aa006e0529"  # Reset Password
+          $dnsHost   = [Guid]"72e39547-7b18-11d1-adef-00c04fd8d5cd"  # Validated DNS host name
+          $spn       = [Guid]"f3a64788-5306-11d1-a9c5-0000f80367c1"  # Validated SPN
+          $acctRestr = [Guid]"4c164200-20c0-11d0-a768-00aa006e0529"  # Account Restrictions set
+          $desc = [System.DirectoryServices.ActiveDirectorySecurityInheritance]::Descendents
+          $none = [System.DirectoryServices.ActiveDirectorySecurityInheritance]::None
+          $added = @()
+          foreach ($ou in @("{{ ad_computer_ou_client }}", "{{ ad_computer_ou_server }}")) {
+              $acl = Get-Acl -Path "AD:\$ou"
+              $want = @(
+                  (New-Object System.DirectoryServices.ActiveDirectoryAccessRule($sid, 'CreateChild, DeleteChild', 'Allow', $computer, $none)),
+                  (New-Object System.DirectoryServices.ActiveDirectoryAccessRule($sid, 'ExtendedRight', 'Allow', $resetPwd, $desc, $computer)),
+                  (New-Object System.DirectoryServices.ActiveDirectoryAccessRule($sid, 'Self', 'Allow', $dnsHost, $desc, $computer)),
+                  (New-Object System.DirectoryServices.ActiveDirectoryAccessRule($sid, 'Self', 'Allow', $spn, $desc, $computer)),
+                  (New-Object System.DirectoryServices.ActiveDirectoryAccessRule($sid, 'ReadProperty, WriteProperty', 'Allow', $acctRestr, $desc, $computer))
+              )
+              $dirty = $false
+              foreach ($w in $want) {
+                  $have = $acl.Access | Where-Object {
+                      $_.IdentityReference -eq $nt -and
+                      $_.AccessControlType -eq 'Allow' -and
+                      $_.ObjectType -eq $w.ObjectType -and
+                      $_.InheritanceType -eq $w.InheritanceType -and
+                      (($_.ActiveDirectoryRights -band $w.ActiveDirectoryRights) -eq $w.ActiveDirectoryRights)
+                  }
+                  if (-not $have) {
+                      $acl.AddAccessRule($w)
+                      $added += "$ou :: $($w.ActiveDirectoryRights) $($w.ObjectType)"
+                      $dirty = $true
+                  }
+              }
+              if ($dirty) {
+                  Set-Acl -Path "AD:\$ou" -AclObject $acl
+                  $Ansible.Changed = $true
+              }
+          }
+          $Ansible.Result = $added
+      register: ad_join_delegation
+      when: ad_is_primary_dc
+      tags: [join-delegation, never]
+
+    - name: Join delegation | Report
+      ansible.builtin.debug:
+        msg:
+          domain: "{{ domain_name }}"
+          aces_added: "{{ ad_join_delegation.result }}"
+      when: ad_is_primary_dc
+      tags: [join-delegation, never]
+
+    # ----------------------------------------------------------- host-groups
+    # One lnx-<host>-users and one lnx-<host>-admins group per NixOS host, in
+    # the Box-Users / Box-Admins OUs. modules/ad-join points sssd and sudo at
+    # these names. The groups are created empty; the operator sets membership.
+    #
+    # The host list comes from the flake, not from a hand-kept list:
+    #   nix eval --json <repo>#nixosConfigurations --apply builtins.attrNames
+    # So a host added to `hosts` in flake.nix gets its groups on the next run.
+    # Nix reads a git flake from the git index: flake.nix must be tracked
+    # (staged is enough), and an uncommitted change to it counts. Override the
+    # list with -e '{"ad_linux_hosts": ["name"]}'.
+    - name: Host groups | Read the NixOS host names from the flake
+      ansible.builtin.set_fact:
+        ad_linux_hosts: >-
+          {{ lookup('ansible.builtin.pipe',
+                    'nix --extra-experimental-features "nix-command flakes" eval --json '
+                    ~ (ad_flake_dir ~ '#nixosConfigurations') | quote
+                    ~ ' --apply builtins.attrNames')
+             | from_json | sort }}
+      run_once: true
+      tags: [host-groups, never]
+
+    - name: Host groups | The flake names at least one host
+      ansible.builtin.assert:
+        that: ad_linux_hosts | length > 0
+        fail_msg: "nix eval returned no nixosConfigurations in {{ ad_flake_dir }}."
+      run_once: true
+      tags: [host-groups, never]
+
+    - name: Host groups | lnx-<host>-users and lnx-<host>-admins exist
+      ansible.windows.win_powershell:
+        parameters:
+          hosts_json: "{{ ad_linux_hosts | to_json }}"
+        script: |
+          param([string]$hosts_json)
+          $Ansible.Changed = $false
+          Import-Module ActiveDirectory
+          $created = @()
+          foreach ($h in ($hosts_json | ConvertFrom-Json)) {
+              foreach ($kind in @('users', 'admins')) {
+                  $name = "lnx-$($h.ToLower())-$kind"
+                  $ou = if ($kind -eq 'users') { "{{ ad_group_ou_users }}" } else { "{{ ad_group_ou_admins }}" }
+                  $g = Get-ADGroup -Filter "SamAccountName -eq '$name'"
+                  if (-not $g) {
+                      New-ADGroup -Name $name -SamAccountName $name `
+                          -GroupCategory Security -GroupScope Global -Path $ou `
+                          -Description $(if ($kind -eq 'users') { "Linux logon on $h" } else { "Linux sudo on $h" })
+                      $created += $name
+                      $Ansible.Changed = $true
+                  }
+              }
+          }
+          $Ansible.Result = $created
+      register: ad_host_groups
+      when: ad_is_primary_dc
+      tags: [host-groups, never]
+
+    - name: Host groups | Report
+      ansible.builtin.debug:
+        msg:
+          domain: "{{ domain_name }}"
+          hosts: "{{ ad_linux_hosts }}"
+          groups_created: "{{ ad_host_groups.result }}"
+      when: ad_is_primary_dc
+      tags: [host-groups, never]
+
+    # ------------------------------------------------------------ svc-posture
+    # Enforce what -t audit checks on the service accounts: AES-only Kerberos
+    # keys (msDS-SupportedEncryptionTypes 24) and AccountNotDelegated. Neither
+    # touches NTLM, so WinRM for svc-ansible keeps working, and adcli joins
+    # with svc-lnx-join use AES already. Idempotent; safe to rerun.
+    - name: Service posture | AES-only and not delegatable
+      ansible.windows.win_powershell:
+        script: |
+          $Ansible.Changed = $false
+          Import-Module ActiveDirectory
+          $changed = @()
+          foreach ($name in @({{ ad_audit_service_accounts | map('tojson') | join(', ') }})) {
+            $u = Get-ADUser -Filter "SamAccountName -eq '$name'" -Properties msDS-SupportedEncryptionTypes, AccountNotDelegated
+            if (-not $u) { continue }
+            if ($u.'msDS-SupportedEncryptionTypes' -ne 24) {
+              Set-ADUser -Identity $name -Replace @{ 'msDS-SupportedEncryptionTypes' = 24 }
+              $changed += "$name enc->24"
+            }
+            if (-not $u.AccountNotDelegated) {
+              Set-ADUser -Identity $name -AccountNotDelegated $true
+              $changed += "$name notDelegated->true"
+            }
+          }
+          if ($changed.Count -gt 0) { $Ansible.Changed = $true }
+          $Ansible.Result = $changed
+      register: ad_svc_posture
+      when: ad_is_primary_dc
+      tags: [svc-posture, never]
+
+    - name: Service posture | Report
+      ansible.builtin.debug:
+        var: ad_svc_posture.result
+      when: ad_is_primary_dc
+      tags: [svc-posture, never]
+
+    # ------------------------------------------------------------ user-mail
+    # Every consumer that reads a user out of AD reads the address from the
+    # mail attribute. The accounts themselves are made by hand in the
+    # console; this only fills in the one attribute, and only for the
+    # accounts that ad_user_mail names.
+    - name: User mail | Fill in the mail attribute
+      ansible.windows.win_powershell:
+        script: |
+          $Ansible.Changed = $false
+          Import-Module ActiveDirectory
+          $changed = @()
+          $wanted = @{
+          {% for name, address in (ad_user_mail | default({})) | dictsort %}
+            {{ name | tojson }} = {{ address | tojson }}
+          {% endfor %}
+          }
+          foreach ($name in $wanted.Keys) {
+            $u = Get-ADUser -Filter "SamAccountName -eq '$name'" -Properties mail
+            # A name with no account is reported, not created. This play does
+            # not make people; it only fills in an attribute.
+            if (-not $u) { $changed += "$name absent"; continue }
+            if ($u.mail -ne $wanted[$name]) {
+              Set-ADUser -Identity $name -EmailAddress $wanted[$name]
+              $changed += "$name mail->$($wanted[$name])"
+              $Ansible.Changed = $true
+            }
+          }
+          $Ansible.Result = $changed
+      register: ad_user_mail_result
+      when:
+        - ad_is_primary_dc
+        - (ad_user_mail | default({})) | length > 0
+      tags: [user-mail, never]
+
+    - name: User mail | Report
+      ansible.builtin.debug:
+        var: ad_user_mail_result.result
+      when:
+        - ad_is_primary_dc
+        - (ad_user_mail | default({})) | length > 0
+      tags: [user-mail, never]
+
+    # ------------------------------------------------------------ ldap-binds
+    - name: LDAP binds | The service-account OU and the passwords are set
+      ansible.builtin.assert:
+        that:
+          - ad_service_account_ou is defined and ad_service_account_ou | length > 0
+          - ad_ldap_bind_accounts | map(attribute='password') | select('eq', '') | list | length == 0
+        fail_msg: >-
+          Set ad_service_account_ou in group_vars/patchwork.yml and put the
+          bind passwords in the vault (vault_wazuh_ldap_bind_password,
+          vault_netbox_ldap_bind_password) before creating the accounts.
+      when: ad_is_primary_dc
+      tags: [ldap-binds, never]
+
+    - name: LDAP binds | Accounts exist
+      microsoft.ad.user:
+        name: "{{ item.name }}"
+        sam_account_name: "{{ item.name }}"
+        upn: "{{ item.name }}@{{ domain_name }}"
+        path: "{{ ad_service_account_ou }}"
+        description: "{{ item.description }}"
+        password: "{{ item.password }}"
+        update_password: "{{ 'always' if ad_ldap_bind_rotate | bool else 'on_create' }}"
+        password_never_expires: true
+        user_cannot_change_password: true
+        enabled: true
+        attributes:
+          set:
+            msDS-SupportedEncryptionTypes: 24
+        state: present
+      loop: "{{ ad_ldap_bind_accounts }}"
+      loop_control:
+        label: "{{ item.name }}"
+      no_log: true
+      when: ad_is_primary_dc
+      tags: [ldap-binds, never]
+
+    # microsoft.ad.user has no AccountNotDelegated option.
+    - name: LDAP binds | Accounts are not delegatable
+      ansible.windows.win_powershell:
+        script: |
+          $Ansible.Changed = $false
+          Import-Module ActiveDirectory
+          foreach ($name in @({{ ad_ldap_bind_accounts | map(attribute='name') | map('tojson') | join(', ') }})) {
+            $u = Get-ADUser -Identity $name -Properties AccountNotDelegated
+            if (-not $u.AccountNotDelegated) {
+              Set-ADUser -Identity $name -AccountNotDelegated $true
+              $Ansible.Changed = $true
+            }
+          }
+      when: ad_is_primary_dc
+      tags: [ldap-binds, never]
+
+    # -------------------------------------------------------------- ca-check
+    # Read only. The enterprise CAs that AD publishes, and every CA
+    # certificate in loom's Root and CA stores, with a mark on the ones that
+    # ad_ca_subject_match selects. Run it before the first -t ca-chain.
+    - name: CA check | Read the CA names
+      ansible.windows.win_powershell:
+        script: |
+          $Ansible.Changed = $false
+          Import-Module ActiveDirectory
+          $match = {{ ad_ca_subject_match | tojson }}
+          $config = (Get-ADRootDSE).configurationNamingContext
+          $base = "CN=Enrollment Services,CN=Public Key Services,CN=Services,$config"
+          $enroll = Get-ADObject -SearchBase $base -Filter "objectClass -eq 'pKIEnrollmentService'" `
+            -Properties dNSHostName, cACertificateDN |
+            ForEach-Object {
+              [PSCustomObject]@{
+                name = $_.Name; host = $_.dNSHostName; subject = $_.cACertificateDN
+                matches = ($_.cACertificateDN -match $match)
+              }
+            }
+          $stores = foreach ($store in "CA", "Root") {
+            Get-ChildItem "Cert:\LocalMachine\$store" | Where-Object { $_.Subject -ne $_.Issuer -or $store -eq 'Root' } |
+              ForEach-Object {
+                [PSCustomObject]@{
+                  store = $store; subject = $_.Subject; notAfter = $_.NotAfter.ToString('s')
+                  matches = ($_.Subject -match $match)
+                }
+              }
+          }
+          [PSCustomObject]@{
+            pattern            = $match
+            enrollmentServices = @($enroll)
+            matchingStoreCerts = @($stores | Where-Object matches)
+            # Everything else that is not a well-known public root.
+            otherCaCerts       = @($stores | Where-Object {
+                -not $_.matches -and $_.subject -notmatch ('Microsoft|DigiCert|VeriSign|Thawte|GlobalSign|Entrust|' +
+                  'Starfield|Go Daddy|Baltimore|ISRG|USERTrust|Certum|AAA|COMODO|QuoVadis|Symantec|Sectigo|' +
+                  'SecureTrust|Hotspot|Federal|Class 3')
+              })
+          }
+      register: ad_ca_check
+      when: ad_is_primary_dc
+      tags: [ca-check, never]
+
+    - name: CA check | Report
+      ansible.builtin.debug:
+        var: ad_ca_check.output
+      when: ad_is_primary_dc
+      tags: [ca-check, never]
+
+    - name: CA check | The pattern selects the forest CAs
+      ansible.builtin.assert:
+        that:
+          - ad_ca_check.output[0].enrollmentServices | length > 0
+          - ad_ca_check.output[0].enrollmentServices | selectattr('matches') | list | length == ad_ca_check.output[0].enrollmentServices | length
+          - ad_ca_check.output[0].matchingStoreCerts | length > 0
+        fail_msg: >-
+          ad_ca_subject_match ({{ ad_ca_subject_match }}) does not select every
+          enterprise CA, or selects no certificate in loom's stores. Read the
+          report above and set ad_ca_subject_match in group_vars/all/main.yml
+          to match the issuing CA and the root CA.
+        success_msg: ad_ca_subject_match selects every enterprise CA.
+      when: ad_is_primary_dc
+      tags: [ca-check, never]
+
+    # -------------------------------------------------------------- ca-chain
+    # The forest PKI chain (issuing CA + root) as PEM, read from the PDC's
+    # machine stores. Public material, so it lives in the repo under
+    # files/pki/. LDAPS clients verify the DCs with it.
+    # Rerun after a CA renewal.
+    - name: CA chain | Read the forest CA certificates from the PDC
+      ansible.windows.win_powershell:
+        script: |
+          $Ansible.Changed = $false
+          $pem = ""
+          $certs = foreach ($store in "CA", "Root") {
+            Get-ChildItem "Cert:\LocalMachine\$store" |
+              Where-Object { $_.Subject -match {{ ad_ca_subject_match | tojson }} }
+          }
+          # Root last. Order does not matter for an LDAPS trust list, but a
+          # client that appends the bundle to a leaf certificate to serve a
+          # chain needs the intermediate first.
+          $ordered = $certs | Sort-Object Thumbprint -Unique |
+            Sort-Object { [int]($_.Subject -eq $_.Issuer) }
+          $ordered | ForEach-Object {
+            $pem += "# $($_.Subject)`n-----BEGIN CERTIFICATE-----`n"
+            $pem += [Convert]::ToBase64String($_.RawData, 'InsertLineBreaks') + "`n"
+            $pem += "-----END CERTIFICATE-----`n"
+          }
+          $Ansible.Result = ($pem -replace "`r", "")
+      register: ad_ca_chain
+      when: ad_is_primary_dc
+      tags: [ca-chain, never]
+
+    - name: CA chain | Refuse an empty export
+      ansible.builtin.assert:
+        that: ad_ca_chain.result is search('BEGIN CERTIFICATE')
+        fail_msg: >-
+          No certificate on {{ inventory_hostname }} matched
+          ad_ca_subject_match ({{ ad_ca_subject_match }}). Check
+          group_vars/patchwork.yml against the CA names in the PDC's Root and CA stores.
+      when: ad_is_primary_dc
+      tags: [ca-chain, never]
+
+    - name: CA chain | The output directory exists on the control node
+      ansible.builtin.file:
+        path: "{{ ad_ca_chain_file | dirname }}"
+        state: directory
+        mode: "0755"
+      delegate_to: localhost
+      become: false
+      vars:
+        ansible_python_interpreter: "{{ ansible_playbook_python }}"
+      when: ad_is_primary_dc
+      tags: [ca-chain, never]
+
+    - name: CA chain | Write {{ ad_ca_chain_file }} on the control node
+      ansible.builtin.copy:
+        content: "{{ ad_ca_chain.result }}"
+        dest: "{{ ad_ca_chain_file }}"
+        mode: "0644"
+      delegate_to: localhost
+      become: false
+      vars:
+        ansible_python_interpreter: "{{ ansible_playbook_python }}"
+      when: ad_is_primary_dc
+      tags: [ca-chain, never]
+
+    # --------------------------------------------------------------- dns-log
+    # wevtutil, not Set-DnsServerDiagnostics: the Analytical channel is an ETW
+    # log and the DNS diagnostics cmdlet does not enable it. Nothing ships
+    # this log off the DCs yet; it is for troubleshooting on the DC.
+    - name: DNS log | Microsoft-Windows-DNSServer/Analytical is enabled
+      ansible.windows.win_powershell:
+        script: |
+          $Ansible.Changed = $false
+          $log = 'Microsoft-Windows-DNSServer/Analytical'
+          $state = (wevtutil gl $log | Select-String '^enabled:').ToString().Split(':')[1].Trim()
+          if ($state -ne 'true') {
+            wevtutil sl $log /e:true /q:true
+            $Ansible.Changed = $true
+          }
+          [PSCustomObject]@{ log = $log; wasEnabled = ($state -eq 'true') }
+      tags: [dns-log, never]

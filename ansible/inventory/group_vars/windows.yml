@@ -1,0 +1,29 @@
+---
+# ============================================================================
+# Windows function group: CONNECTION settings only.
+# ---------------------------------------------------------------------------
+# The account comes from group_vars/patchwork.yml (ad_svc_ansible_account),
+# never from here.
+#
+# Transport is NTLM over plain HTTP on 5985, with no Kerberos and no listener
+# certificate. NTLM message-encrypts the payload, so HTTP is acceptable inside
+# the lab. The control node needs only `pywinrm`. svc-ansible is kept out of
+# Protected Users on purpose, so NTLM keeps working.
+#
+# Each Windows host needs the listener and the firewall rule once:
+# bootstrap/Enable-AnsibleWinRM.ps1, or the same settings in a GPO.
+# ============================================================================
+ansible_connection:      winrm
+ansible_port:            5985
+ansible_winrm_scheme:    http
+ansible_winrm_transport: ntlm
+ansible_user:            "{{ ad_svc_ansible_account }}"
+ansible_password:        "{{ ad_svc_ansible_password }}"
+
+# Windows hosts never sudo, and ansible_become is left unset on purpose.
+#
+# Do not set `ansible_become: false` here. It looks like a harmless copy of
+# the default, but a variable outranks the `become:` keyword. It silently
+# turns off every task-level `become: true` + `become_method: runas` block.
+# The task still runs, but in the plain WinRM network logon, and a remote
+# AD CS call then reaches the CA as ANONYMOUS LOGON.

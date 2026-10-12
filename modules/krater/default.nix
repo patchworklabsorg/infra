@@ -1,22 +1,18 @@
 # modules/krater/default.nix
-# Krater — the Project Ganymede portal (proposal review, compute budgets, gallery) — as Docker
-# containers on a dedicated network, optionally next to the SkyPilot API server it enforces budgets on. Exported
-# by this flake as nixosModules.krater; alastor imports nixosModules.krater-alastor
-# (hosts/alastor/krater.nix), which sets the instance options below.
+# Krater — the Project Ganymede portal (proposal review, compute budgets, gallery) — as Docker containers
+# on a dedicated network. Exported by this
+# flake as nixosModules.krater; alastor imports nixosModules.krater-alastor (hosts/alastor/krater.nix), which
+# sets the instance options below.
 #
 # Containers (network `krater`, state under /var/lib/krater):
 #   krater-db          Postgres 16
 #   krater-storage     SeaweedFS S3 gateway for gallery screenshots (temporary; see Krater's SPEC)
 #   krater-web         the portal; runs migrations first        127.0.0.1:<port>
-#   krater-worker      procrastinate worker (reconciler, Slack, pricing)
-#   krater-auth-proxy  oauth2-proxy: members sign in to SkyPilot with Weave   (skypilot.enable only)
-#   krater-skypilot    SkyPilot API server, Vast only, 127.0.0.1:<skypilot.port> (skypilot.enable only)
+#   krater-worker      procrastinate worker (Slack, pricing, events to Quilt)
 # plus krater-build (builds the image) and krater-backup (nightly pg_dump).
 #
-# SkyPilot is off by default (`skypilot.enable = false`): its Vast support can't rent a machine and
-# copies the Vast key onto members' hosts, so Krater runs with KRATER_COMPUTE_MODE=off until Krater
-# Compute, its own Vast layer, replaces it. Off, Krater launches nothing and needs none of the SkyPilot
-# secrets, host files, Weave app or hostname below.
+# This release of Krater launches no machines (KRATER_COMPUTE_MODE=off). Krater Compute, its own Vast
+# layer, adds the options for renting in its own release.
 #
 # No registry: the image is built on this host from source. krater-build fetches one commit of
 # `repo` (a full SHA, read from /var/lib/krater/source-rev, falling back to `rev`), builds it with the
@@ -28,8 +24,7 @@
 # krater-web requires krater-build, so a restart alone also builds, but with the site down meanwhile.
 #
 # Secrets: one env file (`environmentFile`, an agenix secret), split per container at start into
-# /run/krater/*.env so each container gets only its own keys. In particular the SkyPilot server, which
-# runs members' work, never sees Krater's session key or database password. The file must contain:
+# /run/krater/*.env so each container gets only its own keys. The file must contain:
 #   POSTGRES_PASSWORD=...                     # URL-safe (token_urlsafe/hex): it goes into a database URL
 #   KRATER_SECRET_KEY=...                     # >= 32 chars
 #   KRATER_WEAVE_CLIENT_SECRET=...
@@ -37,15 +32,6 @@
 #   KRATER_SLACK_SIGNING_SECRET=...
 #   KRATER_S3_ACCESS_KEY_ID=...
 #   KRATER_S3_SECRET_ACCESS_KEY=...
-# and, only with skypilot.enable:
-#   KRATER_SKYPILOT_POLICY_TOKEN=...          # >= 32 chars
-#   KRATER_SKYPILOT_AUTH_CLIENT_SECRET=...    # the SkyPilot sign-in app's secret in Weave
-#   KRATER_SKYPILOT_AUTH_COOKIE_SECRET=...    # 32 random bytes, urlsafe base64
-# With skypilot.enable, two more values only exist after the first start, so they're host state files
-# rather than agenix secrets (no infra round trip to set them):
-#   /var/lib/krater/secrets/skypilot-basic-auth-password   present only for the one-time bootstrap
-#   /var/lib/krater/secrets/skypilot-service-token         Krater's SkyPilot admin token
-# The bootstrap is in Krater's docs/dev/production.md.
 {
   config,
   lib,
@@ -59,8 +45,6 @@ let
   stateDir = "/var/lib/krater";
   secretsDir = "${stateDir}/secrets";
   revFile = "${stateDir}/source-rev";
-  serviceTokenFile = "${secretsDir}/skypilot-service-token";
-  basicAuthFile = "${secretsDir}/skypilot-basic-auth-password";
   envDir = "/run/krater";
 
   baseUrl = "https://${cfg.domain}";
@@ -70,26 +54,20 @@ let
   appEnv = {
     KRATER_ENV = "production";
     KRATER_BASE_URL = baseUrl;
-    # The launch gate's base URL. Members' own `sky` CLIs call it, so it's the public one.
-    KRATER_PUBLIC_URL = baseUrl;
     # Proxies that append to X-Forwarded-For: Traefik. Raise it through extraEnv when another proxy
     # (Cloudflare) is in front too; rate limits key on the client address this picks out.
     KRATER_TRUSTED_PROXY_COUNT = "1";
     KRATER_WEAVE_MODE = "live";
     KRATER_WEAVE_ISSUER = cfg.weave.issuer;
     KRATER_WEAVE_CLIENT_ID = cfg.weave.clientId;
-    KRATER_COMPUTE_MODE = if cfg.skypilot.enable then "skypilot" else "off";
-    # Live even with SkyPilot off: the budget estimator's GPU prices come from SkyPilot's public
-    # catalog, which needs no server.
-    KRATER_SKYPILOT_MODE = "live";
+    KRATER_COMPUTE_MODE = "off";
+    # Live even with compute off: the budget estimator's GPU prices come from a public catalog on GitHub.
+    KRATER_PRICING_MODE = "live";
     KRATER_SLACK_MODE = "live";
     KRATER_SLACK_FEED_CHANNEL_ID = cfg.slackFeedChannelId;
     KRATER_S3_MODE = "live";
     KRATER_S3_ENDPOINT_URL = "http://krater-storage:8333";
     KRATER_S3_PUBLIC_ENDPOINT_URL = "https://${cfg.storage.domain}";
-  }
-  // lib.optionalAttrs cfg.skypilot.enable {
-    KRATER_SKYPILOT_API_URL = "http://krater-skypilot:46580";
   }
   // cfg.extraEnv;
 
@@ -115,8 +93,8 @@ let
       to = k;
     }) keys;
 
-  # The portal and worker get every KRATER_ key except the SkyPilot sign-in proxy's, plus the
-  # database URL (built from POSTGRES_PASSWORD so the two can't drift) and the SkyPilot token.
+  # The portal and worker get every KRATER_ key of the env file, plus the database URL (built from
+  # POSTGRES_PASSWORD so the two can't drift).
   writeAppEnv = pkgs.writeShellScript "krater-app-env" ''
     set -euo pipefail
     install -d -m 0700 ${envDir}
@@ -127,13 +105,8 @@ let
       exit 1
     fi
     {
-      grep -E '^KRATER_' ${cfg.environmentFile} | grep -vE '^KRATER_SKYPILOT_AUTH_(CLIENT_SECRET|COOKIE_SECRET)=' || true
+      grep -E '^KRATER_' ${cfg.environmentFile} || true
       echo "KRATER_DATABASE_URL=postgresql+psycopg://krater:$password@krater-db:5432/krater"
-      ${lib.optionalString cfg.skypilot.enable ''
-        if [ -s ${serviceTokenFile} ]; then
-          echo "KRATER_SKYPILOT_SERVICE_TOKEN=$(cat ${serviceTokenFile})"
-        fi
-      ''}
     } > ${envDir}/app.env
   '';
 
@@ -220,16 +193,10 @@ in
       description = "Env file (an agenix secret) with the keys listed at the top of this module.";
     };
 
-    vastKeyFile = lib.mkOption {
-      type = lib.types.nullOr lib.types.path;
-      default = null;
-      description = "File holding the Vast.ai API key SkyPilot launches with (an agenix secret).";
-    };
-
     domain = lib.mkOption {
       type = lib.types.str;
       example = "krater.patchworklabs.org";
-      description = "Public hostname of the portal. Slack and members' `sky` CLIs call it too.";
+      description = "Public hostname of the portal. Slack calls it too.";
     };
 
     port = lib.mkOption {
@@ -254,11 +221,6 @@ in
         type = lib.types.str;
         description = "Client id of Krater's Weave app (redirect URI https://<domain>/auth/callback).";
       };
-      skypilotClientId = lib.mkOption {
-        type = lib.types.str;
-        default = "";
-        description = "Client id of the separate Weave app for the SkyPilot sign-in proxy. Only with skypilot.enable.";
-      };
     };
 
     storage = {
@@ -279,35 +241,6 @@ in
       };
     };
 
-    skypilot = {
-      enable = lib.mkEnableOption ''
-        the SkyPilot API server and its sign-in proxy, with KRATER_COMPUTE_MODE=skypilot. Off, Krater
-        runs with KRATER_COMPUTE_MODE=off and launches nothing
-      '';
-      domain = lib.mkOption {
-        type = lib.types.nullOr lib.types.str;
-        default = null;
-        example = "krater-sky.patchworklabs.org";
-        description = "Public hostname of the SkyPilot API server (`sky api login -e https://<this>`). Only with enable.";
-      };
-      port = lib.mkOption {
-        type = lib.types.port;
-        default = 3012;
-        description = "Loopback host port for the SkyPilot API server (also used for the bootstrap).";
-      };
-      image = lib.mkOption {
-        type = lib.types.str;
-        # Krater pins SkyPilot in scripts/dev/skypilot-requirements.txt; keep this tag the same.
-        default = "berkeleyskypilot/skypilot:0.13.0";
-        description = "SkyPilot API server image.";
-      };
-      authProxyImage = lib.mkOption {
-        type = lib.types.str;
-        default = "quay.io/oauth2-proxy/oauth2-proxy:v7.6.0";
-        description = "oauth2-proxy image for the SkyPilot sign-in proxy.";
-      };
-    };
-
     postgresImage = lib.mkOption {
       type = lib.types.str;
       default = "postgres:16";
@@ -318,7 +251,7 @@ in
       type = lib.types.attrsOf lib.types.str;
       default = { };
       example = {
-        KRATER_SKYPILOT_BUDGET_WARN_PERCENT = "80";
+        KRATER_BUDGET_WARN_PERCENT = "80";
       };
       description = "Extra non-secret settings for the portal, worker and migrations.";
     };
@@ -349,8 +282,8 @@ in
 
     traefik = {
       enable = lib.mkEnableOption ''
-        a Traefik file-provider fragment (/etc/traefik/conf.d/krater.toml) routing the portal,
-        screenshot and SkyPilot hostnames
+        a Traefik file-provider fragment (/etc/traefik/conf.d/krater.toml) routing the portal and
+        storage hostnames
       '';
       certResolver = lib.mkOption {
         type = lib.types.str;
@@ -374,19 +307,10 @@ in
               assertion = cfg.weave.${name} != "";
               message = "patchwork.services.krater.weave.${name} must be set";
             })
-            (
-              [
-                "issuer"
-                "clientId"
-              ]
-              ++ lib.optional cfg.skypilot.enable "skypilotClientId"
-            )
-          ++ [
-            {
-              assertion = cfg.skypilot.enable -> cfg.skypilot.domain != null;
-              message = "patchwork.services.krater.skypilot.domain must be set when skypilot.enable is true";
-            }
-          ];
+            [
+              "issuer"
+              "clientId"
+            ];
 
         # ── State ───────────────────────────────────────────────────────────────
         # /var/lib/krater itself stays 0755 (as in the Weave module) so krater-deploy can reach
@@ -411,8 +335,7 @@ in
             RemainAfterExit = true;
             # Not backups/ or secrets/: StateDirectoryMode is reapplied on every start, and those
             # two stay 0700 (tmpfiles rules above).
-            StateDirectory =
-              "krater krater/db krater/storage" + lib.optionalString cfg.skypilot.enable " krater/skypilot";
+            StateDirectory = "krater krater/db krater/storage";
             StateDirectoryMode = "0755";
             ExecStart = pkgs.writeShellScript "krater-network-create" ''
               ${dockerBin} network inspect krater >/dev/null 2>&1 || \
@@ -626,111 +549,6 @@ in
         };
       }
 
-      # ── SkyPilot (only with skypilot.enable) ──────────────────────────────────
-      (lib.mkIf cfg.skypilot.enable {
-        # ── SkyPilot sign-in proxy ──────────────────────────────────────────────
-        # Any Weave user can sign in here; private per-project workspaces and Krater's launch gate do
-        # the limiting (Krater's docs/skypilot-integration.md section 0).
-        systemd.services.krater-auth-proxy = mkContainer {
-          name = "auth-proxy";
-          description = "Krater SkyPilot sign-in proxy (oauth2-proxy)";
-          preStart = [
-            (pull cfg.skypilot.authProxyImage)
-            (writeEnvScript "auth-proxy" [
-              {
-                from = "KRATER_SKYPILOT_AUTH_CLIENT_SECRET";
-                to = "OAUTH2_PROXY_CLIENT_SECRET";
-              }
-              {
-                from = "KRATER_SKYPILOT_AUTH_COOKIE_SECRET";
-                to = "OAUTH2_PROXY_COOKIE_SECRET";
-              }
-            ])
-          ];
-          start = ''
-            exec ${dockerBin} run \
-              --name krater-auth-proxy \
-              --network krater \
-              --env-file ${envDir}/auth-proxy.env \
-              ${
-                envArgs {
-                  OAUTH2_PROXY_HTTP_ADDRESS = "0.0.0.0:4180";
-                  OAUTH2_PROXY_UPSTREAMS = "http://krater-skypilot:46580";
-                  OAUTH2_PROXY_PROVIDER = "oidc";
-                  OAUTH2_PROXY_OIDC_ISSUER_URL = cfg.weave.issuer;
-                  OAUTH2_PROXY_CLIENT_ID = cfg.weave.skypilotClientId;
-                  OAUTH2_PROXY_REDIRECT_URL = "https://${cfg.skypilot.domain}/oauth2/callback";
-                  OAUTH2_PROXY_SCOPE = "openid email profile";
-                  OAUTH2_PROXY_EMAIL_DOMAINS = "*";
-                  OAUTH2_PROXY_CODE_CHALLENGE_METHOD = "S256";
-                  # SkyPilot reads X-Auth-Request-Email from /oauth2/auth; oauth2-proxy only sends it with
-                  # this on. Without it `sky api login` fails with a 500 (found on staging, 2026-10-10).
-                  OAUTH2_PROXY_SET_XAUTHREQUEST = "true";
-                  OAUTH2_PROXY_COOKIE_EXPIRE = "8h";
-                  OAUTH2_PROXY_COOKIE_SECURE = "true";
-                }
-              } \
-              --restart no \
-              ${cfg.skypilot.authProxyImage}
-          '';
-        };
-
-        # ── SkyPilot API server ─────────────────────────────────────────────────
-        systemd.services.krater-skypilot = mkContainer {
-          name = "skypilot";
-          description = "Krater SkyPilot API server";
-          after = [ "krater-auth-proxy.service" ];
-          requires = [ "krater-auth-proxy.service" ];
-          timeoutStart = "5min";
-          preStart = [
-            (pull cfg.skypilot.image)
-            # Only the policy token from the env file. Basic auth is on only while its password
-            # file exists: SkyPilot checks basic auth before asking auth-proxy, so leaving it on
-            # blocks every member's sign-in.
-            (pkgs.writeShellScript "krater-skypilot-env" ''
-              set -euo pipefail
-              install -d -m 0700 ${envDir}
-              umask 077
-              {
-                grep -E '^KRATER_SKYPILOT_POLICY_TOKEN=' ${cfg.environmentFile} || true
-                if [ -s ${basicAuthFile} ]; then
-                  echo "ENABLE_BASIC_AUTH=true"
-                  echo "SKYPILOT_BASIC_AUTH_PASSWORD=$(cat ${basicAuthFile})"
-                else
-                  echo "ENABLE_BASIC_AUTH=false"
-                fi
-              } > ${envDir}/skypilot.env
-            '')
-          ];
-          start = ''
-            exec ${dockerBin} run \
-              --name krater-skypilot \
-              --network krater \
-              --publish 127.0.0.1:${toString cfg.skypilot.port}:46580 \
-              --env-file ${envDir}/skypilot.env \
-              ${
-                envArgs {
-                  KRATER_PUBLIC_URL = baseUrl;
-                  ENABLE_SERVICE_ACCOUNTS = "true";
-                  SKYPILOT_AUTH_OAUTH2_PROXY_ENABLED = "true";
-                  SKYPILOT_AUTH_OAUTH2_PROXY_BASE_URL = "http://krater-auth-proxy:4180";
-                  SKYPILOT_BASIC_AUTH_USER = "admin";
-                }
-              } \
-              --volume ${stateDir}/skypilot:/root/.sky \
-              --volume ${./skypilot-start.sh}:/krater/skypilot-start.sh:ro \
-              ${
-                lib.optionalString (
-                  cfg.vastKeyFile != null
-                ) "--volume ${cfg.vastKeyFile}:/root/.config/vastai/vast_api_key:ro"
-              } \
-              --entrypoint /bin/sh \
-              --restart no \
-              ${cfg.skypilot.image} /krater/skypilot-start.sh
-          '';
-        };
-      })
-
       # ── CI deploy user ──────────────────────────────────────────────────────────
       (lib.mkIf (cfg.deployAuthorizedKeys != [ ]) {
         users.users.krater-deploy = {
@@ -757,8 +575,6 @@ in
       })
 
       # ── Traefik ───────────────────────────────────────────────────────────────
-      # With SkyPilot on, the launch gate (/internal/skypilot/policy) must stay reachable through the
-      # portal router: members' own `sky` CLIs call it before every launch.
       (lib.mkIf cfg.traefik.enable {
         environment.etc."traefik/conf.d/krater.toml".source =
           let
@@ -778,16 +594,10 @@ in
               routers = {
                 krater = router cfg.domain "krater";
                 krater-storage = router cfg.storage.domain "krater-storage";
-              }
-              // lib.optionalAttrs cfg.skypilot.enable {
-                krater-skypilot = router cfg.skypilot.domain "krater-skypilot";
               };
               services = {
                 krater = backend cfg.port;
                 krater-storage = backend cfg.storage.port;
-              }
-              // lib.optionalAttrs cfg.skypilot.enable {
-                krater-skypilot = backend cfg.skypilot.port;
               };
             };
           };

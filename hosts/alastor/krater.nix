@@ -9,7 +9,7 @@
 #   - Docker, with the buildx plugin (krater-build uses BuildKit)
 #   - Traefik with the file provider on /etc/traefik/conf.d and a `cloudflare`
 #     cert resolver and `hsts` middleware (infra's modules/traefik)
-#   - loopback ports 3010-3012 free (see the module's port options)
+#   - loopback ports 3010-3011 free (see the module's port options)
 #
 # Before the first deploy:
 #   - DNS for the two hostnames below (patchworklabsorg/dns)
@@ -17,10 +17,9 @@
 #   - secrets/krater-env.age
 # The full checklist is in Krater's docs/dev/production.md.
 #
-# SkyPilot stays off (KRATER_COMPUTE_MODE=off): Krater launches nothing until
-# Krater Compute, its own Vast layer, replaces it. So no SkyPilot Weave app,
-# bootstrap, krater-sky hostname or Vast key yet (krater-vast-key.age comes
-# back with Compute, for Krater's worker).
+# This release of Krater launches no machines (KRATER_COMPUTE_MODE=off).
+# Krater Compute, its own Vast layer, adds the settings for renting in its own
+# release (krater-vast-key.age comes back then, for Krater's worker).
 { config, ... }:
 {
   imports = [ ../../modules/krater ];
@@ -45,7 +44,6 @@
     # subdomain level. Added by a PR to patchworklabsorg/dns, like weave's.
     domain = "krater.patchworklabs.org";
     storage.domain = "krater-storage.patchworklabs.org";
-    skypilot.enable = false;
 
     # With Cloudflare in front of Traefik, the client's address is not the
     # last X-Forwarded-For hop the module's default (1) assumes. Set this to

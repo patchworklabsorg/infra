@@ -1,23 +1,96 @@
 {
-  description = "Patchwork Labs declarative infra: shared NixOS modules and secrets";
+  description = "Patchwork Labs declarative infra: hosts, shared NixOS modules and secrets";
 
   # This repo is public and must stay buildable by every org admin, so it never
   # takes jaspermayone/infra (private) as an input. The dependency goes the
-  # other way: jaspermayone/infra and patchworklabsorg/core import from here.
+  # other way: jaspermayone/infra imports nixosModules from here for alastor.
   inputs = {
     nixpkgs.url = "github:nixos/nixpkgs/nixos-26.05";
+
+    agenix = {
+      url = "github:ryantm/agenix";
+      inputs.nixpkgs.follows = "nixpkgs";
+      inputs.darwin.follows = "";
+      inputs.home-manager.follows = "";
+    };
+
+    disko = {
+      url = "github:nix-community/disko";
+      inputs.nixpkgs.follows = "nixpkgs";
+    };
+
+    deploy-rs = {
+      url = "github:serokell/deploy-rs";
+      inputs.nixpkgs.follows = "nixpkgs";
+    };
   };
 
   outputs =
-    { nixpkgs, ... }:
+    {
+      self,
+      nixpkgs,
+      agenix,
+      disko,
+      deploy-rs,
+      ...
+    }:
+    let
+      tailnet = "wildebeest-stargazer.ts.net";
+
+      # Lab VMs on pve01, VLAN 90. See README for the address plan.
+      hosts = [
+        "warp" # apps: Weave prod + staging, future apps
+        "skein" # patchwork_central, prod
+        "seam" # patchwork_central_restricted, prod
+        "hem" # both staging clusters
+      ];
+
+      mkHost =
+        name:
+        nixpkgs.lib.nixosSystem {
+          modules = [
+            agenix.nixosModules.default
+            disko.nixosModules.disko
+            ./hosts/${name}/configuration.nix
+          ];
+        };
+    in
     {
       nixosModules = {
         # The Weave service module alone, with no instance settings.
         weave = ./modules/weave;
-        # Weave as it runs on alastor: instance settings, deploy key, Traefik
-        # routes and agenix secrets. jaspermayone/infra's alastor imports it.
+        # Weave as it runs on alastor today: instance settings, deploy key,
+        # Traefik routes and agenix secrets. Retire once Weave runs on warp.
         weave-alastor = ./hosts/alastor/weave.nix;
+        # alastor as the public edge for apps on lab hosts. Replaces
+        # weave-alastor on alastor after the move to warp.
+        edge-alastor = ./hosts/alastor/edge.nix;
       };
+
+      nixosConfigurations = nixpkgs.lib.genAttrs hosts mkHost;
+
+      # deploy .#<host>. Over the tailnet, as on jaspermayone/infra's lab hosts.
+      # Activation restarts sshd and tailscaled, which cuts the connection
+      # deploy-rs confirms over, so magic rollback would always time out.
+      deploy.nodes = nixpkgs.lib.genAttrs hosts (name: {
+        hostname = "${name}.${tailnet}";
+        magicRollback = false;
+        autoRollback = false;
+        profiles.system = {
+          sshUser = "jsp";
+          user = "root";
+          path = deploy-rs.lib.x86_64-linux.activate.nixos self.nixosConfigurations.${name};
+        };
+      });
+
+      checks =
+        nixpkgs.lib.recursiveUpdate
+          (builtins.mapAttrs (_: deployLib: deployLib.deployChecks self.deploy) deploy-rs.lib)
+          (
+            nixpkgs.lib.genAttrs [ "x86_64-linux" "aarch64-linux" ] (system: {
+              central-db = import ./tests/central-db.nix { pkgs = nixpkgs.legacyPackages.${system}; };
+            })
+          );
 
       formatter.x86_64-linux = nixpkgs.legacyPackages.x86_64-linux.nixfmt-tree;
       formatter.aarch64-linux = nixpkgs.legacyPackages.aarch64-linux.nixfmt-tree;

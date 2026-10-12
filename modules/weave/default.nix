@@ -189,6 +189,10 @@ let
         wantedBy = [ "multi-user.target" ];
         serviceConfig = {
           Type = "simple";
+          # ExecStartPre pulls the image and runs db:prepare. A large new image
+          # layer (for example after a Rails update) takes longer than systemd's
+          # 90-second default to unpack, and the unit then restarts in a loop.
+          TimeoutStartSec = "10min";
 
           ExecStartPre = [
             # Resolve the image: file written by CI takes precedence over Nix default.
@@ -308,6 +312,8 @@ let
         wantedBy = [ "multi-user.target" ];
         serviceConfig = {
           Type = "simple";
+          # The worker pulls the same image; see TimeoutStartSec on weave-web.
+          TimeoutStartSec = "10min";
 
           ExecStartPre = [
             # Resolve the image independently of weave-web (its own /run file),

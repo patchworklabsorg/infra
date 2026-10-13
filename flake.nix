@@ -97,6 +97,18 @@
                   inherit pkgs;
                   hosts = builtins.attrNames self.nixosConfigurations;
                 };
+                # ansible/filter_plugins (vyos_split_secrets for thimble).
+                ansible-filters =
+                  pkgs.runCommand "ansible-filters"
+                    {
+                      nativeBuildInputs = [ (pkgs.python3.withPackages (p: [ p.jinja2 ])) ];
+                      src = ./ansible;
+                    }
+                    ''
+                      cd $src
+                      python3 -m unittest discover -s tests -v
+                      touch $out
+                    '';
               }
               // nixpkgs.lib.optionalAttrs pkgs.stdenv.isLinux {
                 central-db = import ./tests/central-db.nix { inherit pkgs; };

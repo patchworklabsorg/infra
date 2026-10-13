@@ -27,8 +27,6 @@ REPO = os.path.dirname(ANSIBLE)
 # personal vault key -> Patchwork vault key
 KEYS = {
     "vault_ad_svc_ansible_password_patchwork": "vault_ad_svc_ansible_password",
-    "vault_wazuh_ldap_bind_password_patchwork": "vault_wazuh_ldap_bind_password",
-    "vault_netbox_ldap_bind_password_patchwork": "vault_netbox_ldap_bind_password",
 }
 # personal vault key -> agenix file in ../secrets
 AGE = {
@@ -129,7 +127,7 @@ def main():
         os.replace(tmp, dst_path)
         print(f"wrote     {os.path.relpath(dst_path, ANSIBLE)}")
 
-    print("Not copied on purpose: the _patchwork NetBox, Diode, Orb and Wazuh agent keys "
+    print("Not copied on purpose: the _patchwork LDAP bind, NetBox, Diode, Orb and Wazuh agent keys "
           "(no Patchwork host uses them), and the Tailscale key (roll a new one).")
 
 

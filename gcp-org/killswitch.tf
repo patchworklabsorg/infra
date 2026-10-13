@@ -104,7 +104,7 @@ resource "google_folder_iam_member" "guard" {
 resource "google_storage_bucket" "guard_src" {
   project                     = local.guard_project
   name                        = "pwl-billing-guard-src"
-  location                    = "US"
+  location                    = "US-EAST1" # regional, so the free tier applies
   uniform_bucket_level_access = true
   force_destroy               = true
   depends_on                  = [google_project_service.guard]
@@ -120,6 +120,11 @@ resource "google_storage_bucket_object" "guard" {
   bucket = google_storage_bucket.guard_src.name
   name   = "billing-guard-${data.archive_file.guard.output_md5}.zip"
   source = data.archive_file.guard.output_path
+
+  # A new bucket starts empty, so upload the source again.
+  lifecycle {
+    replace_triggered_by = [google_storage_bucket.guard_src.id]
+  }
 }
 
 # ---------- Function ----------

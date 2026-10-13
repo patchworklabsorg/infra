@@ -29,9 +29,12 @@ resource "google_billing_budget" "zero_spend" {
     }
   }
 
-  # Ignore credits so any real usage shows up, even if a credit would cover it.
+  # Subtract the free tier only. Google applies it as a credit, so excluding all
+  # credits counts free usage as spend. Other credits stay excluded, so real
+  # usage still shows up even if a promo credit would cover it.
   budget_filter {
-    credit_types_treatment = "EXCLUDE_ALL_CREDITS"
+    credit_types_treatment = "INCLUDE_SPECIFIED_CREDITS"
+    credit_types           = ["FREE_TIER"]
   }
 
   threshold_rules {

@@ -22,6 +22,7 @@ Declarative infrastructure for Patchwork Labs: every Patchwork host, the NixOS m
 | `ad/` | The AD structure: `org.json` and `converge.ps1`. See `ad/README.md`. |
 | `terraform/` | Terraform roots for resources that an API manages. See `terraform/README.md`. |
 | `workspace/` | GAM script that sets up Google Workspace. |
+| `terraform/github/` | Terraform for the `patchworklabsorg` GitHub org: repos, teams, members, rulesets. See `terraform/github/README.md`. |
 
 ## Hosts
 

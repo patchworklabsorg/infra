@@ -6,6 +6,9 @@
 #   PAM_REASON="why" ./tf apply              skip the justification prompt
 set -euo pipefail
 
+# Run from this directory, whatever the caller's working directory is.
+cd "$(dirname "${BASH_SOURCE[0]}")"
+
 ORG="839523354890"
 ENT="${PAM_ENTITLEMENT:-org-admin}"
 DURATION="${PAM_DURATION:-3600s}"

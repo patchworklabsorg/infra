@@ -33,15 +33,33 @@ Cores and disk sizes in `variables.tf` are starting values. Check them before th
 - OVMF (UEFI) with pre-enrolled Secure Boot keys, a TPM 2.0 state disk, machine `q35`, OS type `win11` (Windows 11 and Server 2022/2025).
 - The disk is `sata0` and the NIC is `e1000e`. The Windows installer has drivers for both, so you do not need the virtio-win ISO.
 - The guest agent is off in Proxmox until you install it in Windows. Then set `agent.enabled = true` by hand in Proxmox. Terraform ignores the change.
-- No VM is created while `windows_iso_file_id` is null. The NixOS VMs do not need the variable.
+- No VM is created while `create_spool` is false and `windows_iso_file_id` is null. The NixOS VMs do not need these variables.
 
-Before the first apply:
+### Windows ISO
+
+With `create_spool = true`, Terraform makes Proxmox download the Windows Server 2025 evaluation ISO to `local:iso/windows-server-2025-eval.iso`. The resource is `proxmox_virtual_environment_download_file.windows_installer`.
+
+- The URL is the variable `windows_iso_url`. The default is the Microsoft fwlink `https://go.microsoft.com/fwlink/?linkid=2293312&clcid=0x409&culture=en-us&country=us`. It comes from the Microsoft Evaluation Center (English, x64).
+- The fwlink redirects to the file `26100.1742.240906-0331.ge_release_svc_refresh_SERVER_EVAL_x64FRE_en-us.iso`. It is 6014152704 bytes (about 5.6 GiB). Microsoft can publish a newer build behind the same link.
+- The resource sets `overwrite = false`, so a later plan does not download the file again.
+- The upload timeout is two hours.
+- To use an ISO that is already on the node, set `windows_iso_file_id`. It overrides the download.
+
+License: this is the evaluation edition. It runs for 180 days. Activate it over the internet in the first 10 days, or it shuts down. To keep it, convert it to a retail or volume edition with a valid key (`DISM /Online /Set-Edition`). Plan the conversion before day 180.
+
+### Create spool
 
 1. Check that VMID 359 and 10.100.90.59 are free: `pvesh get /cluster/resources --type vm` on pve01, and `Resolve-DnsName 10.100.90.59` or a ping in the lab.
-2. Upload the Windows Server 2025 ISO to `local` on pve01.
-3. Set the variable in `terraform.tfvars`: `windows_iso_file_id = "local:iso/<file>.iso"`.
-4. Check the committed memory on pve01 (see "Memory warning").
-5. Plan, read the plan, apply. Install Windows from the console, set the static address, join the domain, then put it in the silo: `spool` is already in `tiering.computers` in `ad/org.json`, so the next `converge.ps1` Build adds `SPOOL$`.
+2. Check the committed memory on pve01 (see "Memory warning").
+3. Plan only the Windows resources: `tofu plan -var create_spool=true -target=proxmox_virtual_environment_download_file.windows_installer -target=proxmox_virtual_environment_vm.spool`
+4. Read the plan. Then run the same command with `apply`.
+5. Open the console of VMID 359 in Proxmox. Boot from the ISO. Choose "Windows Server 2025 Standard Evaluation (Desktop Experience)", or the Core option if `ad/TIERING.md` says Core. Use the SATA disk. Do not load drivers.
+6. Set the static address. Join the domain `patchwork.internal` and put the computer in `OU=Servers,OU=Patchwork`.
+7. Turn off NLA for Remote Desktop and limit the Windows firewall as `ad/TIERING.md` says.
+8. Run `converge.ps1` Build. `spool` is already in `tiering.computers` in `ad/org.json`, so Build adds `SPOOL$` to T0-Silo.
+9. After the install, detach the ISO. Terraform ignores the CD-ROM and boot order.
+
+Keep `create_spool = true` in later runs. If you set it to false, the plan destroys the ISO resource and the VM. The VM has `prevent_destroy`, so the plan fails.
 
 The token needs `VM.Config.Disk` on the pool for the EFI and TPM disks. It has it.
 

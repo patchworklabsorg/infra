@@ -2,16 +2,22 @@
 # 2025, joined to patchwork.internal, in T0-Silo. It is not a NixOS host, so
 # it is a separate resource: no nixos-anywhere, no NixOS installer ISO.
 #
-# The VM is created only when var.windows_iso_file_id is set. Upload the
-# Windows Server 2025 ISO to the node first (for example to local:iso/),
-# then set the variable in terraform.tfvars.
+# The VM is created when var.create_spool is true or var.windows_iso_file_id
+# is set. With create_spool, Terraform downloads the evaluation ISO (see
+# windows_installer in main.tf). A set windows_iso_file_id overrides it.
 #
 # The disk is SATA and the NIC is e1000e, so the Windows installer needs no
 # extra driver ISO. Change to virtio later, after the virtio-win drivers
 # are installed, if the speed matters.
 
+locals {
+  spool_iso_file_id = var.windows_iso_file_id != null ? var.windows_iso_file_id : (
+    var.create_spool ? proxmox_virtual_environment_download_file.windows_installer[0].id : null
+  )
+}
+
 resource "proxmox_virtual_environment_vm" "spool" {
-  count = var.windows_iso_file_id == null ? 0 : 1
+  count = local.spool_iso_file_id == null ? 0 : 1
 
   name        = "spool"
   description = "Patchwork Tier 0 jump host spool, ${var.spool.ip}. Windows Server 2025. See ad/TIERING.md. Managed by Terraform."
@@ -74,7 +80,7 @@ resource "proxmox_virtual_environment_vm" "spool" {
   }
 
   cdrom {
-    file_id   = var.windows_iso_file_id
+    file_id   = local.spool_iso_file_id
     interface = "ide2"
   }
 

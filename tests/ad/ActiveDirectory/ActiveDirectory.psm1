@@ -2,11 +2,28 @@
 # It implements only the cmdlets and the filter forms that ad/converge.ps1
 # uses, and it enforces the AD rules the script depends on: a parent must
 # exist, a protected object cannot move or be deleted, an OU with children
-# cannot be deleted, and Global cannot change straight to DomainLocal.
+# cannot be deleted, Global cannot change straight to DomainLocal, a PSO
+# applies only to global groups and users, and a lockout observation window
+# cannot be longer than the lockout duration.
 
 $script:domainDN = 'DC=patchwork,DC=internal'
+$script:domainSid = 'S-1-5-21-1111111111-2222222222-3333333333'
 $script:objects = [System.Collections.Generic.List[object]]::new()
 $script:upnSuffixes = [System.Collections.Generic.List[string]]::new()
+$script:psos = [System.Collections.Generic.List[object]]::new()
+$script:defaultPolicy = $null
+
+$policyParams = 'MinPasswordLength', 'PasswordHistoryCount', 'ComplexityEnabled', 'ReversibleEncryptionEnabled',
+'MinPasswordAge', 'MaxPasswordAge', 'LockoutThreshold', 'LockoutDuration', 'LockoutObservationWindow'
+
+# The values a new domain (and a new PSO) gets.
+function New-PolicyDefaults {
+    [ordered]@{
+        MinPasswordLength = 7; PasswordHistoryCount = 24; ComplexityEnabled = $true; ReversibleEncryptionEnabled = $false
+        MinPasswordAge = [TimeSpan]::FromDays(1); MaxPasswordAge = [TimeSpan]::FromDays(42)
+        LockoutThreshold = 0; LockoutDuration = [TimeSpan]::FromMinutes(10); LockoutObservationWindow = [TimeSpan]::FromMinutes(10)
+    }
+}
 
 $userAttrs = 'company', 'division', 'department', 'title', 'givenName', 'sn', 'displayName',
 'manager', 'userPrincipalName', 'mail'
@@ -14,6 +31,8 @@ $userAttrs = 'company', 'division', 'department', 'title', 'givenName', 'sn', 'd
 function Reset-FakeAD {
     $script:objects.Clear()
     $script:upnSuffixes.Clear()
+    $script:psos.Clear()
+    $script:defaultPolicy = New-PolicyDefaults
 }
 
 # An operator enabling an account after the person set a password.
@@ -26,12 +45,18 @@ function Get-FakeADState {
         '{0}|{1}|{2}|{3}|{4}|{5}|{6}' -f $o.DN, $o.Class, $o.Enabled, $o.Scope, $o.Protected,
             (($o.Attrs.GetEnumerator() | Sort-Object Key | ForEach-Object { "$($_.Key)=$($_.Value)" }) -join ';'),
             (($o.Members | Sort-Object) -join ';')
-    }) + ($script:upnSuffixes -join ';') -join "`n"
+    }) + ($script:upnSuffixes -join ';') + (Format-FakePolicy $script:defaultPolicy) + ($script:psos | ForEach-Object {
+        "PSO $($_.Name)|$($_.Precedence)|$($_.Description)|$(Format-FakePolicy $_.Policy)|$(($_.Subjects | Sort-Object) -join ';')"
+    }) -join "`n"
+}
+
+function Format-FakePolicy($Policy) {
+    ($Policy.Keys | ForEach-Object { "$_=$($Policy[$_])" }) -join ';'
 }
 
 function Add-FakeObject([string]$DN, [string]$Class, [hashtable]$Extra = @{}) {
     $o = [pscustomobject]@{
-        Id = [guid]::NewGuid(); DN = $DN; Class = $Class; Sam = $null; Enabled = $true
+        Id = [guid]::NewGuid(); DN = $DN; Class = $Class; Sam = $null; Sid = $null; Enabled = $true
         Scope = $null; Protected = $false; Description = $null; Attrs = @{}
         Members = [System.Collections.Generic.List[guid]]::new()
     }
@@ -50,7 +75,7 @@ function Find-Fake($Identity) {
         $o = $script:objects | Where-Object { $_.Id -eq $id }
     } else {
         $s = "$Identity"
-        $o = $script:objects | Where-Object { $_.DN -eq $s -or $_.Sam -eq $s -or (Get-RdnValue $_.DN) -eq $s } |
+        $o = $script:objects | Where-Object { $_.DN -eq $s -or $_.Sam -eq $s -or ($_.Sid -and $_.Sid -eq $s) -or (Get-RdnValue $_.DN) -eq $s } |
             Select-Object -First 1
     }
     if (-not $o) { throw "Cannot find an object with identity: '$Identity'" }
@@ -60,7 +85,7 @@ function Find-Fake($Identity) {
 function ConvertTo-Fake($o) {
     $h = [ordered]@{
         ObjectGUID = $o.Id; DistinguishedName = $o.DN; ObjectClass = $o.Class; Name = (Get-RdnValue $o.DN)
-        SamAccountName = $o.Sam; Enabled = $o.Enabled
+        SamAccountName = $o.Sam; SID = $o.Sid; Enabled = $o.Enabled
         GroupScope = $o.Scope; Description = $o.Description; ProtectedFromAccidentalDeletion = $o.Protected
     }
     foreach ($a in $userAttrs) { $h[$a] = $o.Attrs[$a] }
@@ -76,6 +101,7 @@ function Select-Fake([string]$Filter, [string]$SearchBase, [string[]]$Classes) {
     $get = switch ($attr) {
         'SamAccountName' { { param($o) $o.Sam } }
         'distinguishedName' { { param($o) $o.DN } }
+        'UserPrincipalName' { { param($o) $o.Attrs['userPrincipalName'] } }
         'objectClass' { { param($o) $o.Class } }
         default { throw "Fake AD does not support attribute: $attr" }
     }
@@ -91,7 +117,7 @@ function Assert-Parent([string]$Path) {
 
 # --- Domain and forest -------------------------------------------------------
 function Get-ADDomain { param($Server)
-    [pscustomobject]@{ DNSRoot = 'patchwork.internal'; DistinguishedName = $script:domainDN; PDCEmulator = 'loom.patchwork.internal' }
+    [pscustomobject]@{ DNSRoot = 'patchwork.internal'; DistinguishedName = $script:domainDN; PDCEmulator = 'loom.patchwork.internal'; DomainSID = $script:domainSid }
 }
 function Get-ADForest { param($Server)
     [pscustomobject]@{ Name = 'patchwork.internal'; UPNSuffixes = @($script:upnSuffixes) }
@@ -162,6 +188,7 @@ function Set-ADUser { param($Identity, [hashtable]$Replace, [string[]]$Clear, $S
     foreach ($k in @($Clear)) { if ($k) { $o.Attrs.Remove($k) } }
 }
 function Disable-ADAccount { param($Identity, $Server) (Find-Fake $Identity).Enabled = $false }
+function Enable-ADAccount { param($Identity, $Server) (Find-Fake $Identity).Enabled = $true }
 
 # --- Groups ------------------------------------------------------------------
 function Get-ADGroup { param([string]$Filter, $Properties, $Server, $Identity)
@@ -186,9 +213,22 @@ function Remove-ADGroup { param($Identity, $Confirm, $Server)
     foreach ($x in $script:objects) { $x.Members.Remove($o.Id) | Out-Null }
     $script:objects.Remove($o) | Out-Null
 }
-function Get-ADGroupMember { param($Identity, $Server)
+function Get-ADGroupMember { param($Identity, [switch]$Recursive, $Server)
     $g = Find-Fake $Identity
-    foreach ($id in $g.Members) { ConvertTo-Fake ($script:objects | Where-Object { $_.Id -eq $id }) }
+    if (-not $Recursive) {
+        foreach ($id in $g.Members) { ConvertTo-Fake ($script:objects | Where-Object { $_.Id -eq $id }) }
+        return
+    }
+    # Like AD: every user and computer below the group, no groups, no repeats.
+    $seen = @{}; $queue = [System.Collections.Generic.Queue[object]]::new(); $queue.Enqueue($g)
+    while ($queue.Count) {
+        foreach ($id in $queue.Dequeue().Members) {
+            if ($seen[$id]) { continue }
+            $seen[$id] = $true
+            $o = $script:objects | Where-Object { $_.Id -eq $id }
+            if ($o.Class -eq 'group') { $queue.Enqueue($o) } else { ConvertTo-Fake $o }
+        }
+    }
 }
 function Add-ADGroupMember { param($Identity, $Members, $Server)
     $g = Find-Fake $Identity
@@ -206,6 +246,92 @@ function Get-ADPrincipalGroupMembership { param($Identity, $Server)
     $o = Find-Fake $Identity
     $groups = @($script:objects | Where-Object { $_.Class -eq 'group' -and $_.Members -contains $o.Id } | ForEach-Object { ConvertTo-Fake $_ })
     $groups + [pscustomobject]@{ Name = 'Domain Users'; DistinguishedName = "CN=Domain Users,CN=Users,$script:domainDN" }
+}
+
+# --- Password policy ---------------------------------------------------------
+# AD writes a "never" time as Int64.MinValue, and reads it back that way.
+function Set-FakePolicy($Policy, [hashtable]$Bound) {
+    foreach ($k in $policyParams) {
+        if (-not $Bound.ContainsKey($k)) { continue }
+        $v = $Bound[$k]
+        if ($v -is [TimeSpan] -and $v.Ticks -eq 0 -and $k -in 'MaxPasswordAge', 'LockoutDuration') { $v = [TimeSpan]::MinValue }
+        $Policy[$k] = $v
+    }
+    $d = $Policy['LockoutDuration']; $w = $Policy['LockoutObservationWindow']
+    if ($d.Ticks -gt 0 -and $w -gt $d) { throw 'LockoutObservationWindow cannot be longer than LockoutDuration' }
+}
+
+function ConvertTo-FakePolicy($Policy, [hashtable]$Extra = @{}) {
+    $h = [ordered]@{}
+    foreach ($k in $Extra.Keys) { $h[$k] = $Extra[$k] }
+    foreach ($k in $policyParams) { $h[$k] = $Policy[$k] }
+    [pscustomobject]$h
+}
+
+function Get-ADDefaultDomainPasswordPolicy { param($Identity, $Server)
+    ConvertTo-FakePolicy $script:defaultPolicy @{ DistinguishedName = $script:domainDN }
+}
+function Set-ADDefaultDomainPasswordPolicy { param($Identity, [int]$MinPasswordLength, [int]$PasswordHistoryCount,
+        $ComplexityEnabled, $ReversibleEncryptionEnabled, [TimeSpan]$MinPasswordAge, [TimeSpan]$MaxPasswordAge,
+        [int]$LockoutThreshold, [TimeSpan]$LockoutDuration, [TimeSpan]$LockoutObservationWindow, $Server)
+    Set-FakePolicy $script:defaultPolicy $PSBoundParameters
+}
+
+function Find-FakePso($Identity) {
+    $o = if ($Identity -is [psobject] -and $Identity.PSObject.Properties['ObjectGUID']) {
+        $script:psos | Where-Object { $_.Id -eq $Identity.ObjectGUID }
+    } else { $script:psos | Where-Object { $_.Name -eq "$Identity" } }
+    if (-not $o) { throw "Cannot find a PSO with identity: '$Identity'" }
+    $o
+}
+function ConvertTo-FakePso($o) {
+    ConvertTo-FakePolicy $o.Policy @{
+        ObjectGUID = $o.Id; Name = $o.Name; Precedence = $o.Precedence; Description = $o.Description
+        DistinguishedName = "CN=$($o.Name),CN=Password Settings Container,CN=System,$script:domainDN"
+    }
+}
+function Get-ADFineGrainedPasswordPolicy { param([string]$Filter, $Identity, $Properties, $Server)
+    if ($Identity) { return ConvertTo-FakePso (Find-FakePso $Identity) }
+    $set = if ($Filter -eq '*') { $script:psos } elseif ($Filter -match "^Name -eq '(.*)'$") {
+        $n = $Matches[1]; $script:psos | Where-Object { $_.Name -eq $n }
+    } else { throw "Fake AD does not support PSO filter: $Filter" }
+    $set | ForEach-Object { ConvertTo-FakePso $_ }
+}
+function New-ADFineGrainedPasswordPolicy { param([string]$Name, [int]$Precedence, $Description, $ProtectedFromAccidentalDeletion,
+        [int]$MinPasswordLength, [int]$PasswordHistoryCount, $ComplexityEnabled, $ReversibleEncryptionEnabled,
+        [TimeSpan]$MinPasswordAge, [TimeSpan]$MaxPasswordAge, [int]$LockoutThreshold, [TimeSpan]$LockoutDuration,
+        [TimeSpan]$LockoutObservationWindow, $Server)
+    if ($script:psos | Where-Object { $_.Name -eq $Name }) { throw "Already exists: PSO $Name" }
+    if (-not $PSBoundParameters.ContainsKey('Precedence')) { throw 'Precedence is required' }
+    $o = [pscustomobject]@{ Id = [guid]::NewGuid(); Name = $Name; Precedence = $Precedence; Description = $Description
+        Policy = (New-PolicyDefaults); Subjects = [System.Collections.Generic.List[guid]]::new() }
+    Set-FakePolicy $o.Policy $PSBoundParameters
+    $script:psos.Add($o)
+}
+function Set-ADFineGrainedPasswordPolicy { param($Identity, [int]$Precedence, $Description,
+        [int]$MinPasswordLength, [int]$PasswordHistoryCount, $ComplexityEnabled, $ReversibleEncryptionEnabled,
+        [TimeSpan]$MinPasswordAge, [TimeSpan]$MaxPasswordAge, [int]$LockoutThreshold, [TimeSpan]$LockoutDuration,
+        [TimeSpan]$LockoutObservationWindow, $Server)
+    $o = Find-FakePso $Identity
+    if ($PSBoundParameters.ContainsKey('Precedence')) { $o.Precedence = $Precedence }
+    if ($PSBoundParameters.ContainsKey('Description')) { $o.Description = $Description }
+    Set-FakePolicy $o.Policy $PSBoundParameters
+}
+function Get-ADFineGrainedPasswordPolicySubject { param($Identity, $Server)
+    foreach ($id in (Find-FakePso $Identity).Subjects) { ConvertTo-Fake ($script:objects | Where-Object { $_.Id -eq $id }) }
+}
+function Add-ADFineGrainedPasswordPolicySubject { param($Identity, $Subjects, $Server)
+    $pso = Find-FakePso $Identity
+    foreach ($s in @($Subjects)) {
+        $o = Find-Fake $s
+        if ($o.Class -eq 'group' -and $o.Scope -ne 'Global') { throw "A PSO applies only to global groups: $($o.Sam)" }
+        if ($pso.Subjects -contains $o.Id) { throw "Already applied: $($o.Sam)" }
+        $pso.Subjects.Add($o.Id)
+    }
+}
+function Remove-ADFineGrainedPasswordPolicySubject { param($Identity, $Subjects, $Confirm, $Server)
+    $pso = Find-FakePso $Identity
+    foreach ($s in @($Subjects)) { $pso.Subjects.Remove((Find-Fake $s).Id) | Out-Null }
 }
 
 Export-ModuleMember -Function *

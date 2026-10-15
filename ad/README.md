@@ -13,18 +13,30 @@ The `patchwork.internal` directory, built around the Patchwork business units. T
 - **Attributes carry the org chart.** `company` = `Patchwork Labs inc.`, `division` = business unit, `department` = sub-department, plus `title` and `manager`. Board members and officers have no manager.
 - **OUs are for policy and delegation only.** They match the Workspace OUs.
 - **AGDLP.** People go in global role groups (`GG-*`, `Groups/Roles`). Role groups go in domain local resource groups (`Groups/Resources`). Only resource groups get permissions. The board and the officers are groups, never OUs.
-- **Tier 0.** `jasper.adm` (in `Admin-Accounts`) is the only person with Domain Admins, through `GG-Domain-Admins-Tier0`. Daily accounts get no admin rights. `svc-ansible` stays in Domain Admins, because Ansible manages the DCs. The built-in `Administrator` is the break-glass account.
-- **Login names.** People log in as `<name>@patchworklabs.org`. The script adds that UPN suffix to the forest. Admin accounts keep `@patchwork.internal`.
+- **Tier 0.** `adm_mayonej` (in `Admin-Accounts`) is the only person with Domain Admins, through `GG-Domain-Admins-Tier0`. Daily accounts get no admin rights. `svc-ansible` stays in Domain Admins, because Ansible manages the DCs.
+- **Break-glass.** The break-glass path is `adm_mayonej`, plus the DSRM password on each DC. The built-in `Administrator` (RID 500) is disabled, because `builtinAdministrator.enabled` is `false`. The script finds it by SID, so a rename does not hide it. It disables the account only while an admin account in `org.json` is enabled and is in Domain Admins (direct or nested). Otherwise it reports this and keeps the account enabled. Keep the DSRM password of each DC in the vault, and test it.
+- **Login names.** `sam` is the sAMAccountName, the internal username. It does not change. People log in with their UPN, `<upn>@patchworklabs.org`. `upn` is the part before the @. If you leave it out, it is the same as `sam`. The script adds the UPN suffix to the forest. Admin accounts keep `<sam>@patchwork.internal`.
+- **Match on both.** The script finds each user by `sam` first, then by UPN. If the two find different accounts, it reports this and changes nothing for that user. It never makes a second account for a person who already has one.
 - **Community members belong to Weave.** Weave creates them in `Users/Members`. `converge.ps1` never changes anything in that OU, or the members of `GG-Ganymede-Users`.
 
 ```mermaid
 flowchart LR
   user["adam.sidwa"] --> role["GG-Ganymede-Admins (global)"]
-  infra["jasper"] --> gginfra["GG-Infra (global)"]
+  infra["mayonej (jasper@patchworklabs.org)"] --> gginfra["GG-Infra (global)"]
   gginfra --> lnx["lnx-warp-admins (domain local)"]
   lnx --> perm["sudo on warp"]
-  adm["jasper.adm"] --> t0["GG-Domain-Admins-Tier0"] --> da["Domain Admins"]
+  adm["adm_mayonej"] --> t0["GG-Domain-Admins-Tier0"] --> da["Domain Admins"]
 ```
+
+These accounts existed before `org.json`. They keep their sAMAccountNames:
+
+| `sam` | UPN | Kind |
+|---|---|---|
+| `mayonej` | `jasper@patchworklabs.org` | Daily account of Jasper Mayone |
+| `adm_mayonej` | `adm_mayonej@patchwork.internal` | Tier 0 account of Jasper Mayone |
+| `klukask` | `kieran@patchworklabs.org` | Kieran Klukas |
+| `petrarcad` | `dominic@patchworklabs.org` | Dominic Petrarca |
+| `svc-ansible`, `svc-lnx-join`, `svc-dhcp-dns`, `svc-pve-ldap` | not managed | Service accounts. The script does not create them. |
 
 | OU | Holds |
 |---|---|
@@ -37,7 +49,7 @@ flowchart LR
 
 ## Run it
 
-Run on a DC, or on a host with RSAT, as `jasper.adm` (or the built-in `Administrator` the first time). The GPO step needs the GroupPolicy module (GPMC).
+Run on a DC, or on a host with RSAT, as `adm_mayonej`. The GPO step needs the GroupPolicy module (GPMC).
 
 ```powershell
 .\converge.ps1 -WhatIf            # read the WOULD lines
@@ -53,7 +65,7 @@ New accounts are disabled and must change the password at the next logon. The sc
 The old tree is `OU=Patchwork-Objects`. Do these steps in order, with `-WhatIf` first each time.
 
 1. `.\converge.ps1` (Build). This makes the new tree. It moves nothing.
-2. Enable `jasper.adm` and set its password. Run Build again. It then removes the daily accounts from the admin groups.
+2. Run Build again. It removes the daily accounts from the admin groups only when each admin account is enabled and had a Domain Admins path before the run started. The run that adds the `GG-Domain-Admins-Tier0` path never removes the old path. Direct memberships of admin accounts (for example `adm_mayonej` in Domain Admins) are only reported. Remove them by hand after you test a login through the group.
 3. Point the join rights at the new computer OUs. In `ansible/inventory/group_vars/patchwork.yml`, set `ad_computer_ou_server` to `OU=Servers,OU=Patchwork,DC=patchwork,DC=internal` and `ad_computer_ou_client` to `OU=Computers,OU=Patchwork,DC=patchwork,DC=internal`. Run `ansible-playbook ad.yml -t join-delegation`.
 4. Set `patchwork.ad.computerOU` in `modules/ad-join` to the new `Servers` OU.
 5. `.\converge.ps1 -Phase Migrate`. It copies the GPO links to the new OUs, moves every object, and changes the `lnx-*` and app groups to domain local. It reports each object that it cannot place. Add each one to `org.json` and run Migrate again.
@@ -65,13 +77,32 @@ The old tree is `OU=Patchwork-Objects`. Do these steps in order, with `-WhatIf` 
 Add an entry to `users` in `org.json`, and add the person to their role groups:
 
 ```json
-{ "sam": "sam.example", "kind": "person", "ou": "Users/Staff",
+{ "sam": "examples", "upn": "sam", "kind": "person", "ou": "Users/Staff",
   "givenName": "Sam", "surname": "Example",
   "division": "Programs", "department": "Project Ganymede",
   "title": "Volunteer", "manager": "adam.sidwa" }
 ```
 
-`division` and `department` must be a pair from `divisions`. `manager` is a `sam`, or `null` for no manager. A key you leave out is not managed. A key set to `null` clears the attribute. To suspend a person, set `"kind": "disabled"` and `"ou": "Disabled"`, and take them out of every group.
+This person logs in as `sam@patchworklabs.org`. Leave out `upn` when it is the same as `sam`. Before you add a person, look for an account that they already have. If one exists, use its sAMAccountName as `sam`.
+
+Add the person to `GG-All-Staff`, so `PSO-Staff` applies. `nix flake check` fails for an account that no PSO applies to. `division` and `department` must be a pair from `divisions`. `manager` is a `sam`, or `null` for no manager. Group members are `sam` values. A key you leave out is not managed. A key set to `null` clears the attribute. To suspend a person, set `"kind": "disabled"` and `"ou": "Disabled"`, and take them out of every group.
+
+## Password policy
+
+`passwordPolicy` in `org.json` sets the password and lockout rules. Build makes AD match it. Times are in days or minutes. A time of `0` means never.
+
+| Policy | Applies to | Min length | Expires | History | Lockout |
+|---|---|---|---|---|---|
+| Default domain policy | Everyone else, for example Weave members | 12 | never | 24 | 10 tries, 15 min |
+| `PSO-Tier0` (precedence 10) | `GG-Domain-Admins-Tier0` | 20 | never | 24 | 5 tries, 30 min |
+| `PSO-Service` (precedence 20) | `GG-Service-Accounts` | 32 | never | 24 | none |
+| `PSO-Staff` (precedence 30) | `GG-All-Staff` | 14 | never | 24 | 10 tries, 15 min |
+
+Complexity is on for all policies. A lower precedence wins when two PSOs apply to one account. `PSO-Service` has no lockout, because a lockout would stop the service. A new rule applies at the next password change. It does not expire a password that exists.
+
+A PSO applies to global groups, not to OUs. Each role group in `appliesTo` must be in `roleGroups`. The script removes a PSO subject that is not in `org.json`. It reports a PSO in AD that is not in `org.json`, and does not delete it.
+
+The `Default Domain Policy` GPO also holds the default domain settings. The DC applies the GPO again, and the GPO values replace the values that the script sets. Set the same values in the GPO (Computer Configuration, Policies, Windows Settings, Security Settings, Account Policies). If the GPO and `org.json` are different, each Build shows a change for the default domain policy.
 
 ## Add a sponsored project
 
@@ -96,5 +127,6 @@ Move its name from `linuxHosts` to `retiredHosts`, and remove it from `flake.nix
 
 ## Later
 
+- Authentication policy silos: a Tier 0 silo for `adm_mayonej` that allows logons only on the DCs and a privileged access workstation (PAW).
 - Weave provisioning: a service account with rights on `Users/Members` only, so Weave can create members and set the passwords people choose there.
 - Directory sync to Google (GCDS) is possible, because the names match. It is not set up. Weave is the planned source for Workspace.

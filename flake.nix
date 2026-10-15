@@ -97,6 +97,18 @@
                   inherit pkgs;
                   hosts = builtins.attrNames self.nixosConfigurations;
                 };
+                # Format check for every Terraform root. OpenTofu replaces
+                # Terraform because Terraform is unfree. The format is the same.
+                terraform-fmt =
+                  pkgs.runCommand "terraform-fmt"
+                    {
+                      nativeBuildInputs = [ pkgs.opentofu ];
+                      src = ./terraform;
+                    }
+                    ''
+                      tofu fmt -check -recursive -diff $src
+                      touch $out
+                    '';
                 # ansible/filter_plugins (vyos_split_secrets for thimble).
                 ansible-filters =
                   pkgs.runCommand "ansible-filters"
@@ -115,6 +127,21 @@
               }
             )
           );
+
+      devShells = nixpkgs.lib.genAttrs [ "x86_64-linux" "aarch64-linux" "aarch64-darwin" ] (
+        system:
+        let
+          pkgs = nixpkgs.legacyPackages.${system};
+        in
+        {
+          default = pkgs.mkShell {
+            packages = [
+              pkgs.opentofu
+              pkgs.google-cloud-sdk
+            ];
+          };
+        }
+      );
 
       formatter.x86_64-linux = nixpkgs.legacyPackages.x86_64-linux.nixfmt-tree;
       formatter.aarch64-linux = nixpkgs.legacyPackages.aarch64-linux.nixfmt-tree;

@@ -6,6 +6,7 @@ The `patchwork.internal` directory, built around the Patchwork business units. T
 |---|---|
 | `org.json` | The source of truth: OUs, people, their org attributes, role groups, resource groups. |
 | `converge.ps1` | Makes AD match `org.json`. Idempotent, supports `-WhatIf`, logs every change. |
+| `TIERING.md` | Proposal: the tier model, the Tier 0 authentication policy silo, just-in-time Domain Admin, break-glass and LAPS. |
 | `../tests/ad/` | A test that runs `converge.ps1` against an in-memory directory. `nix flake check` runs it. |
 
 ## Model

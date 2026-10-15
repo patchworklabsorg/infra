@@ -60,6 +60,23 @@ in
     alastor
   ];
 
+  # Quilt staging (quilt-staging.patchworklabs.org on alastor, RAILS_ENV=staging)
+  # runtime env. bin/new-quilt-staging-secrets writes it. Same variables as
+  # quilt-env.age, with staging values:
+  #   RESTRICTED_DATABASE_URL=postgres://quilt:<password>@hem.wildebeest-stargazer.ts.net:5433/patchwork_central_restricted?sslmode=disable
+  #     (<password> is the value in restricted-staging-quilt.age)
+  #   SECRET_KEY_BASE=...    (its own, not production's)
+  #   WEAVE_CLIENT_ID=...  WEAVE_CLIENT_SECRET=...  (a Weave staging app)
+  #   MERCURY_API_TOKEN=...  (a Mercury SANDBOX read-only token)
+  #   MERCURY_WRITE_TOKEN=   (a sandbox token; may be blank while QUILT_TOPUPS=off)
+  #   QUILT_TOPUPS=off
+  # MERCURY_API_BASE (the sandbox) and WEAVE_ISSUER (Weave staging) are set in
+  # hosts/alastor/quilt.nix and override this file.
+  "quilt-staging-env.age".publicKeys = [
+    jsp
+    alastor
+  ];
+
   # GitHub classic PAT with read:packages only, for ghcr.io/patchworklabsorg/quilt
   # (a private package). The token only, no newline needed.
   "quilt-ghcr-token.age".publicKeys = [
@@ -74,6 +91,13 @@ in
     jsp
     seam
   ];
+
+  # Quilt's role password in patchwork_central_restricted on hem:5433 (the
+  # restricted staging cluster). Password only. hem decrypts it into the
+  # restricted-staging container (hosts/hem/configuration.nix). alastor does
+  # not get this file: the same password is in quilt-staging-env.age.
+  # TODO: add hem after its install, then `agenix -r`.
+  "restricted-staging-quilt.age".publicKeys = [ jsp ];
 
   # svc-lnx-join password only (modules/ad-join, ansible/sync-join-password.yml).
   # Add each lab host key after its install, then `agenix -r`.

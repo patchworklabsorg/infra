@@ -33,6 +33,19 @@ Credentials come only from environment variables or `gcloud`. Never put credenti
 
 The file `terraform.tfvars` is git-ignored. So are `*.auto.tfvars`, `.terraform/` and `*.tfstate*`. See `terraform/.gitignore`.
 
+## Workspace service account
+
+The `gcp-org` root creates the service account `tf-workspace`. The `workspace/` root impersonates it to manage Google Workspace. The account has no keys.
+
+The group `gcp-admins` has `roles/iam.serviceAccountTokenCreator` on the account.
+
+A super admin must add domain-wide delegation by hand. Terraform cannot do this step. Open the Admin console, go to Security, Access and data control, API controls, Domain-wide delegation. Add the client ID from the output `tf_workspace_service_account_client_id` with these scopes:
+
+- `https://www.googleapis.com/auth/admin.directory.orgunit`
+- `https://www.googleapis.com/auth/admin.directory.group`
+- `https://www.googleapis.com/auth/admin.directory.group.member`
+- `https://www.googleapis.com/auth/apps.groups.settings`
+
 ## Commands
 
 Run the format check from the repo root with `nix flake check`. Enter the dev shell with `nix develop`. The shell has `tofu` and `gcloud`.

@@ -77,7 +77,7 @@ Add-FakeObject "CN=member1,OU=Members,$old" 'user' @{ Sam = 'member1' } | Out-Nu
 # holds the UPN that org.json gives to petrarcad.
 $stranger = Add-FakeObject "CN=stranger,OU=Governance,$old" 'user' @{ Sam = 'stranger' }
 $loganUpn = Add-FakeObject "CN=logan2,OU=Members,$old" 'user' @{ Sam = 'logan2' }
-Set-Attrs $loganUpn @{ userPrincipalName = 'logan@patchworklabs.org' }
+Set-Attrs $loganUpn @{ userPrincipalName = 'logan@hackboston.dev' }
 $imposter = Add-FakeObject "CN=imposter,OU=Members,$old" 'user' @{ Sam = 'imposter' }
 Set-Attrs $imposter @{ userPrincipalName = 'dominic@patchworklabs.org' }
 $lnxUsers = Add-FakeObject "CN=lnx-skein-users,OU=Box-Users,OU=Linux-Access-Control,OU=Security-Groups,$old" 'group' @{ Sam = 'lnx-skein-users'; Scope = 'Global'; Description = 'Linux logon on skein' }
@@ -122,7 +122,7 @@ Check 'klukask UPN is kieran@patchworklabs.org, still disabled' ((U 'klukask').u
 Check 'one user per person' (@(Get-ADUser -Filter "objectClass -eq 'user'" | Where-Object { $_.Name -like 'Jasper Mayone*' }).Count -eq 2 -and
     -not (U 'jasper') -and -not (U 'kieran') -and -not (U 'dominic') -and -not (U 'jasper.adm'))
 Check 'UPN conflict: petrarcad reported and not changed' ($r.Output -match 'petrarcad: UPN dominic@patchworklabs.org belongs to imposter' -and $null -eq (U 'petrarcad').userPrincipalName)
-Check 'UPN conflict: logan reported and not created' ($r.Output -match 'logan: UPN logan@patchworklabs.org belongs to logan2' -and -not (U 'logan'))
+Check 'UPN conflict: logan reported and not created' ($r.Output -match 'logan: UPN logan@hackboston.dev belongs to logan2' -and -not (U 'logan'))
 Check 'wei in hackathon.help OU' ((U 'wei').DistinguishedName -eq "CN=wei,OU=hackathon.help,OU=Sponsored-Projects,OU=Users,$new")
 Check 'adm_mayonej keeps its UPN and name' ((U 'adm_mayonej').userPrincipalName -eq 'adm_mayonej@patchwork.internal' -and (U 'adm_mayonej').displayName -eq 'Jasper Mayone (Admin)')
 Check 'svc-ansible not created or changed' ((U 'svc-ansible').DistinguishedName -like "*,$old")
@@ -130,6 +130,10 @@ Check 'GG-Board members' (((MembersOf 'GG-Board') | Sort-Object) -join ',' -eq '
 Check 'GG-Board is Global in Roles' ((G 'GG-Board').GroupScope -eq 'Global' -and (G 'GG-Board').DistinguishedName -like "*,OU=Roles,OU=Groups,$new")
 Check 'GG-Service-Accounts members' (((MembersOf 'GG-Service-Accounts') | Sort-Object) -join ',' -eq 'svc-ansible,svc-dhcp-dns,svc-lnx-join,svc-pve-ldap,svc-service')
 Check 'svc-service gets UPN service@patchworklabs.org' ((Get-ADUser -Filter "SamAccountName -eq 'svc-service'" -Properties UserPrincipalName).UserPrincipalName -eq 'service@patchworklabs.org')
+Check 'cj gets the HackBoston domain from the OU' ((Get-ADUser -Filter "SamAccountName -eq 'cj'" -Properties UserPrincipalName).UserPrincipalName -eq 'cj@hackboston.dev')
+Check 'wei gets the hackathon.help domain from the OU' ((Get-ADUser -Filter "SamAccountName -eq 'wei'" -Properties UserPrincipalName).UserPrincipalName -eq 'wei@hackathon.help')
+Check 'staff keep patchworklabs.org' ((Get-ADUser -Filter "SamAccountName -eq 'mayonej'" -Properties UserPrincipalName).UserPrincipalName -eq 'jasper@patchworklabs.org')
+Check 'project UPN suffixes added to the forest' ((Get-ADForest).UPNSuffixes -contains 'hackboston.dev' -and (Get-ADForest).UPNSuffixes -contains 'hackathon.help')
 Check 'lnx-warp-users created DomainLocal' ((G 'lnx-warp-users').GroupScope -eq 'DomainLocal')
 Check 'lnx-skein-users holds only GG-Infra' (((MembersOf 'lnx-skein-users') -join ',') -eq 'GG-Infra')
 Check 'tier 0 group in Domain Admins' ((MembersOf 'Domain Admins') -contains 'GG-Domain-Admins-Tier0')

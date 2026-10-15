@@ -146,15 +146,37 @@ function Find-UserByUpn([string]$Upn) {
 
 # The UPN that org.json manages for an entry, or $null. "upn" is the part
 # before the @. It defaults to "sam".
+# The UPN suffix for an entry: its own "upnSuffix", else the nearest OU
+# (walking up its path) that sets one, else the forest-wide upnSuffix. A
+# sponsored project's OU sets the project's domain, so its organizers log in
+# with that domain unless org.json gives a person a different one.
+function Get-UpnSuffixFor($u) {
+    if (Test-Field $u 'upnSuffix') { return $u.upnSuffix }
+    $parts = $u.ou -split '/'
+    for ($i = $parts.Count; $i -ge 1; $i--) {
+        $path = ($parts[0..($i - 1)]) -join '/'
+        $ou = $data.ous | Where-Object { $_.path -eq $path -and $_.PSObject.Properties['upnSuffix'] } | Select-Object -First 1
+        if ($ou) { return $ou.upnSuffix }
+    }
+    $data.upnSuffix
+}
+
+# Every UPN suffix that org.json uses.
+function Get-UpnSuffixes {
+    @(@($data.upnSuffix) + @($data.ous | Where-Object { $_.PSObject.Properties['upnSuffix'] } | ForEach-Object { $_.upnSuffix }) +
+        @($data.users | Where-Object { $_.PSObject.Properties['upnSuffix'] } | ForEach-Object { $_.upnSuffix })) |
+        Sort-Object -Unique
+}
+
 function Get-WantedUpn($u) {
     $local = if (Test-Field $u 'upn') { $u.upn } else { $u.sam }
     $create = -not ($u.PSObject.Properties['create'] -and -not $u.create)
     switch ($u.kind) {
-        'person' { return "$local@$($data.upnSuffix)" }
+        'person' { return "$local@$(Get-UpnSuffixFor $u)" }
         'admin' { if ($create) { return "$local@$($data.domain)" } }
         # A service account gets a UPN only when org.json sets "upn", for
         # example to match a Workspace address.
-        'service' { if (Test-Field $u 'upn') { return "$local@$($data.upnSuffix)" } }
+        'service' { if (Test-Field $u 'upn') { return "$local@$(Get-UpnSuffixFor $u)" } }
     }
     $null
 }
@@ -197,9 +219,11 @@ function Get-ResourceGroups {
 # --- Build: pieces -----------------------------------------------------------
 function Sync-UpnSuffix {
     $forest = Get-ADForest @ad
-    if ($forest.UPNSuffixes -notcontains $data.upnSuffix) {
-        Invoke-Change $forest.Name "Add UPN suffix $($data.upnSuffix)" {
-            Set-ADForest -Identity $forest -UPNSuffixes @{ Add = $data.upnSuffix } @ad
+    foreach ($suffix in Get-UpnSuffixes) {
+        if ($forest.UPNSuffixes -notcontains $suffix) {
+            Invoke-Change $forest.Name "Add UPN suffix $suffix" {
+                Set-ADForest -Identity $forest -UPNSuffixes @{ Add = $suffix } @ad
+            }
         }
     }
 }

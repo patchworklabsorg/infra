@@ -16,13 +16,34 @@ let
   # The UPN that converge.ps1 manages for each user. "upn" is the part
   # before the @ and defaults to "sam". Admin accounts keep the domain.
   creates = u: !(u ? create) || u.create;
+  # The suffix: the user's own, else the nearest OU on its path that sets
+  # one, else org.upnSuffix. Same rule as Get-UpnSuffixFor in converge.ps1.
+  ouSuffix =
+    path:
+    let
+      parts = lib.splitString "/" path;
+      prefixes = lib.reverseList (
+        lib.genList (i: lib.concatStringsSep "/" (lib.take (i + 1) parts)) (builtins.length parts)
+      );
+      found = builtins.filter (p: p != null) (
+        map (
+          p:
+          let
+            o = lib.findFirst (x: x.path == p && x ? upnSuffix) null org.ous;
+          in
+          if o == null then null else o.upnSuffix
+        ) prefixes
+      );
+    in
+    if found == [ ] then org.upnSuffix else builtins.head found;
+  suffixOf = u: u.upnSuffix or (ouSuffix u.ou);
   upnOf =
     u:
     let
       local = u.upn or u.sam;
     in
-    if u.kind == "person" then
-      "${local}@${org.upnSuffix}"
+    if u.kind == "person" || (u.kind == "service" && u ? upn) then
+      "${local}@${suffixOf u}"
     else if u.kind == "admin" && creates u then
       "${local}@${org.domain}"
     else

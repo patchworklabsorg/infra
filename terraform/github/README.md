@@ -7,9 +7,10 @@ This root manages the GitHub org `patchworklabsorg` with the `integrations/githu
 - Repositories: visibility, description, features, merge settings and default branch.
 - Teams, team members and team access to repositories.
 - Org members and their roles.
+- Org settings in `settings.tf`, with the live values. The org does not require two-factor authentication. Members can create repositories.
 - Rulesets on the default branch of `weave`, `infra`, `dns` and `core`.
 
-It does not manage repo contents, secrets, Actions variables, webhooks or org settings.
+It does not manage repo contents, secrets, Actions variables, webhooks or two-factor authentication.
 
 Every repository has `prevent_destroy` and `archive_on_destroy = true`. Org members have `prevent_destroy`.
 

@@ -69,7 +69,7 @@ locals {
       wiki        = false
       projects    = false
     }
-    "weave-kyc-propsal" = {
+    "weave-kyc-proposal" = {
       description  = "VERY PRIVATE/INTERNAL - Jasper's proposal for weave kyc (not called kyc)"
       visibility   = "private"
       homepage_url = "https://weave-kyc-proposal.patchworklabs.org"
@@ -156,14 +156,15 @@ locals {
   child_teams = { for k, v in local.teams : k => v if v.parent != null }
 
   # team slug => github username => role (member or maintainer).
+  # Org owners manage every team, so jaspermayone is a plain member.
   team_members = {
-    "board-of-directors" = { jaspermayone = "maintainer", domvt = "maintainer", taciturnaxolotl = "maintainer" }
-    "dns-frens"          = { jaspermayone = "maintainer" }
-    "infra"              = { jaspermayone = "maintainer" }
-    "weave"              = { jaspermayone = "maintainer", Adambomb210 = "member" }
-    "weave-committers"   = { jaspermayone = "maintainer" }
-    "weave-read"         = { jaspermayone = "maintainer", Adambomb210 = "member" }
-    "weave-writers"      = { jaspermayone = "maintainer", Adambomb210 = "member" }
+    "board-of-directors" = { jaspermayone = "member", domvt = "maintainer", taciturnaxolotl = "maintainer" }
+    "dns-frens"          = { jaspermayone = "member" }
+    "infra"              = { jaspermayone = "member" }
+    "weave"              = { jaspermayone = "member", Adambomb210 = "member" }
+    "weave-committers"   = { jaspermayone = "member" }
+    "weave-read"         = { jaspermayone = "member", Adambomb210 = "member" }
+    "weave-writers"      = { jaspermayone = "member", Adambomb210 = "member" }
   }
 
   # team slug => repo name => permission (pull, triage, push, maintain, admin).
@@ -229,7 +230,6 @@ locals {
       require_owner = false
       bypass = [
         { actor_type = "OrganizationAdmin", actor_id = null, bypass_mode = "always" },
-        { actor_type = "Integration", actor_id = 158384, bypass_mode = "always" },
       ]
     }
   }

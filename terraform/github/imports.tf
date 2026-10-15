@@ -48,3 +48,9 @@ import {
   to       = github_repository_ruleset.main[each.key]
   id       = "${each.key}:${each.value.ruleset_id}"
 }
+
+# The ID is the numeric ID of the organization.
+import {
+  to = github_organization_settings.this
+  id = "216448207"
+}

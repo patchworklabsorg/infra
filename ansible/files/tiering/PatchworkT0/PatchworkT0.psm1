@@ -56,8 +56,8 @@ function Assert-T0Pam {
     Makes the caller a Domain Admin for 1 to 4 hours.
 .DESCRIPTION
     Adds the caller to GG-Domain-Admins-Tier0 with a time to live. Writes
-    event 1000 (source Patchwork-JIT) to the Application log of this DC and
-    sends a mail to security@. An open grant is reused, not extended.
+    event 1000 (source Patchwork-JIT) to the Application log of this DC. It
+    sends a mail to security@ only when mail is enabled (Mailed is then True). An open grant is reused, not extended.
     After the grant, run "klist purge" or log on again: only a new TGT
     carries Domain Admins.
 .EXAMPLE

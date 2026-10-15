@@ -30,8 +30,9 @@
 #   -t armoring             KDC and client Kerberos armoring GPOs
 #   -t default-domain-gpo   Default Domain Policy password and lockout =
 #                           ad/org.json passwordPolicy.default
-#   -t breakglass-alert     mail to security@ when the built-in Administrator
-#                           is used or a privileged group changes
+#   -t breakglass-alert     event 1000 (Patchwork-Alert) when the built-in
+#                           Administrator is used or a privileged group
+#                           changes. Mail only if ad_alert_mail_enabled
 #   -t administrator-random discarded random password on the built-in
 #                           Administrator. Only while it is disabled
 #   -t krbtgt-reset         one krbtgt reset. Refuses before 10 h since the
@@ -67,7 +68,8 @@
     ad_alert_dir: 'C:\ProgramData\Patchwork\alerts'
     ad_jea_dir: 'C:\ProgramData\Patchwork\jea'
     ad_ps_modules: 'C:\Program Files\WindowsPowerShell\Modules'
-    # -t breakglass-alert: -e ad_alert_test=true also sends one test mail.
+    # -t breakglass-alert: -e ad_alert_test=true writes one test event
+    # (mails only if ad_alert_mail_enabled).
     ad_alert_test: false
     # -t administrator-random: -e ad_admin_random_force=true sets a new
     # password even when the last one is younger than the minimum age.
@@ -843,7 +845,8 @@
       tags: [default-domain-gpo, never]
 
     # ------------------------------------------- alert and JEA shared files
-    # PatchworkAlert sends the alert mail. Both -t breakglass-alert and
+    # PatchworkAlert writes the alert event and, if ad_alert_mail_enabled,
+    # sends the mail. Both -t breakglass-alert and
     # -t jit-endpoint use it.
     - name: Alerts | Directories exist
       ansible.windows.win_file:
@@ -861,12 +864,13 @@
       loop: [PatchworkAlert.psm1, PatchworkAlert.psd1]
       tags: [breakglass-alert, jit-endpoint, never]
 
-    - name: Alerts | Relay settings (no secret)
+    - name: Alerts | Mail settings (no secret)
       ansible.windows.win_copy:
         content: "{{ ad_alert_mail | to_nice_json }}"
         dest: "{{ ad_alert_dir }}\\mail.json"
       vars:
         ad_alert_mail:
+          enabled: "{{ ad_alert_mail_enabled | default(false) | bool }}"
           host: "{{ ad_alert_smtp_host }}"
           port: "{{ ad_alert_smtp_port | int }}"
           from: "{{ ad_alert_from }}"
@@ -890,8 +894,9 @@
 
     # ------------------------------------------------------ breakglass-alert
     # An event-triggered scheduled task on each DC. It runs as SYSTEM, once
-    # for each matching Security event, and mails security@. TIERING.md
-    # section 4. Test it every quarter: enable the account, log on once,
+    # for each matching Security event, and writes event 1000 to the
+    # Application log (source Patchwork-Alert). It mails security@ only when
+    # ad_alert_mail_enabled is true. TIERING.md section 4. Test it every quarter: enable the account, log on once,
     # then run -t administrator-random -e ad_admin_random_force=true.
     - name: Break-glass | Handler script is installed
       ansible.windows.win_copy:
@@ -962,8 +967,9 @@
           # changes nothing when the definition is the same.
           $sha = [System.Security.Cryptography.SHA256]::Create()
           $hash = -join ($sha.ComputeHash([Text.Encoding]::UTF8.GetBytes($body)) | ForEach-Object { $_.ToString('x2') })
-          $to = (Get-Content -Raw "$env:ProgramData\Patchwork\alerts\mail.json" | ConvertFrom-Json).to
-          $desc = "Mails $to on use of the built-in Administrator and on privileged group changes. " +
+          $mc = Get-Content -Raw "$env:ProgramData\Patchwork\alerts\mail.json" | ConvertFrom-Json
+          $mailNote = if ($mc.enabled) { "Mails $($mc.to) and writes" } else { 'Writes' }
+          $desc = "$mailNote an event (Patchwork-Alert) on use of the built-in Administrator and on privileged group changes. " +
                   "ansible/ad.yml -t breakglass-alert. sha256=$hash"
           $xml = @"
           <?xml version="1.0" encoding="UTF-16"?>
@@ -988,12 +994,16 @@
         var: ad_breakglass.result
       tags: [breakglass-alert, never]
 
-    - name: Break-glass | Send one test mail (-e ad_alert_test=true)
+    - name: Break-glass | Write one test event (-e ad_alert_test=true)
       ansible.windows.win_powershell:
         script: |
           Import-Module PatchworkAlert
-          $ok = Send-PatchworkAlert -Subject "Test alert from $env:COMPUTERNAME" -Body 'ad.yml -t breakglass-alert -e ad_alert_test=true. No action needed.'
-          if (-not $ok) { throw 'The test mail failed. Read event 1900 (source Patchwork-Alert) in the Application log of this DC.' }
+          $enabled = [bool](Get-Content -Raw "$env:ProgramData\Patchwork\alerts\mail.json" | ConvertFrom-Json).enabled
+          $body = 'ad.yml -t breakglass-alert -e ad_alert_test=true. No action needed.'
+          $ok = Send-PatchworkAlert -Subject "Test alert from $env:COMPUTERNAME" -Body $body -EventId 1001
+          if ($enabled -and -not $ok) { throw 'The test mail failed. Read event 1900 (source Patchwork-Alert) in the Application log of this DC.' }
+          $Ansible.Changed = $false
+          $Ansible.Result = @{ eventWritten = 'Patchwork-Alert 1001'; mailEnabled = $enabled; mailed = $ok }
       when: ad_alert_test | bool
       tags: [breakglass-alert, never]
 
@@ -1129,7 +1139,9 @@
           param([int]$min_age_hours, [string]$problems_json)
           $Ansible.Changed = $false
           Import-Module ActiveDirectory
-          $problems = @($problems_json | ConvertFrom-Json)
+          # Windows PowerShell 5.1 returns "[]" as ONE empty array object, so
+          # @(...) alone would count 1 problem. ForEach-Object unrolls it.
+          $problems = @(($problems_json | ConvertFrom-Json) | ForEach-Object { $_ })
           $k = Get-ADUser -Identity krbtgt -Properties pwdLastSet
           $age = ((Get-Date).ToUniversalTime() - [DateTime]::FromFileTimeUtc([int64]$k.pwdLastSet)).TotalHours
           if ($age -lt $min_age_hours) {
@@ -1160,18 +1172,10 @@
       when: ad_is_primary_dc
       tags: [krbtgt-reset, never]
 
-    - name: Krbtgt | Each DC pulls the change from its partners
-      ansible.windows.win_powershell:
-        script: |
-          $out = repadmin /syncall /Ade 2>&1 | Out-String
-          if ($LASTEXITCODE -ne 0) { throw "repadmin /syncall /Ade failed:`n$out" }
-          $Ansible.Result = $out
-      register: ad_krbtgt_sync
-      when:
-        - not ansible_check_mode
-        - hostvars[ad_dcs[0].name.split('.')[0]].ad_krbtgt_reset is changed
-      tags: [krbtgt-reset, never]
-
+    # No repadmin /syncall here: over WinRM the session has no credentials
+    # for the outbound RPC (double hop), so repadmin gets "Access is denied"
+    # even against the local DC. Intra-site change notification replicates
+    # the reset in seconds; the next task waits for it on each DC.
     - name: Krbtgt | Each DC has the new password
       ansible.windows.win_powershell:
         parameters:

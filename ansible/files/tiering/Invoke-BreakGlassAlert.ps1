@@ -47,7 +47,9 @@ $lines = foreach ($f in $fields) {
 }
 
 $body = @"
-$what.
+WHAT: $what.
+WHEN: $($evt.TimeCreated.ToUniversalTime().ToString('u'))
+WHO:  $(if ($data.Contains('SubjectUserName') -and $data['SubjectUserName']) { "$($data['SubjectDomainName'])\$($data['SubjectUserName'])" } else { 'see the fields below' })
 
 Event $($evt.Id) in $Channel, record $RecordId, at $($evt.TimeCreated.ToUniversalTime().ToString('u')).
 
@@ -59,4 +61,5 @@ check who did it, reset the password to a new discarded random value
 account disabled.
 "@
 
+# Writes event 1000 (source Patchwork-Alert). Mails only when mail.json enables it.
 Send-PatchworkAlert -Subject "$what on $env:COMPUTERNAME" -Body $body -Source 'Patchwork-Alert' -EventId 1000 | Out-Null

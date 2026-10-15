@@ -22,6 +22,29 @@ The root sets the VM hardware only. The address is not set in Proxmox. NixOS set
 
 Cores and disk sizes in `variables.tf` are starting values. Check them before the first apply.
 
+## Tier 0 jump host `spool`
+
+`windows.tf` adds `spool`, the Tier 0 jump host from `ad/TIERING.md` (decision 3). It is a separate resource, because it is Windows and not NixOS.
+
+| Host | VMID | Address | Memory | Cores | Disk |
+|---|---|---|---|---|---|
+| `spool` | 359 (confirm free) | 10.100.90.59 (confirm free) | 4 GB | 2 | 60 GB |
+
+- OVMF (UEFI) with pre-enrolled Secure Boot keys, a TPM 2.0 state disk, machine `q35`, OS type `win11` (Windows 11 and Server 2022/2025).
+- The disk is `sata0` and the NIC is `e1000e`. The Windows installer has drivers for both, so you do not need the virtio-win ISO.
+- The guest agent is off in Proxmox until you install it in Windows. Then set `agent.enabled = true` by hand in Proxmox. Terraform ignores the change.
+- No VM is created while `windows_iso_file_id` is null. The NixOS VMs do not need the variable.
+
+Before the first apply:
+
+1. Check that VMID 359 and 10.100.90.59 are free: `pvesh get /cluster/resources --type vm` on pve01, and `Resolve-DnsName 10.100.90.59` or a ping in the lab.
+2. Upload the Windows Server 2025 ISO to `local` on pve01.
+3. Set the variable in `terraform.tfvars`: `windows_iso_file_id = "local:iso/<file>.iso"`.
+4. Check the committed memory on pve01 (see "Memory warning").
+5. Plan, read the plan, apply. Install Windows from the console, set the static address, join the domain, then put it in the silo: `spool` is already in `tiering.computers` in `ad/org.json`, so the next `converge.ps1` Build adds `SPOOL$`.
+
+The token needs `VM.Config.Disk` on the pool for the EFI and TPM disks. It has it.
+
 ## Not managed
 
 The Windows VMs `loom` (310), `spindle` (311), `bobbin` (312) and `shuttle` (314) are not in this root. Ansible manages their contents. They can be imported later.

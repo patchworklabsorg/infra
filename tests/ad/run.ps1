@@ -19,8 +19,8 @@ function Check([string]$Name, [bool]$Ok) {
 }
 
 # Runs one phase, returns @{ Changes; Reports; Errors; Output }.
-function Converge([string]$Phase, [switch]$WhatIf) {
-    $out = & $Converge -Phase $Phase -LogDir $logDir -WhatIf:$WhatIf 6>&1 2>&1 | Out-String
+function Converge([string]$Phase, [switch]$WhatIf, [string]$DataFile = (Join-Path $PSScriptRoot '../../ad/org.json')) {
+    $out = & $Converge -Phase $Phase -LogDir $logDir -DataFile $DataFile -WhatIf:$WhatIf 6>&1 2>&1 | Out-String
     if ($out -notmatch 'END\s+(\d+) changes, (\d+) reports, (\d+) errors') { throw "No END line:`n$out" }
     @{ Changes = [int]$Matches[1]; Reports = [int]$Matches[2]; Errors = [int]$Matches[3]; Output = $out }
 }
@@ -28,6 +28,16 @@ function Converge([string]$Phase, [switch]$WhatIf) {
 function U([string]$Sam) { Get-ADUser -Filter "SamAccountName -eq '$Sam'" }
 function G([string]$Sam) { Get-ADGroup -Filter "SamAccountName -eq '$Sam'" }
 function MembersOf([string]$Group) { @(Get-ADGroupMember -Identity $Group | ForEach-Object { $_.SamAccountName }) }
+
+# A copy of org.json with changes, for the JIT checks.
+function New-OrgJson([scriptblock]$Change) {
+    $o = Get-Content -Raw (Join-Path $PSScriptRoot '../../ad/org.json') | ConvertFrom-Json
+    & $Change $o
+    $f = Join-Path $logDir ("org-" + [guid]::NewGuid() + '.json')
+    New-Item -ItemType Directory -Force -Path $logDir | Out-Null
+    $o | ConvertTo-Json -Depth 20 | Set-Content -Path $f
+    $f
+}
 
 # --- Base objects that every domain has ---------------------------------------
 $domainSid = (Get-ADDomain).DomainSID
@@ -42,6 +52,10 @@ function New-BaseDirectory([string]$AdminName = 'Administrator') {
     Add-FakeObject "CN=Administrators,CN=Builtin,$dom" 'group' @{ Sam = 'Administrators'; Scope = 'DomainLocal' } | Out-Null
     Add-FakeObject "CN=$AdminName,CN=Users,$dom" 'user' @{ Sam = $AdminName; Sid = "$domainSid-500" } | Out-Null
     Add-ADGroupMember -Identity 'Domain Admins' -Members $AdminName
+    Add-FakeObject "OU=Domain Controllers,$dom" 'organizationalUnit' @{ Protected = $true } | Out-Null
+    foreach ($dc in 'LOOM', 'SPINDLE') {
+        Add-FakeObject "CN=$dc,OU=Domain Controllers,$dom" 'computer' @{ Sam = "$dc`$" } | Out-Null
+    }
 }
 
 function Set-Attrs($Object, [hashtable]$Attrs) { foreach ($k in $Attrs.Keys) { $Object.Attrs[$k] = $Attrs[$k] } }
@@ -84,11 +98,17 @@ $lnxUsers = Add-FakeObject "CN=lnx-skein-users,OU=Box-Users,OU=Linux-Access-Cont
 Add-FakeObject "CN=lnx-skein-admins,OU=Box-Admins,OU=Linux-Access-Control,OU=Security-Groups,$old" 'group' @{ Sam = 'lnx-skein-admins'; Scope = 'Global'; Description = 'Linux sudo on skein' } | Out-Null
 Add-FakeObject "CN=lnx-sampler-users,OU=Box-Users,OU=Linux-Access-Control,OU=Security-Groups,$old" 'group' @{ Sam = 'lnx-sampler-users'; Scope = 'Global'; Protected = $true } | Out-Null
 Add-FakeObject "CN=lnx-swatch-admins,OU=Box-Admins,OU=Linux-Access-Control,OU=Security-Groups,$old" 'group' @{ Sam = 'lnx-swatch-admins'; Scope = 'Global' } | Out-Null
-Add-FakeObject "CN=SKEIN,OU=Member-Servers,OU=Infrastructure,$old" 'computer' | Out-Null
-Add-FakeObject "CN=LAPTOP1,OU=Staff-Computers,OU=Staff-Production,$old" 'computer' | Out-Null
+Add-FakeObject "CN=SKEIN,OU=Member-Servers,OU=Infrastructure,$old" 'computer' @{ Sam = 'SKEIN$' } | Out-Null
+Add-FakeObject "CN=BOBBIN,OU=Member-Servers,OU=Infrastructure,$old" 'computer' @{ Sam = 'BOBBIN$' } | Out-Null
+Add-FakeObject "CN=SHUTTLE,OU=Member-Servers,OU=Infrastructure,$old" 'computer' @{ Sam = 'SHUTTLE$' } | Out-Null
+Add-FakeObject "CN=LAPTOP1,OU=Staff-Computers,OU=Staff-Production,$old" 'computer' @{ Sam = 'LAPTOP1$' } | Out-Null
+Add-FakeObject "CN=DnsAdmins,CN=Users,$dom" 'group' @{ Sam = 'DnsAdmins'; Scope = 'DomainLocal' } | Out-Null
 Add-ADGroupMember -Identity 'Domain Admins' -Members 'adm_mayonej'
 Add-ADGroupMember -Identity 'Enterprise Admins' -Members 'adm_mayonej'
 Add-ADGroupMember -Identity 'Domain Admins' -Members 'svc-ansible'
+Add-ADGroupMember -Identity 'Enterprise Admins' -Members 'Administrator'
+Add-ADGroupMember -Identity 'Schema Admins' -Members 'Administrator'
+Add-ADGroupMember -Identity 'DnsAdmins' -Members 'adm_mayonej'
 # Not live: a daily account with Domain Admins, to test that Build removes it.
 Add-ADGroupMember -Identity 'Domain Admins' -Members 'mayonej'
 Add-ADGroupMember -Identity 'lnx-skein-users' -Members 'mayonej'
@@ -101,6 +121,9 @@ Check 'Build -WhatIf changes nothing' ((Get-FakeADState) -eq $before)
 Check 'Build -WhatIf lists changes' ($r.Changes -gt 0 -and $r.Errors -eq 0)
 Check 'Build -WhatIf creates no existing person' ($r.Output -notmatch 'Create user[^\n]*(Jasper Mayone|Kieran|Dominic|klukask|petrarcad|svc-lnx-join|svc-dhcp-dns|svc-pve-ldap|svc-ansible)')
 Check 'Build -WhatIf shows the UPN change' ($r.Output -match "WOULD\s+Set [^\n]*userPrincipalName='jasper@patchworklabs.org'")
+Check 'Build -WhatIf shows the silo' ($r.Output -match 'WOULD\s+Create, enforce=False[^\n]*: authentication policy silo T0-Silo' -and
+    $r.Output -match 'WOULD\s+Create, enforce=False, tgtMinutes=240, deviceInSilo=True : authentication policy T0-User' -and
+    $r.Output -match 'WOULD\s+Grant access to LOOM\$, assign the silo : T0-Silo \(after it is created\)')
 Check 'Build -WhatIf shows the PSOs' ($r.Output -match 'WOULD\s+Create PSO[^\n]*PSO-Tier0' -and $r.Output -match 'Apply to GG-Service-Accounts : PSO PSO-Service')
 
 $r = Converge Build
@@ -155,11 +178,43 @@ Check 'default policy set' ($dp.MinPasswordLength -eq 12 -and $dp.MaxPasswordAge
 function PsoSubjects([string]$Name) { @(Get-ADFineGrainedPasswordPolicySubject -Identity $Name | ForEach-Object { $_.SamAccountName }) -join ',' }
 $t0 = Get-ADFineGrainedPasswordPolicy -Identity 'PSO-Tier0'
 Check 'PSO-Tier0' ($t0.Precedence -eq 10 -and $t0.MinPasswordLength -eq 20 -and $t0.LockoutThreshold -eq 5 -and
-    $t0.LockoutDuration -eq [TimeSpan]::FromMinutes(30) -and $t0.MaxPasswordAge.Ticks -le 0 -and (PsoSubjects 'PSO-Tier0') -eq 'GG-Domain-Admins-Tier0')
+    $t0.LockoutDuration -eq [TimeSpan]::FromMinutes(30) -and $t0.MaxPasswordAge.Ticks -le 0 -and (PsoSubjects 'PSO-Tier0') -eq 'GG-Domain-Admins-Tier0,GG-T0-Eligible')
 $sv = Get-ADFineGrainedPasswordPolicy -Identity 'PSO-Service'
 Check 'PSO-Service' ($sv.MinPasswordLength -eq 32 -and $sv.LockoutThreshold -eq 0 -and (PsoSubjects 'PSO-Service') -eq 'GG-Service-Accounts')
 $st = Get-ADFineGrainedPasswordPolicy -Identity 'PSO-Staff'
 Check 'PSO-Staff' ($st.MinPasswordLength -eq 14 -and $st.LockoutThreshold -eq 10 -and (PsoSubjects 'PSO-Staff') -eq 'GG-All-Staff')
+
+# Tiering
+$sddl = 'O:SYG:SYD:(XA;OICI;CR;;;WD;(@USER.ad://ext/AuthenticationSilo == "T0-Silo"))'
+$tu = Get-ADAuthenticationPolicy -Identity 'T0-User'
+Check 'T0-User: 240 min, device in silo, audit mode, protected' ($tu.UserTGTLifetimeMins -eq 240 -and $tu.UserAllowedToAuthenticateFrom -eq $sddl -and
+    -not $tu.Enforce -and $tu.ProtectedFromAccidentalDeletion)
+$tc = Get-ADAuthenticationPolicy -Identity 'T0-Computer'
+Check 'T0-Computer: no TGT lifetime, no condition' ($null -eq $tc.UserTGTLifetimeMins -and $null -eq $tc.UserAllowedToAuthenticateFrom -and -not $tc.Enforce)
+$ts = Get-ADAuthenticationPolicy -Identity 'T0-Service'
+Check 'T0-Service: 60 min, no device condition, audit mode' ($ts.UserTGTLifetimeMins -eq 60 -and $null -eq $ts.UserAllowedToAuthenticateFrom -and -not $ts.Enforce)
+$silo = Get-ADAuthenticationPolicySilo -Identity 'T0-Silo'
+Check 'T0-Silo: audit mode, user and computer policy, no service policy' (-not $silo.Enforce -and $silo.ProtectedFromAccidentalDeletion -and
+    $silo.UserAuthenticationPolicy -eq $tu.DistinguishedName -and $silo.ComputerAuthenticationPolicy -eq $tc.DistinguishedName -and
+    $null -eq $silo.ServiceAuthenticationPolicy)
+function SiloSams {
+    @((Get-ADObject -Identity (Get-ADAuthenticationPolicySilo -Identity 'T0-Silo').DistinguishedName -Properties 'msDS-AuthNPolicySiloMembers').'msDS-AuthNPolicySiloMembers' |
+        ForEach-Object { (Get-ADObject -Identity $_).SamAccountName } | Sort-Object) -join ','
+}
+function AssignedSilo([string]$Sam) {
+    $p = (Get-ADObject -Filter "SamAccountName -eq '$Sam'" -Properties 'msDS-AssignedAuthNPolicySilo').PSObject.Properties['msDS-AssignedAuthNPolicySilo']
+    if ($p) { $p.Value } else { $null }
+}
+Check 'T0-Silo members' ((SiloSams) -eq 'adm_mayonej,BOBBIN$,LOOM$,SHUTTLE$,SPINDLE$')
+Check 'silo assigned to each member' (@('adm_mayonej', 'LOOM$', 'SPINDLE$', 'BOBBIN$', 'SHUTTLE$' | Where-Object { (AssignedSilo $_) -ne $silo.DistinguishedName }).Count -eq 0)
+Check 'SPOOL reported, not created' ($r.Output -match 'REPORT\s+SPOOL\$ does not exist, so it is not in T0-Silo' -and -not (Get-ADObject -Filter "SamAccountName -eq 'SPOOL$'"))
+Check 'svc-ansible and Administrator not in the silo' ($null -eq (AssignedSilo 'svc-ansible') -and $null -eq (AssignedSilo 'Administrator'))
+Check 'GG-T0-Eligible holds adm_mayonej' (((MembersOf 'GG-T0-Eligible') -join ',') -eq 'adm_mayonej')
+Check 'Administrator leaves Enterprise Admins and Schema Admins, stays in Domain Admins' (-not ((MembersOf 'Enterprise Admins') -contains 'Administrator') -and
+    -not ((MembersOf 'Schema Admins') -contains 'Administrator') -and (MembersOf 'Domain Admins') -contains 'Administrator' -and
+    $r.Output -notmatch 'Administrator is a direct member of (Enterprise|Schema) Admins')
+Check 'JIT off: standing admin reported, not removed' ((MembersOf 'DnsAdmins') -contains 'adm_mayonej' -and
+    $r.Output -match 'adm_mayonej is a standing member of DnsAdmins' -and $r.Output -match 'adm_mayonej is a direct member of Enterprise Admins')
 
 $r = Converge Build
 Check 'Build twice: zero changes' ($r.Changes -eq 0 -and $r.Errors -eq 0)
@@ -172,6 +227,28 @@ New-ADFineGrainedPasswordPolicy -Name 'PSO-Old' -Precedence 99
 $r = Converge Build
 Check 'PSO drift fixed' ((Get-ADFineGrainedPasswordPolicy -Identity 'PSO-Staff').MinPasswordLength -eq 14 -and (PsoSubjects 'PSO-Staff') -eq 'GG-All-Staff' -and $r.Errors -eq 0)
 Check 'unknown PSO reported, not deleted' ($r.Output -match 'PSO PSO-Old is in AD but not in org.json' -and (Get-ADFineGrainedPasswordPolicy -Identity 'PSO-Old'))
+
+# Silo drift: enforce by hand, a changed lifetime and condition, an extra
+# member. Build sets org.json values back and only reports the extra member.
+Set-ADAuthenticationPolicySilo -Identity 'T0-Silo' -Enforce $true
+Set-ADAuthenticationPolicy -Identity 'T0-User' -UserTGTLifetimeMins 600 -Enforce $true
+Set-ADAuthenticationPolicy -Identity 'T0-Computer' -UserAllowedToAuthenticateFrom 'O:SYG:SYD:(A;;CR;;;WD)'
+Set-ADAuthenticationPolicySilo -Identity 'T0-Silo' -ServiceAuthenticationPolicy 'T0-Service'
+Grant-ADAuthenticationPolicySiloAccess -Identity 'T0-Silo' -Account 'SKEIN$'
+$r = Converge Build
+$tu = Get-ADAuthenticationPolicy -Identity 'T0-User'
+$silo = Get-ADAuthenticationPolicySilo -Identity 'T0-Silo'
+Check 'silo drift fixed' ($r.Errors -eq 0 -and -not $silo.Enforce -and $null -eq $silo.ServiceAuthenticationPolicy -and $tu.UserTGTLifetimeMins -eq 240 -and
+    -not $tu.Enforce -and $null -eq (Get-ADAuthenticationPolicy -Identity 'T0-Computer').UserAllowedToAuthenticateFrom)
+Check 'extra silo member reported, not removed' ($r.Output -match 'CN=SKEIN,[^\n]*has access to T0-Silo, but it is not in tiering' -and (SiloSams) -match 'SKEIN')
+
+# Enforce from org.json.
+$enforced = New-OrgJson { param($o) $o.tiering.enforce = $true }
+$r = Converge Build -DataFile $enforced
+Check 'tiering.enforce true enforces the silo and T0-User, not T0-Service' ($r.Errors -eq 0 -and (Get-ADAuthenticationPolicySilo -Identity 'T0-Silo').Enforce -and
+    (Get-ADAuthenticationPolicy -Identity 'T0-User').Enforce -and (Get-ADAuthenticationPolicy -Identity 'T0-Computer').Enforce -and
+    -not (Get-ADAuthenticationPolicy -Identity 'T0-Service').Enforce)
+Converge Build | Out-Null
 
 # --- Migrate -------------------------------------------------------------------
 $before = Get-FakeADState
@@ -211,6 +288,49 @@ Check 'Prune deletes the old tree' ($r.Errors -eq 0 -and -not (Get-ADObject -Fil
 $r = Converge Build
 Check 'Build after migration: zero changes' ($r.Changes -eq 0 -and $r.Errors -eq 0 -and $r.Output -notmatch 'Migrate moves it')
 if ($r.Changes) { Write-Host $r.Output }
+
+# --- Just-in-time admin ---------------------------------------------------------
+$jitOn = New-OrgJson { param($o) $o.tiering.jit.enabled = $true }
+$jitRemove = New-OrgJson { param($o) $o.tiering.jit.enabled = $true; $o.tiering.jit.removeStanding = $true }
+$removeOnly = New-OrgJson { param($o) $o.tiering.jit.removeStanding = $true }
+
+# PAM feature off: JIT stays off, and the group is managed as before.
+Add-ADGroupMember -Identity 'GG-Domain-Admins-Tier0' -Members 'mayonej'
+$r = Converge Build -DataFile $jitOn
+Check 'JIT without PAM: reported, group still managed' ($r.Errors -eq 0 -and $r.Output -match 'Privileged Access Management optional feature is off' -and
+    -not ((MembersOf 'GG-Domain-Admins-Tier0') -contains 'mayonej'))
+$r = Converge Build -DataFile $removeOnly
+Check 'removeStanding without JIT: refused' ($r.Output -match 'removeStanding is true, but JIT is not active' -and (MembersOf 'Domain Admins') -contains 'adm_mayonej')
+
+# PAM on: a grant with a time to live survives, standing members are reported.
+Enable-FakePam
+Add-FakeObject "CN=adm_test,OU=Admin-Accounts,$new" 'user' @{ Sam = 'adm_test' } | Out-Null
+Add-ADGroupMember -Identity 'GG-Domain-Admins-Tier0' -Members 'adm_test' -MemberTimeToLive (New-TimeSpan -Hours 1)
+$r = Converge Build -DataFile $jitOn
+Check 'JIT on: TTL grant kept and logged' ($r.Errors -eq 0 -and (MembersOf 'GG-Domain-Admins-Tier0') -contains 'adm_test' -and
+    $r.Output -match 'INFO\s+JIT grant in GG-Domain-Admins-Tier0: CN=adm_test,[^\n]*60 min left')
+Check 'JIT on: standing member reported, not removed' ((MembersOf 'GG-Domain-Admins-Tier0') -contains 'adm_mayonej' -and
+    $r.Output -match 'REPORT\s+CN=Jasper Mayone \(Admin\),[^\n]*is a standing member of GG-Domain-Admins-Tier0')
+$r = Converge Build -DataFile $jitOn
+Check 'JIT on: rerun has zero changes' ($r.Changes -eq 0 -and $r.Errors -eq 0)
+
+# removeStanding needs a direct Domain Admins path that does not use JIT.
+Remove-ADGroupMember -Identity 'Domain Admins' -Members 'svc-ansible'
+$r = Converge Build -DataFile $jitRemove
+Check 'removeStanding refused without a direct Domain Admins fallback' ($r.Output -match 'no enabled admin account is a direct member of Domain Admins' -and
+    (MembersOf 'GG-Domain-Admins-Tier0') -contains 'adm_mayonej')
+Add-ADGroupMember -Identity 'Domain Admins' -Members 'svc-ansible'
+
+$before = Get-FakeADState
+$r = Converge Build -DataFile $jitRemove -WhatIf
+Check 'removeStanding -WhatIf changes nothing' ((Get-FakeADState) -eq $before -and $r.Output -match 'WOULD\s+Remove standing admin adm_mayonej')
+$r = Converge Build -DataFile $jitRemove
+Check 'removeStanding: adm_mayonej loses standing admin' ($r.Errors -eq 0 -and -not ((MembersOf 'GG-Domain-Admins-Tier0') -contains 'adm_mayonej') -and
+    -not ((MembersOf 'Domain Admins') -contains 'adm_mayonej') -and -not ((MembersOf 'Enterprise Admins') -contains 'adm_mayonej') -and
+    -not ((MembersOf 'DnsAdmins') -contains 'adm_mayonej'))
+Check 'removeStanding: grant, svc-ansible, eligibility and PSO stay' ((MembersOf 'GG-Domain-Admins-Tier0') -contains 'adm_test' -and
+    (MembersOf 'Domain Admins') -contains 'svc-ansible' -and (MembersOf 'GG-T0-Eligible') -contains 'adm_mayonej' -and
+    (PsoSubjects 'PSO-Tier0') -eq 'GG-Domain-Admins-Tier0,GG-T0-Eligible')
 
 # --- Built-in Administrator guard ---------------------------------------------
 # The built-in account is renamed, and another user has its old name. The

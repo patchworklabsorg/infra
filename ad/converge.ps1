@@ -34,7 +34,22 @@
 
     It disables the built-in Administrator (found by its RID 500 SID) when
     builtinAdministrator.enabled is false, but only while an admin account
-    in org.json is enabled and is in Domain Admins.
+    in org.json is enabled and is in Domain Admins. It removes that account
+    from the groups in builtinAdministrator.removeFrom.
+
+    The tiering block makes the Tier 0 authentication policies and the
+    authentication policy silo, and puts the listed users and computers in
+    the silo. "enforce": false keeps the silo and its policies in audit mode.
+    An account that does not exist (a jump host that is not built yet) is
+    reported and skipped. The built-in Administrator is never added: the KDC
+    exempts it from every policy.
+
+    tiering.jit prepares just-in-time admin. While jit.enabled is false, or
+    while the Privileged Access Management optional feature is off, the JIT
+    group is managed like every other role group. When both are on, Build
+    stops managing the members of the JIT group, so it never removes a grant
+    with a time to live, and it reports each standing member. Standing admin
+    memberships are removed only when jit.removeStanding is also true.
 
     It never touches the contents of an OU marked "managed": false
     (Users/Members, which Weave owns) or the members of a group marked
@@ -201,6 +216,21 @@ function Test-InUnmanagedOU([string]$DN) {
 function Test-Field($Object, [string]$Name) {
     [bool]$Object.PSObject.Properties[$Name]
 }
+
+# The value of a property, or $null when the object does not carry it. AD
+# objects can leave out an attribute that is not set.
+function Get-Prop($Object, [string]$Name) {
+    if ($null -eq $Object) { return $null }
+    $p = $Object.PSObject.Properties[$Name]
+    if ($p) { $p.Value } else { $null }
+}
+
+# Accounts that org.json marks as admin accounts and that the script manages.
+function Get-AdminSams {
+    @($data.users | Where-Object { $_.kind -eq 'admin' } | ForEach-Object { $_.sam })
+}
+
+$builtinSid = "$($domain.DomainSID)-500"
 
 # Every resource group, with {host} expanded for each Linux host.
 function Get-ResourceGroups {
@@ -452,11 +482,28 @@ function Sync-Privileged([string[]]$PathsAtStart) {
         if (-not $acct -or -not $acct.Enabled -or ($PathsAtStart -notcontains $a.sam)) { $adminsReady = $false }
     }
     $people = @($data.users | Where-Object { $_.kind -eq 'person' } | ForEach-Object { $_.sam })
+    $adminSams = Get-AdminSams
+    # Sync-BuiltinAdministrator removes the built-in account from these.
+    $builtinLeaves = @()
+    if ($data.PSObject.Properties['builtinAdministrator'] -and (Test-Field $data.builtinAdministrator 'removeFrom')) {
+        $builtinLeaves = @($data.builtinAdministrator.removeFrom)
+    }
 
     foreach ($name in $p.groups) {
         $g = Get-ADGroup -Identity $name @ad
         $allowed = @($p.allowedDirectMembers.$name)
         foreach ($m in Get-ADGroupMember -Identity $g @ad) {
+            if ("$($m.SID)" -eq $builtinSid -and $builtinLeaves -contains $name) { continue }
+            if ($adminSams -contains $m.SamAccountName -and $allowed -notcontains $m.SamAccountName) {
+                if ($script:removeStanding) {
+                    Invoke-Change $name "Remove standing admin $($m.SamAccountName) (JIT is on)" {
+                        Remove-ADGroupMember -Identity $g -Members $m -Confirm:$false @ad
+                    }
+                } else {
+                    Write-Report "$($m.SamAccountName) is a direct member of $name and is not allowed in org.json. It stays until tiering.jit.removeStanding is true."
+                }
+                continue
+            }
             if ($people -contains $m.SamAccountName) {
                 if ($adminsReady) {
                     Invoke-Change $name "Remove daily account $($m.SamAccountName)" {
@@ -607,9 +654,25 @@ function Sync-PasswordPolicies {
 function Sync-BuiltinAdministrator {
     if (-not $data.PSObject.Properties['builtinAdministrator']) { return }
     $wantEnabled = [bool]$data.builtinAdministrator.enabled
-    $sid = "$($domain.DomainSID)-500"
+    $sid = $builtinSid
     $acct = Get-ADUser -Identity $sid @ad
     $label = "built-in Administrator $($acct.SamAccountName) ($sid)"
+
+    # As a Domain Admin in the forest root it can add itself back when it
+    # is needed, so it does not need Enterprise Admins or Schema Admins.
+    if (Test-Field $data.builtinAdministrator 'removeFrom') {
+        foreach ($name in @($data.builtinAdministrator.removeFrom)) {
+            $g = Find-Group $name
+            if (-not $g) { continue }
+            $sids = @(Get-ADGroupMember -Identity $g @ad | ForEach-Object { "$($_.SID)" })
+            if ($sids -contains $sid) {
+                Invoke-Change $name "Remove $label" {
+                    Remove-ADGroupMember -Identity $g -Members $acct -Confirm:$false @ad
+                }
+            }
+        }
+    }
+
     if ($wantEnabled) {
         if (-not $acct.Enabled) {
             Invoke-Change $acct.DistinguishedName "Enable $label" { Enable-ADAccount -Identity $acct @ad }
@@ -633,8 +696,278 @@ function Sync-BuiltinAdministrator {
     }
 }
 
+# --- Tiering: authentication policies and the Tier 0 silo ----------------------
+# "allowed to authenticate from" = the device is in the silo. In this
+# attribute @USER means the device account.
+function Get-SiloSddl([string]$Silo) {
+    'O:SYG:SYD:(XA;OICI;CR;;;WD;(@USER.ad://ext/AuthenticationSilo == "{0}"))' -f $Silo
+}
+
+# AD can give the SDDL back with other spacing or case.
+function ConvertTo-SddlKey([string]$Sddl) { ($Sddl -replace '\s', '').ToLowerInvariant() }
+
+# "CN=T0-User,CN=AuthN Policies,..." -> "T0-User"
+function Get-RdnName($DN) {
+    if (-not $DN) { return $null }
+    (("$DN" -split '(?<!\\),', 2)[0] -split '=', 2)[1]
+}
+
+# One authentication policy. A TGT lifetime makes the TGT short. AD has no
+# separate "renewable" switch: the KDC does not renew a TGT past the policy
+# lifetime, so the user must log on again when it ends.
+function Sync-AuthPolicy($Spec, [bool]$Enforce, [string]$Silo) {
+    $name = $Spec.name
+    $label = "authentication policy $name"
+    $desc = if (Test-Field $Spec 'description') { $Spec.description } else { $null }
+    $tgt = if (Test-Field $Spec 'tgtMinutes') { [int]$Spec.tgtMinutes } else { 0 }
+    $sddl = if ((Test-Field $Spec 'deviceInSilo') -and $Spec.deviceInSilo) { Get-SiloSddl $Silo } else { $null }
+
+    $p = Get-ADAuthenticationPolicy -Filter "Name -eq '$name'" @ad `
+        -Properties Description, Enforce, UserTGTLifetimeMins, UserAllowedToAuthenticateFrom
+    if (-not $p) {
+        $newArgs = @{}
+        if ($desc) { $newArgs.Description = $desc }
+        if ($tgt) { $newArgs.UserTGTLifetimeMins = $tgt }
+        if ($sddl) { $newArgs.UserAllowedToAuthenticateFrom = $sddl }
+        $what = "enforce=$Enforce, tgtMinutes=$(if ($tgt) { $tgt } else { 'none' }), deviceInSilo=$([bool]$sddl)"
+        Invoke-Change $label "Create, $what" {
+            New-ADAuthenticationPolicy -Name $name -Enforce:$Enforce -ProtectedFromAccidentalDeletion $true @newArgs @ad
+        }
+        return
+    }
+
+    $set = @{}
+    $clear = @()
+    if ([bool](Get-Prop $p 'Enforce') -ne $Enforce) { $set.Enforce = $Enforce }
+    if ("$(Get-Prop $p 'Description')" -ne "$desc") {
+        if ($desc) { $set.Description = $desc } else { $clear += 'description' }
+    }
+    $haveTgt = [int](Get-Prop $p 'UserTGTLifetimeMins')
+    if ($tgt -and $haveTgt -ne $tgt) { $set.UserTGTLifetimeMins = $tgt }
+    if (-not $tgt -and $haveTgt) { $clear += 'msDS-UserTGTLifetime' }
+    $haveSddl = "$(Get-Prop $p 'UserAllowedToAuthenticateFrom')"
+    if ($sddl -and (ConvertTo-SddlKey $haveSddl) -ne (ConvertTo-SddlKey $sddl)) { $set.UserAllowedToAuthenticateFrom = $sddl }
+    if (-not $sddl -and $haveSddl) { $clear += 'msDS-UserAllowedToAuthenticateFrom' }
+
+    if ($set.Count) {
+        $desc2 = ($set.Keys | Sort-Object | ForEach-Object { "$_=$($set[$_])" }) -join ', '
+        Invoke-Change $label "Set $desc2" { Set-ADAuthenticationPolicy -Identity $p @set @ad }
+    }
+    if ($clear.Count) {
+        Invoke-Change $label "Clear $($clear -join ', ')" { Set-ADAuthenticationPolicy -Identity $p -Clear $clear @ad }
+    }
+}
+
+# The silo and the policies it points at. Returns the silo, or $null when
+# it does not exist yet (under -WhatIf).
+function Sync-Silo {
+    $t = $data.tiering
+    $enforce = [bool]$t.enforce
+    $want = [ordered]@{
+        UserAuthenticationPolicy     = $t.userPolicy.name
+        ComputerAuthenticationPolicy = $t.computerPolicy.name
+        ServiceAuthenticationPolicy  = $null
+    }
+    if ((Test-Field $t 'servicePolicy') -and (Test-Field $t.servicePolicy 'inSilo') -and $t.servicePolicy.inSilo) {
+        $want.ServiceAuthenticationPolicy = $t.servicePolicy.name
+    }
+    $desc = if (Test-Field $t 'description') { $t.description } else { $null }
+    $label = "authentication policy silo $($t.silo)"
+
+    $s = Get-ADAuthenticationPolicySilo -Filter "Name -eq '$($t.silo)'" @ad -Properties Description, Enforce, `
+        UserAuthenticationPolicy, ComputerAuthenticationPolicy, ServiceAuthenticationPolicy
+    if (-not $s) {
+        $newArgs = @{}
+        foreach ($k in $want.Keys) { if ($want[$k]) { $newArgs[$k] = $want[$k] } }
+        if ($desc) { $newArgs.Description = $desc }
+        $what = ($want.Keys | ForEach-Object { "$_=$(if ($want[$_]) { $want[$_] } else { 'none' })" }) -join ', '
+        Invoke-Change $label "Create, enforce=$enforce, $what" {
+            New-ADAuthenticationPolicySilo -Name $t.silo -Enforce:$enforce -ProtectedFromAccidentalDeletion $true @newArgs @ad
+        }
+        return Get-ADAuthenticationPolicySilo -Filter "Name -eq '$($t.silo)'" @ad
+    }
+
+    $set = @{}
+    $clear = @()
+    if ([bool](Get-Prop $s 'Enforce') -ne $enforce) { $set.Enforce = $enforce }
+    if ("$(Get-Prop $s 'Description')" -ne "$desc") {
+        if ($desc) { $set.Description = $desc } else { $clear += 'description' }
+    }
+    $ldap = @{
+        UserAuthenticationPolicy     = 'msDS-UserAuthNPolicy'
+        ComputerAuthenticationPolicy = 'msDS-ComputerAuthNPolicy'
+        ServiceAuthenticationPolicy  = 'msDS-ServiceAuthNPolicy'
+    }
+    foreach ($k in $want.Keys) {
+        $have = Get-RdnName (Get-Prop $s $k)
+        if ($want[$k] -and $have -ne $want[$k]) { $set[$k] = $want[$k] }
+        if (-not $want[$k] -and $have) { $clear += $ldap[$k] }
+    }
+    if ($set.Count) {
+        $desc2 = ($set.Keys | Sort-Object | ForEach-Object { "$_=$($set[$_])" }) -join ', '
+        Invoke-Change $label "Set $desc2" { Set-ADAuthenticationPolicySilo -Identity $s @set @ad }
+    }
+    if ($clear.Count) {
+        Invoke-Change $label "Clear $($clear -join ', ')" { Set-ADAuthenticationPolicySilo -Identity $s -Clear $clear @ad }
+    }
+    $s
+}
+
+# Each account needs two things: access to the silo (the silo's member list)
+# and the silo assigned to it. Accounts are never taken out of the silo
+# here, only reported, so a run cannot cut the admin off a Tier 0 host.
+function Sync-SiloMembers($Silo) {
+    $t = $data.tiering
+    $siloName = $t.silo
+    $builtinSam = (Get-ADUser -Identity $builtinSid @ad).SamAccountName
+    $granted = @()
+    if ($Silo) {
+        $granted = @(Get-Prop (Get-ADObject -Identity $Silo.DistinguishedName -Properties 'msDS-AuthNPolicySiloMembers' @ad) `
+                'msDS-AuthNPolicySiloMembers' | ForEach-Object { "$_" })
+    }
+    $sams = @($t.users) + @($t.computers | ForEach-Object { "$_`$" })
+    $wantedDNs = @()
+    foreach ($sam in $sams) {
+        if ($sam -eq $builtinSam) {
+            Write-Report "$sam is the built-in Administrator. Authentication policies never apply to it, so it is not added to $siloName."
+            continue
+        }
+        $o = Find-Object "SamAccountName -eq '$sam'" @('msDS-AssignedAuthNPolicySilo')
+        if (-not $o) {
+            Write-Report "$sam does not exist, so it is not in $siloName. Run Build again after it is created or joined."
+            continue
+        }
+        $dn = $o.DistinguishedName
+        $wantedDNs += $dn
+        if (-not $Silo) {
+            Write-Log 'WOULD' "Grant access to $sam, assign the silo : $siloName (after it is created)"
+            continue
+        }
+        if ($granted -notcontains $dn) {
+            Invoke-Change $siloName "Grant access to $sam" {
+                Grant-ADAuthenticationPolicySiloAccess -Identity $Silo.DistinguishedName -Account $dn @ad
+            }
+        }
+        if ("$(Get-Prop $o 'msDS-AssignedAuthNPolicySilo')" -ne $Silo.DistinguishedName) {
+            Invoke-Change $dn "Assign silo $siloName" {
+                Set-ADAccountAuthenticationPolicySilo -Identity $dn -AuthenticationPolicySilo $Silo.DistinguishedName @ad
+            }
+        }
+    }
+    foreach ($dn in $granted | Where-Object { $wantedDNs -notcontains $_ }) {
+        Write-Report "$dn has access to $siloName, but it is not in tiering in org.json. Add it to org.json, or remove it by hand with Revoke-ADAuthenticationPolicySiloAccess."
+    }
+}
+
+function Sync-Tiering {
+    if (-not $data.PSObject.Properties['tiering']) { return }
+    $t = $data.tiering
+    $enforce = [bool]$t.enforce
+    Sync-AuthPolicy $t.userPolicy $enforce $t.silo
+    Sync-AuthPolicy $t.computerPolicy $enforce $t.silo
+    if (Test-Field $t 'servicePolicy') {
+        $svcEnforce = if (Test-Field $t.servicePolicy 'enforce') { [bool]$t.servicePolicy.enforce } else { $enforce }
+        Sync-AuthPolicy $t.servicePolicy $svcEnforce $t.silo
+    }
+    $silo = Sync-Silo
+    Sync-SiloMembers $silo
+}
+
+# --- Tiering: just-in-time admin ----------------------------------------------
+function Get-Jit {
+    if (-not $data.PSObject.Properties['tiering'] -or -not (Test-Field $data.tiering 'jit')) { return $null }
+    $data.tiering.jit
+}
+
+function Test-PamFeature {
+    $f = Get-ADOptionalFeature -Identity 'Privileged Access Management Feature' @ad
+    @(Get-Prop $f 'EnabledScopes').Count -gt 0
+}
+
+# JIT is active only when org.json turns it on AND the forest can expire a
+# membership. Without the PAM feature a "grant" would be standing admin.
+function Test-JitActive {
+    $jit = Get-Jit
+    if (-not $jit -or -not $jit.enabled) { return $false }
+    if (-not (Test-PamFeature)) {
+        Write-Report "tiering.jit.enabled is true, but the Privileged Access Management optional feature is off. $($jit.group) is managed as if JIT were off."
+        return $false
+    }
+    $true
+}
+
+# Standing admin is removed only when JIT is active, removeStanding is true,
+# and a Domain Admins path that does not depend on JIT stays: an enabled
+# admin account (svc-ansible) that is a direct member of Domain Admins.
+function Test-RemoveStanding {
+    $jit = Get-Jit
+    if (-not $jit -or -not (Test-Field $jit 'removeStanding') -or -not $jit.removeStanding) { return $false }
+    if (-not $script:jitActive) {
+        Write-Report 'tiering.jit.removeStanding is true, but JIT is not active. No standing admin membership is removed.'
+        return $false
+    }
+    # Only an allowed direct member counts. A standing member that this run
+    # would remove is not a fallback.
+    $direct = @(Get-ADGroupMember -Identity 'Domain Admins' @ad | ForEach-Object { $_.SamAccountName })
+    $allowed = @($data.privileged.allowedDirectMembers.'Domain Admins')
+    $fallback = @(Get-AdminSams | Where-Object { $direct -contains $_ -and $allowed -contains $_ } | Where-Object {
+            $u = Find-User $_
+            $u -and $u.Enabled
+        })
+    if (-not $fallback.Count) {
+        Write-Report 'tiering.jit.removeStanding is true, but no enabled admin account is a direct member of Domain Admins. No standing admin membership is removed.'
+        return $false
+    }
+    $true
+}
+
+# With JIT active, Build does not manage the JIT group's members. A member
+# with a time to live is a grant. Any other member is standing admin.
+function Sync-JitGroup($Jit) {
+    $g = Find-Group $Jit.group
+    if (-not $g) { return }
+    $full = Get-ADGroup -Identity $g -Properties member -ShowMemberTimeToLive @ad
+    foreach ($m in @(Get-Prop $full 'member')) {
+        if ("$m" -match '^<TTL=(\d+)>,(.+)$') {
+            Write-Log 'INFO' "JIT grant in $($Jit.group): $($Matches[2]), $([math]::Ceiling([int]$Matches[1] / 60)) min left"
+            continue
+        }
+        if ($script:removeStanding) {
+            Invoke-Change $Jit.group "Remove standing member $m (JIT is on)" {
+                Remove-ADGroupMember -Identity $g -Members "$m" -Confirm:$false @ad
+            }
+        } else {
+            Write-Report "$m is a standing member of $($Jit.group). JIT is on: remove it after a grant is tested (tiering.jit.removeStanding)."
+        }
+    }
+}
+
+# Other groups that give a path to Domain Admins (decision 6 in TIERING.md).
+# An admin account in them is reported, or removed when removeStanding is on.
+function Sync-StandingGroups($Jit) {
+    if (-not (Test-Field $Jit 'standingGroups')) { return }
+    $adminSams = Get-AdminSams
+    foreach ($name in @($Jit.standingGroups)) {
+        $g = Find-Group $name
+        if (-not $g) { continue }
+        foreach ($m in Get-ADGroupMember -Identity $g @ad) {
+            if ($adminSams -notcontains $m.SamAccountName) { continue }
+            if ($script:removeStanding) {
+                Invoke-Change $name "Remove standing admin $($m.SamAccountName) (JIT is on)" {
+                    Remove-ADGroupMember -Identity $g -Members $m -Confirm:$false @ad
+                }
+            } else {
+                Write-Report "$($m.SamAccountName) is a standing member of $name. TIERING.md moves it inside the JIT grant (tiering.jit.removeStanding)."
+            }
+        }
+    }
+}
+
 function Invoke-Build {
     $daPathsAtStart = @(Get-DomainAdminPaths)
+    $jit = Get-Jit
+    $script:jitActive = Test-JitActive
+    $script:removeStanding = Test-RemoveStanding
     Sync-UpnSuffix
 
     Sync-OU $rootDN 'Patchwork Labs inc.'
@@ -650,6 +983,8 @@ function Invoke-Build {
 
     foreach ($g in $data.roleGroups) {
         if ($g.PSObject.Properties['manageMembers'] -and -not $g.manageMembers) { continue }
+        # With JIT active, the members of the JIT group are grants.
+        if ($script:jitActive -and $g.name -eq $jit.group) { continue }
         Sync-Members $g.name @($g.members)
     }
     foreach ($g in Get-ResourceGroups) { Sync-Members $g.name @($g.members) }
@@ -658,6 +993,11 @@ function Invoke-Build {
     Sync-PasswordPolicies
     Sync-Privileged $daPathsAtStart
     Sync-BuiltinAdministrator
+    if ($jit) {
+        if ($script:jitActive) { Sync-JitGroup $jit }
+        Sync-StandingGroups $jit
+    }
+    Sync-Tiering
 }
 
 # --- Migrate -----------------------------------------------------------------

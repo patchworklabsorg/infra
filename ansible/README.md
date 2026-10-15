@@ -26,7 +26,7 @@ Ansible does not manage these hosts:
 
 The Proxmox layer (VM creation, templates, the network gear) is not in this repo.
 
-These jobs are done by hand and are not in Ansible: AD CS setup and the offline root signing, NPS policies and GPOs. The OUs, users and groups are in `../ad/` (`converge.ps1`).
+These jobs are done by hand and are not in Ansible: AD CS setup and the offline root signing, NPS policies, and the GPOs other than the two armoring GPOs and the password values of the `Default Domain Policy` (see "Tier 0"). The OUs, users and groups are in `../ad/` (`converge.ps1`).
 
 ## Layout
 
@@ -43,6 +43,8 @@ These jobs are done by hand and are not in Ansible: AD CS setup and the offline 
 | `bootstrap/Enable-AnsibleWinRM.ps1` | One-time WinRM setup on a new Windows host. |
 | `bin/vault-set` | Sets one key in the vault from stdin. |
 | `bin/vault-import` | One-time copy of the Patchwork values from the personal vault. |
+| `bin/t0-admin` | Asks the `PatchworkT0` endpoint for a just-in-time Domain Admins grant. See "Just-in-time admin". |
+| `files/tiering/` | PowerShell that the Tier 0 tags install on the DCs: `PatchworkAlert` (alert mail), `PatchworkT0` (JEA module and role capability), `Invoke-BreakGlassAlert.ps1`. |
 | `templates/vyos/` | VyOS configs as `set` commands, with the secrets replaced by vault references. |
 | `filter_plugins/vyos_secrets.py` | Splits the secrets out of a VyOS config. Tested by `tests/`. |
 
@@ -152,6 +154,106 @@ Every tag is opt-in. A run without `-t` does nothing. Directory changes run once
 | `ca-check` | Lists the enterprise CAs in AD and the CA certificates on loom, and checks that `ad_ca_subject_match` selects them. Changes nothing. Run it before `ca-chain`. |
 | `ca-chain` | Exports the forest CA chain to `files/pki/patchwork.internal-ca-chain.pem`. |
 | `dns-log` | Enables the DNS Analytical log on every DC. |
+| `authn-log` | Enables the four `Microsoft-Windows-Authentication/*` logs on every DC. Sets the audit policy for Credential Validation, Kerberos Authentication Service, Kerberos Service Ticket Operations, User Account Management and Security Group Management to success and failure. |
+| `armoring` | Makes two GPOs. `T0-Kerberos-Armoring-KDC` on the Domain Controllers OU: "KDC support for claims, compound authentication and Kerberos armoring" = Supported. `T0-Kerberos-Armoring-Client` on the domain root: "Kerberos client support for claims, compound authentication and Kerberos armoring" = Enabled. |
+| `default-domain-gpo` | Makes the password and lockout values in the `Default Domain Policy` GPO match `passwordPolicy.default` in `../ad/org.json`, and raises the GPO version. On 2026-10-14 the GPO already matched, so the first run changes nothing. |
+| `breakglass-alert` | Installs an event-triggered scheduled task on every DC. It sends a mail to `security@patchworklabs.org` when the built-in Administrator logs on, gets a TGT, is checked with NTLM, is enabled or has its password reset, and when a member is added to Domain Admins, `GG-Domain-Admins-Tier0`, Enterprise Admins, Schema Admins or Administrators. `-e ad_alert_test=true` also sends one test mail. |
+| `administrator-random` | Sets a random 96-character password on the built-in Administrator and sets "sensitive and cannot be delegated". The DC makes the password, and nobody sees it. Refuses while the account is enabled. Changes the password only when the old one is older than 24 hours, or with `-e ad_admin_random_force=true`. |
+| `krbtgt-reset` | Resets the `krbtgt` password once. Refuses while the password is younger than 10 hours, or while a DC shows a replication failure. Then each DC pulls the change and the play checks that each DC has it. |
+| `jit-endpoint` | Installs the `PatchworkT0` JEA endpoint on every DC. Fails while the AD Privileged Access Management feature is off. It never enables the feature. |
+
+Every Tier 0 tag supports `--check`, except that `krbtgt-reset` still refuses in check mode when a guard fails.
+
+## Tier 0
+
+The design is in [`../ad/TIERING.md`](../ad/TIERING.md) (PR #18). `../ad/converge.ps1` owns the directory objects (the silo, the policies, `GG-T0-Eligible`). These tags own what is on the DCs.
+
+### Tier 0 run order
+
+Run each step with `--check` first. Each step starts only after the one before it works. The steps that you cannot undo are in bold.
+
+| # | Command | Check after it |
+|---|---|---|
+| 1 | `ansible-playbook ad.yml -t authn-log` | `wevtutil gl Microsoft-Windows-Authentication/AuthenticationPolicyFailures-DomainController` shows `enabled: true` on both DCs. |
+| 2 | `ansible-playbook ad.yml -t armoring` | In GPMC, both GPOs show the policy by name, not under "Extra Registry Settings". `gpresult /r` on loom lists both. |
+| 3 | `ansible-playbook ad.yml -t default-domain-gpo` | The report shows no change, or the changes you expect. |
+| 4 | `converge.ps1` Build (silo in audit mode, `tiering.enforce` is `false`) | `Get-ADAuthenticationPolicySilo T0-Silo`. Then read events 305 and 306 every day for two weeks (TIERING.md phase 2). |
+| 5 | `ansible-playbook ad.yml -t breakglass-alert -e ad_alert_test=true` | The test mail arrives at `security@`. |
+| 6 | `ansible-playbook ad.yml -t administrator-random` | The report says "set a new discarded random password". The account is still disabled. |
+| 7 | **`ansible-playbook ad.yml -t krbtgt-reset`**, then the same command again 10 hours or more later | Each run reports one reset. The second run refuses if you start it too early. |
+| 8 | **Enable the PAM optional feature by hand, once, after approval.** It cannot be undone. | `Get-ADOptionalFeature 'Privileged Access Management Feature'` shows `EnabledScopes`. |
+| 9 | `ansible-playbook ad.yml -t jit-endpoint` | The report shows `PATCHWORK\GG-T0-Eligible AccessAllowed`. |
+| 10 | `bin/t0-admin 1 "test the JIT endpoint"` | A grant, a mail, and `t0-admin status` shows the grant with the time left. |
+| 11 | Set `tiering.jit.enabled` to `true` in `../ad/org.json`, run Build | Build logs the grant as INFO and reports `adm_mayonej` as a standing member. |
+| 12 | Later: `tiering.jit.removeStanding` `true`, then `tiering.enforce` `true` | TIERING.md phases 3 and 4. |
+
+Command for step 8, on loom, as `adm_mayonej`:
+
+```powershell
+Enable-ADOptionalFeature 'Privileged Access Management Feature' -Scope ForestOrConfigurationSet -Target patchwork.internal
+```
+
+### Alert mail
+
+The DCs send through the Google Workspace SMTP relay, `smtp-relay.gmail.com` port 587 with STARTTLS. They do not log in. The relay accepts mail from the lab WAN address `69.54.28.49`. The sender is `ad-alerts@patchworklabs.org`, the recipient is `security@patchworklabs.org`. The values are in `inventory/group_vars/patchwork.yml` (`ad_alert_*`). No secret is involved.
+
+Do this once in the Google Admin console before step 5:
+
+1. Go to Apps > Google Workspace > Gmail > Routing.
+2. At "SMTP relay service", click Configure (or Add another rule).
+3. Name: `patchwork-ad-alerts`.
+4. Allowed senders: "Only addresses in my domains".
+5. Authentication: select "Only accept mail from the specified IP addresses". Add `69.54.28.49`. Do not select "Require SMTP Authentication".
+6. Encryption: select "Require TLS encryption".
+7. Save. The change can take up to an hour.
+
+The DCs must reach `smtp-relay.gmail.com` on TCP 587 through thimble. Each alert is also written to the Application log of the DC first (source `Patchwork-Alert` or `Patchwork-JIT`, event 1000). A failed mail writes event 1900.
+
+A JIT grant sends two mails: one from the endpoint, with the reason, and one from the break-glass task, because the grant adds a member to `GG-Domain-Admins-Tier0`. The second mail also comes when somebody adds a member without the endpoint. That is on purpose.
+
+### Just-in-time admin
+
+`adm_mayonej` asks for Domain Admins for 1 to 4 hours. The `PatchworkT0` endpoint on the DC adds it to `GG-Domain-Admins-Tier0` with a time to live. The DC removes it when the time ends. The endpoint writes event 1000 and mails `security@`.
+
+From remus, while `T0-Silo` is in audit mode:
+
+```console
+$ bin/t0-admin 1 "Change the Client-Baseline firewall rule"
+adm_mayonej@PATCHWORK.INTERNAL's password:
+Account     adm_mayonej
+Group       GG-Domain-Admins-Tier0
+Status      granted
+Hours       1
+ExpiresUtc  2026-10-20 23:15:00Z
+Mailed      True
+Next        Run "klist purge" or log on again. The new TGT carries Domain Admins until the grant ends.
+```
+
+```console
+$ bin/t0-admin status
+adm_mayonej@PATCHWORK.INTERNAL's password:
+Account      adm_mayonej
+Kind         grant
+MinutesLeft  58
+ExpiresUtc   2026-10-20 23:15:00Z
+```
+
+- `kinit` asks for the `adm_mayonej` password. The password goes to `kinit` only. The ticket cache is a temp file, and the script deletes it.
+- The script needs `uv` and `kinit`. `uv` gets `pypsrp` and `pyspnego[kerberos]` the first time. The nixpkgs `pypsrp` does not build on macOS today.
+- It connects to loom by address (`10.100.90.10`). To use spindle: `T0_DC_IP=10.100.90.11 T0_DC_NAME=spindle.patchwork.internal bin/t0-admin ...`.
+- An open grant is not extended. `Status` is then `open`. While `adm_mayonej` is still a standing member, `Status` is `standing` and no grant is made.
+- Errors: "PAM feature is off" (step 8 is not done), "is not in GG-T0-Eligible" (wrong account), "The maximum grant is 4 hours".
+
+After the silo is enforced, remus cannot get a TGT for `adm_mayonej`, because it is not joined and cannot armor the request. Then ask for the grant on `spool`, in PowerShell as `adm_mayonej`:
+
+```powershell
+Enter-PSSession -ComputerName loom.patchwork.internal -ConfigurationName PatchworkT0
+Request-T0Admin -Hours 1 -Reason 'Change the Client-Baseline firewall rule'
+Exit-PSSession
+klist purge
+```
+
+The endpoint has only `Request-T0Admin` and `Get-T0AdminGrant`. Every session is recorded in `C:\ProgramData\Patchwork\jea\transcripts` on the DC.
 
 ### Host groups come from the flake
 

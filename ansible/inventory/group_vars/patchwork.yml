@@ -79,3 +79,35 @@ dhcp_scopes:
 # SamAccountName -> mail address. The play fills in the mail attribute only.
 # It does not create accounts. Empty: the tag does nothing.
 ad_user_mail: {}
+
+# --- Tier 0 (ad.yml tiering tags, ad/TIERING.md) --------------------------------
+# Alert mail for -t breakglass-alert and -t jit-endpoint. The DCs send
+# through the Google Workspace SMTP relay: STARTTLS on 587, no login. The
+# relay accepts the lab WAN address. Add it in the Google Admin console:
+# Apps > Google Workspace > Gmail > Routing > SMTP relay service, "Only
+# accept mail from the specified IP addresses", require TLS.
+ad_alert_smtp_host: smtp-relay.gmail.com
+ad_alert_smtp_port: 587
+ad_alert_wan_ip: 69.54.28.49
+ad_alert_from: ad-alerts@patchworklabs.org
+ad_alert_to: security@patchworklabs.org
+ad_alert_subject_prefix: patchwork.internal
+
+# -t armoring: GPO names and where they are linked. The KDC GPO goes on the
+# Domain Controllers OU. The client GPO goes on the domain root, so the DCs,
+# bobbin, shuttle and spool armor their requests. A client that supports
+# armoring changes nothing while no account needs it.
+ad_armoring_kdc_gpo: T0-Kerberos-Armoring-KDC
+ad_armoring_kdc_target: "OU=Domain Controllers,DC=patchwork,DC=internal"
+ad_armoring_client_gpo: T0-Kerberos-Armoring-Client
+ad_armoring_client_target: "DC=patchwork,DC=internal"
+
+# -t krbtgt-reset refuses while the krbtgt password is younger than this
+# (the maximum TGT lifetime), so the two resets are 10 hours or more apart.
+ad_krbtgt_min_age_hours: 10
+
+# -t administrator-random: length of the discarded password. It sets a new
+# one only when the old one is older than ad_admin_random_min_age_hours, or
+# with -e ad_admin_random_force=true (after a break-glass use).
+ad_admin_random_length: 96
+ad_admin_random_min_age_hours: 24

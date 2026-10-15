@@ -1,0 +1,124 @@
+#!/usr/bin/env bash
+# t0-admin: ask the PatchworkT0 JEA endpoint on a DC for a just-in-time
+# Domain Admins grant (ad.yml -t jit-endpoint, ad/TIERING.md section 3).
+#
+#   t0-admin <hours> "<reason>"   grant adm_mayonej Domain Admins for 1-4 hours
+#   t0-admin status               list the members of GG-Domain-Admins-Tier0
+#
+# It logs in with Kerberos as adm_mayonej (Protected Users blocks NTLM).
+# kinit asks for the password. The password goes to kinit only. The ticket
+# cache is a temp file that is deleted on exit.
+#
+# Works from remus while T0-Silo is in audit mode. After the silo is
+# enforced, the KDC refuses a TGT that is not armored by a silo device, and
+# remus is not joined: run the request on spool (see ansible/README.md).
+#
+# Environment overrides: T0_USER (adm_mayonej), T0_DC_IP (10.100.90.10),
+# T0_DC_NAME (loom.patchwork.internal). Needs uv (it fetches pypsrp and
+# pyspnego[kerberos] into its cache) and kinit.
+set -euo pipefail
+
+usage() {
+  sed -n '2,6p' "$0" | sed 's/^# \{0,1\}//'
+  exit 2
+}
+
+REALM=PATCHWORK.INTERNAL
+T0_USER="${T0_USER:-adm_mayonej}"
+T0_DC_IP="${T0_DC_IP:-10.100.90.10}"
+T0_DC_NAME="${T0_DC_NAME:-loom.patchwork.internal}"
+
+case "${1:-}" in
+  status) mode=status; hours=0; reason="" ;;
+  [1-4])
+    [ $# -eq 2 ] || usage
+    mode=request; hours="$1"; reason="$2"
+    [ "${#reason}" -ge 8 ] || { echo "t0-admin: the reason must have 8 characters or more" >&2; exit 2; }
+    ;;
+  *) usage ;;
+esac
+
+command -v uv >/dev/null || { echo "t0-admin: uv is not installed" >&2; exit 1; }
+command -v kinit >/dev/null || { echo "t0-admin: kinit is not installed" >&2; exit 1; }
+
+work="$(mktemp -d "${TMPDIR:-/tmp}/t0-admin.XXXXXX")"
+cleanup() {
+  kdestroy -c "FILE:$work/cc" >/dev/null 2>&1 || true
+  rm -rf "$work"
+}
+trap cleanup EXIT
+
+# Kerberos needs the DC name for the service ticket (HTTP/<name>), but the
+# control node does not have to resolve patchwork.internal. The KDCs and the
+# WinRM target are addresses; the name is only used for the SPN.
+cat >"$work/krb5.conf" <<EOF
+[libdefaults]
+  default_realm = $REALM
+  dns_lookup_kdc = false
+  dns_lookup_realm = false
+  rdns = false
+  dns_canonicalize_hostname = false
+  forwardable = false
+[realms]
+  $REALM = {
+    kdc = 10.100.90.10
+    kdc = 10.100.90.11
+  }
+[domain_realm]
+  .patchwork.internal = $REALM
+  patchwork.internal = $REALM
+EOF
+export KRB5_CONFIG="$work/krb5.conf"
+export KRB5CCNAME="FILE:$work/cc"
+
+kinit "$T0_USER@$REALM"
+
+uv run --no-project --quiet --python 3.12 \
+  --with 'pypsrp>=0.8,<1' --with 'pyspnego[kerberos]>=0.10' \
+  python - "$mode" "$hours" "$reason" "$T0_DC_IP" "$T0_DC_NAME" <<'PY'
+import sys
+
+from pypsrp.powershell import PowerShell, RunspacePool
+from pypsrp.wsman import WSMan
+
+mode, hours, reason, dc_ip, dc_name = sys.argv[1:6]
+
+# WinRM over HTTP 5985. Kerberos encrypts each message.
+wsman = WSMan(
+    dc_ip,
+    port=5985,
+    ssl=False,
+    auth="kerberos",
+    encryption="always",
+    negotiate_service="HTTP",
+    negotiate_hostname_override=dc_name,
+)
+
+
+def props(obj):
+    out = {}
+    for name in ("adapted_properties", "extended_properties"):
+        out.update(getattr(obj, name, None) or {})
+    return out or {"value": obj}
+
+
+with RunspacePool(wsman, configuration_name="PatchworkT0") as pool:
+    ps = PowerShell(pool)
+    if mode == "request":
+        ps.add_cmdlet("Request-T0Admin").add_parameter("Hours", int(hours)).add_parameter("Reason", reason)
+    else:
+        ps.add_cmdlet("Get-T0AdminGrant")
+    output = ps.invoke()
+    for err in ps.streams.error:
+        print(f"error: {err}", file=sys.stderr)
+    if ps.had_errors:
+        sys.exit(1)
+    if mode == "status" and not output:
+        print("GG-Domain-Admins-Tier0 has no members.")
+    for obj in output:
+        p = props(obj)
+        width = max(len(k) for k in p)
+        for k, v in p.items():
+            print(f"{k.ljust(width)}  {'' if v is None else v}")
+        print()
+PY

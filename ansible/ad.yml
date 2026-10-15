@@ -22,6 +22,22 @@
 #                       ad_ca_subject_match against them. REPORT ONLY
 #   -t ca-chain         export the forest CA chain to files/pki/
 #   -t dns-log          Microsoft-Windows-DNSServer/Analytical enabled
+#
+# Tier 0 (ad/TIERING.md). Run them in the order in ansible/README.md.
+#   -t authn-log            Microsoft-Windows-Authentication/* logs and
+#                           Kerberos / credential validation audit, success
+#                           and failure, on every DC
+#   -t armoring             KDC and client Kerberos armoring GPOs
+#   -t default-domain-gpo   Default Domain Policy password and lockout =
+#                           ad/org.json passwordPolicy.default
+#   -t breakglass-alert     mail to security@ when the built-in Administrator
+#                           is used or a privileged group changes
+#   -t administrator-random discarded random password on the built-in
+#                           Administrator. Only while it is disabled
+#   -t krbtgt-reset         one krbtgt reset. Refuses before 10 h since the
+#                           last one, or while replication fails
+#   -t jit-endpoint         PatchworkT0 JEA endpoint for JIT Domain Admins.
+#                           Fails while the AD PAM feature is off
 # ============================================================================
 - name: AD maintenance
   hosts: domain_controllers
@@ -41,6 +57,18 @@
     ad_ldap_bind_rotate: false
     # The repo root: the directory that holds flake.nix.
     ad_flake_dir: "{{ (playbook_dir ~ '/..') | realpath }}"
+    # ad/org.json, the source of truth for the directory. Read only by the
+    # tasks that use it.
+    ad_org: "{{ lookup('ansible.builtin.file', ad_flake_dir ~ '/ad/org.json') | from_json }}"
+    ad_tiering_files: "{{ playbook_dir }}/files/tiering"
+    ad_alert_dir: 'C:\ProgramData\Patchwork\alerts'
+    ad_jea_dir: 'C:\ProgramData\Patchwork\jea'
+    ad_ps_modules: 'C:\Program Files\WindowsPowerShell\Modules'
+    # -t breakglass-alert: -e ad_alert_test=true also sends one test mail.
+    ad_alert_test: false
+    # -t administrator-random: -e ad_admin_random_force=true sets a new
+    # password even when the last one is younger than the minimum age.
+    ad_admin_random_force: false
   tasks:
 
     # ------------------------------------------------------------------ dhcp
@@ -562,3 +590,755 @@
           }
           [PSCustomObject]@{ log = $log; wasEnabled = ($state -eq 'true') }
       tags: [dns-log, never]
+
+    # ============================================================== TIER 0
+    # ad/TIERING.md. Run order: ansible/README.md, "Tier 0 run order".
+
+    # ------------------------------------------------------------- authn-log
+    # The silo and Protected Users log their refusals (101, 105, 305, ...) to
+    # the Microsoft-Windows-Authentication/* channels. They are off by
+    # default. The audit subcategories add 4768/4769/4776 failures to the
+    # Security log. auditpol sets the local policy on each DC. A GPO with
+    # advanced audit settings would replace it; none exists today.
+    - name: Authn log | Authentication logs and Kerberos audit on every DC
+      ansible.windows.win_powershell:
+        script: |
+          [CmdletBinding(SupportsShouldProcess)]
+          param()
+          $Ansible.Changed = $false
+          $done = @()
+          $logs = @(wevtutil el | Where-Object { $_ -like 'Microsoft-Windows-Authentication/*' })
+          if (-not $logs.Count) { throw 'No Microsoft-Windows-Authentication/* channel exists on this DC.' }
+          foreach ($log in $logs) {
+            $state = (wevtutil gl $log | Select-String '^enabled:').ToString().Split(':')[1].Trim()
+            if ($state -ne 'true') {
+              if ($PSCmdlet.ShouldProcess($log, 'Enable log')) { wevtutil sl $log /e:true /q:true }
+              $done += "log $log"
+              $Ansible.Changed = $true
+            }
+          }
+          # Names, not GUIDs: the DCs are en-US.
+          foreach ($sub in 'Credential Validation', 'Kerberos Authentication Service',
+                           'Kerberos Service Ticket Operations', 'User Account Management',
+                           'Security Group Management') {
+            $row = auditpol /get /subcategory:"$sub" /r | Where-Object { $_ } | ConvertFrom-Csv
+            if (-not $row) { throw "auditpol does not know the subcategory '$sub'." }
+            if ($row.'Inclusion Setting' -ne 'Success and Failure') {
+              if ($PSCmdlet.ShouldProcess($sub, 'Audit success and failure')) {
+                auditpol /set /subcategory:"$sub" /success:enable /failure:enable | Out-Null
+                if ($LASTEXITCODE -ne 0) { throw "auditpol /set failed for '$sub'." }
+              }
+              $done += "audit $sub ($($row.'Inclusion Setting') -> Success and Failure)"
+              $Ansible.Changed = $true
+            }
+          }
+          $Ansible.Result = $done
+      register: ad_authn_log
+      tags: [authn-log, never]
+
+    - name: Authn log | Report
+      ansible.builtin.debug:
+        var: ad_authn_log.result
+      tags: [authn-log, never]
+
+    # -------------------------------------------------------------- armoring
+    # TIERING.md phase 1. "Supported" on the KDC requires armoring from
+    # nobody, so it breaks nothing. The values are the ones that kdc.admx and
+    # Kerberos.admx write. Check in GPMC that each GPO shows the policy by
+    # name (not under "Extra Registry Settings") after the first run.
+    - name: Armoring | KDC and client armoring GPOs exist, are set and are linked
+      ansible.windows.win_powershell:
+        parameters:
+          spec_json: "{{ ad_armoring_gpos | to_json }}"
+          domain: "{{ domain_name }}"
+          server: "{{ ad_dcs[0].name }}"
+        script: |
+          [CmdletBinding(SupportsShouldProcess)]
+          param([string]$spec_json, [string]$domain, [string]$server)
+          $Ansible.Changed = $false
+          if (-not (Get-Module -ListAvailable GroupPolicy)) { throw 'The GroupPolicy module (GPMC) is missing on this DC.' }
+          Import-Module GroupPolicy
+          $gp = @{ Domain = $domain; Server = $server }
+          $done = @()
+          foreach ($spec in ($spec_json | ConvertFrom-Json)) {
+            $gpo = Get-GPO -Name $spec.name @gp -ErrorAction SilentlyContinue
+            if (-not $gpo) {
+              $done += "create GPO $($spec.name)"
+              $Ansible.Changed = $true
+              if (-not $PSCmdlet.ShouldProcess($spec.name, 'Create GPO')) {
+                $done += "then set $($spec.values.Count) values and link to $($spec.target)"
+                continue
+              }
+              $gpo = New-GPO -Name $spec.name -Comment $spec.comment @gp
+            }
+            # Computer settings only.
+            if ("$($gpo.GpoStatus)" -ne 'UserSettingsDisabled') {
+              if ($PSCmdlet.ShouldProcess($spec.name, 'Disable user settings')) { $gpo.GpoStatus = 'UserSettingsDisabled' }
+              $done += "$($spec.name): user settings off"
+              $Ansible.Changed = $true
+            }
+            foreach ($v in $spec.values) {
+              $have = Get-GPRegistryValue -Guid $gpo.Id -Key $v.key -ValueName $v.name @gp -ErrorAction SilentlyContinue
+              if (-not $have -or "$($have.Type)" -ne 'DWord' -or [int]$have.Value -ne [int]$v.value) {
+                if ($PSCmdlet.ShouldProcess("$($spec.name): $($v.key)\$($v.name)", "Set DWord $($v.value)")) {
+                  Set-GPRegistryValue -Guid $gpo.Id -Key $v.key -ValueName $v.name -Type DWord -Value ([int]$v.value) @gp | Out-Null
+                }
+                $done += "$($spec.name): $($v.name) = $($v.value)"
+                $Ansible.Changed = $true
+              }
+            }
+            $links = @((Get-GPInheritance -Target $spec.target @gp).GpoLinks | ForEach-Object { "$($_.GpoId)" })
+            if ($links -notcontains "$($gpo.Id)") {
+              if ($PSCmdlet.ShouldProcess($spec.target, "Link $($spec.name)")) {
+                New-GPLink -Guid $gpo.Id -Target $spec.target -LinkEnabled Yes @gp | Out-Null
+              }
+              $done += "$($spec.name): linked to $($spec.target)"
+              $Ansible.Changed = $true
+            }
+          }
+          $Ansible.Result = $done
+      vars:
+        ad_armoring_gpos:
+          - name: "{{ ad_armoring_kdc_gpo }}"
+            comment: >-
+              TIERING.md phase 1. KDC support for claims, compound authentication and
+              Kerberos armoring = Supported. Managed by ansible/ad.yml -t armoring.
+            target: "{{ ad_armoring_kdc_target }}"
+            values:
+              - { key: 'HKLM\Software\Microsoft\Windows\CurrentVersion\Policies\System\KDC\Parameters', name: EnableCbacAndArmor, value: 1 }
+              # 0 not supported, 1 supported, 2 always provide claims,
+              # 3 fail unarmored requests.
+              - { key: 'HKLM\Software\Microsoft\Windows\CurrentVersion\Policies\System\KDC\Parameters', name: CbacAndArmorLevel, value: 1 }
+          - name: "{{ ad_armoring_client_gpo }}"
+            comment: >-
+              TIERING.md phase 1. Kerberos client support for claims, compound
+              authentication and Kerberos armoring = Enabled. Managed by ansible/ad.yml -t armoring.
+            target: "{{ ad_armoring_client_target }}"
+            values:
+              - { key: 'HKLM\Software\Microsoft\Windows\CurrentVersion\Policies\System\Kerberos\Parameters', name: EnableCbacAndArmor, value: 1 }
+      register: ad_armoring
+      when: ad_is_primary_dc
+      tags: [armoring, never]
+
+    - name: Armoring | Report
+      ansible.builtin.debug:
+        var: ad_armoring.result
+      when: ad_is_primary_dc
+      tags: [armoring, never]
+
+    # ---------------------------------------------------- default-domain-gpo
+    # The Default Domain Policy GPO holds the domain password and lockout
+    # policy too. The PDC applies the GPO again every 5 minutes, and the GPO
+    # values replace what converge.ps1 sets. This makes the GPO match
+    # ad/org.json passwordPolicy.default. It edits GptTmpl.inf in the local
+    # SYSVOL copy (no UNC path: a WinRM NTLM session cannot reach a share),
+    # then raises the computer version in GPT.INI and in AD, so every DC
+    # applies it. DFSR replicates SYSVOL to the other DC.
+    - name: Default domain GPO | Password and lockout match ad/org.json
+      ansible.windows.win_powershell:
+        parameters:
+          policy_json: "{{ ad_org.passwordPolicy.default | to_json }}"
+        script: |
+          [CmdletBinding(SupportsShouldProcess)]
+          param([string]$policy_json)
+          $Ansible.Changed = $false
+          Import-Module ActiveDirectory
+          $spec = $policy_json | ConvertFrom-Json
+
+          # org.json key -> [System Access] key. A time of 0 means never in
+          # org.json; the security template writes never as -1.
+          $map = [ordered]@{
+            minPasswordLength               = @('MinimumPasswordLength', 'int')
+            minPasswordAgeDays              = @('MinimumPasswordAge', 'int')
+            maxPasswordAgeDays              = @('MaximumPasswordAge', 'never')
+            passwordHistoryCount            = @('PasswordHistorySize', 'int')
+            complexityEnabled               = @('PasswordComplexity', 'bool')
+            reversibleEncryptionEnabled     = @('ClearTextPassword', 'bool')
+            lockoutThreshold                = @('LockoutBadCount', 'int')
+            lockoutObservationWindowMinutes = @('ResetLockoutCount', 'int')
+            lockoutDurationMinutes          = @('LockoutDuration', 'never')
+          }
+          $want = [ordered]@{}
+          foreach ($k in $map.Keys) {
+            if (-not $spec.PSObject.Properties[$k]) { continue }
+            $key, $kind = $map[$k]
+            $v = $spec.$k
+            $want[$key] = switch ($kind) {
+              'int'   { [int]$v }
+              'bool'  { [int][bool]$v }
+              'never' { if ([int]$v -eq 0) { -1 } else { [int]$v } }
+            }
+          }
+
+          $guid = '{31B2F340-016D-11D2-945F-00C04FB984F9}'
+          $domain = Get-ADDomain
+          $sysvol = (Get-ItemProperty 'HKLM:\SYSTEM\CurrentControlSet\Services\Netlogon\Parameters').SysVol
+          $root = Join-Path $sysvol "$($domain.DNSRoot)\Policies\$guid"
+          $inf = Join-Path $root 'MACHINE\Microsoft\Windows NT\SecEdit\GptTmpl.inf'
+          $ini = Join-Path $root 'GPT.INI'
+          if (-not (Test-Path $inf)) { throw "Not found: $inf" }
+
+          # Keep the file encoding (UTF-16 LE with BOM for GptTmpl.inf).
+          $reader = New-Object System.IO.StreamReader($inf, $true)
+          $text = $reader.ReadToEnd(); $enc = $reader.CurrentEncoding; $reader.Close()
+          $lines = [System.Collections.Generic.List[string]]($text -split "`r`n")
+          $start = $lines.FindIndex([Predicate[string]]{ param($l) $l.Trim() -eq '[System Access]' })
+          if ($start -lt 0) { throw "$inf has no [System Access] section." }
+          $end = $start + 1
+          while ($end -lt $lines.Count -and -not $lines[$end].TrimStart().StartsWith('[')) { $end++ }
+
+          $diff = @()
+          foreach ($key in $want.Keys) {
+            $line = "$key = $($want[$key])"
+            $at = -1
+            for ($i = $start + 1; $i -lt $end; $i++) {
+              if ($lines[$i] -match "^\s*$([regex]::Escape($key))\s*=") { $at = $i; break }
+            }
+            if ($at -ge 0) {
+              $have = ($lines[$at] -split '=', 2)[1].Trim()
+              if ($have -ne "$($want[$key])") { $diff += "$key $have -> $($want[$key])"; $lines[$at] = $line }
+            } else {
+              $diff += "$key (none) -> $($want[$key])"
+              $lines.Insert($end, $line); $end++
+            }
+          }
+
+          $gpoDN = "CN=$guid,CN=Policies,CN=System,$($domain.DistinguishedName)"
+          $ad = Get-ADObject -Identity $gpoDN -Properties versionNumber, gPCMachineExtensionNames
+          $cse = '{827D319E-6EAC-11D2-A4EA-00C04F79F83A}'
+          $warn = @()
+          if ("$($ad.gPCMachineExtensionNames)" -notmatch [regex]::Escape($cse)) {
+            $warn += "gPCMachineExtensionNames has no Security CSE $cse. The DCs may not apply GptTmpl.inf."
+          }
+
+          $version = $null
+          if ($diff.Count) {
+            $Ansible.Changed = $true
+            $iniText = Get-Content -Raw -Path $ini
+            $iniVersion = if ($iniText -match '(?m)^Version=(\d+)') { [int64]$Matches[1] } else { 0 }
+            $base = [math]::Max($iniVersion, [int64]$ad.versionNumber)
+            # User version in the high 16 bits, computer version in the low 16.
+            if (($base -band 0xFFFF) -eq 0xFFFF) { throw "The computer version of the GPO is at its maximum ($base)." }
+            $version = $base + 1
+            if ($PSCmdlet.ShouldProcess($inf, "Set $($diff -join ', ')")) {
+              [System.IO.File]::WriteAllText($inf, ($lines -join "`r`n"), $enc)
+              $newIni = if ($iniText -match '(?m)^Version=\d+') { $iniText -replace '(?m)^Version=\d+', "Version=$version" }
+                        else { $iniText.TrimEnd() + "`r`nVersion=$version`r`n" }
+              Set-Content -Path $ini -Value $newIni -NoNewline -Encoding ASCII
+              Set-ADObject -Identity $gpoDN -Replace @{ versionNumber = [int]$version }
+            }
+          }
+          $Ansible.Result = @{ changes = $diff; newVersion = $version; warnings = $warn; file = $inf }
+      register: ad_default_gpo
+      when: ad_is_primary_dc
+      tags: [default-domain-gpo, never]
+
+    - name: Default domain GPO | Report
+      ansible.builtin.debug:
+        var: ad_default_gpo.result
+      when: ad_is_primary_dc
+      tags: [default-domain-gpo, never]
+
+    # ------------------------------------------- alert and JEA shared files
+    # PatchworkAlert sends the alert mail. Both -t breakglass-alert and
+    # -t jit-endpoint use it.
+    - name: Alerts | Directories exist
+      ansible.windows.win_file:
+        path: "{{ item }}"
+        state: directory
+      loop:
+        - "{{ ad_alert_dir }}"
+        - "{{ ad_ps_modules }}\\PatchworkAlert"
+      tags: [breakglass-alert, jit-endpoint, never]
+
+    - name: Alerts | PatchworkAlert module is installed
+      ansible.windows.win_copy:
+        src: "{{ ad_tiering_files }}/PatchworkAlert/{{ item }}"
+        dest: "{{ ad_ps_modules }}\\PatchworkAlert\\{{ item }}"
+      loop: [PatchworkAlert.psm1, PatchworkAlert.psd1]
+      tags: [breakglass-alert, jit-endpoint, never]
+
+    - name: Alerts | Relay settings (no secret)
+      ansible.windows.win_copy:
+        content: "{{ ad_alert_mail | to_nice_json }}"
+        dest: "{{ ad_alert_dir }}\\mail.json"
+      vars:
+        ad_alert_mail:
+          host: "{{ ad_alert_smtp_host }}"
+          port: "{{ ad_alert_smtp_port | int }}"
+          from: "{{ ad_alert_from }}"
+          to: "{{ ad_alert_to }}"
+          subjectPrefix: "{{ ad_alert_subject_prefix }}"
+      tags: [breakglass-alert, jit-endpoint, never]
+
+    - name: Alerts | Application log sources exist
+      ansible.windows.win_powershell:
+        script: |
+          [CmdletBinding(SupportsShouldProcess)]
+          param()
+          $Ansible.Changed = $false
+          foreach ($s in 'Patchwork-Alert', 'Patchwork-JIT') {
+            if (-not [System.Diagnostics.EventLog]::SourceExists($s)) {
+              if ($PSCmdlet.ShouldProcess($s, 'Create Application log source')) { New-EventLog -LogName Application -Source $s }
+              $Ansible.Changed = $true
+            }
+          }
+      tags: [breakglass-alert, jit-endpoint, never]
+
+    # ------------------------------------------------------ breakglass-alert
+    # An event-triggered scheduled task on each DC. It runs as SYSTEM, once
+    # for each matching Security event, and mails security@. TIERING.md
+    # section 4. Test it every quarter: enable the account, log on once,
+    # then run -t administrator-random -e ad_admin_random_force=true.
+    - name: Break-glass | Handler script is installed
+      ansible.windows.win_copy:
+        src: "{{ ad_tiering_files }}/Invoke-BreakGlassAlert.ps1"
+        dest: "{{ ad_alert_dir }}\\Invoke-BreakGlassAlert.ps1"
+      tags: [breakglass-alert, never]
+
+    - name: Break-glass | Event-triggered task \Patchwork\BreakGlassAlert
+      ansible.windows.win_powershell:
+        parameters:
+          handler: "{{ ad_alert_dir }}\\Invoke-BreakGlassAlert.ps1"
+          tier0_group: "{{ ad_org.privileged.tier0Group }}"
+        script: |
+          [CmdletBinding(SupportsShouldProcess)]
+          param([string]$handler, [string]$tier0_group)
+          $Ansible.Changed = $false
+          Import-Module ActiveDirectory
+          $domainSid = "$((Get-ADDomain).DomainSID)"
+          $adminSid = "$domainSid-500"
+          $adminSam = (Get-ADUser -Identity $adminSid).SamAccountName
+          # Groups whose changes are reported. 4728 global, 4732 local,
+          # 4756 universal.
+          $groupSids = @("$domainSid-512", "$domainSid-519", "$domainSid-518", 'S-1-5-32-544')
+          $t0 = Get-ADGroup -Filter "SamAccountName -eq '$tier0_group'"
+          if ($t0) { $groupSids += "$($t0.SID)" }
+          $groupFilter = ($groupSids | ForEach-Object { "Data[@Name='TargetSid']='$_'" }) -join ' or '
+
+          $selects = @(
+            "*[System[(EventID=4624)]] and *[EventData[Data[@Name='TargetUserSid']='$adminSid']]",
+            "*[System[(EventID=4768 or EventID=4722 or EventID=4724)]] and *[EventData[Data[@Name='TargetSid']='$adminSid']]",
+            "*[System[(EventID=4776)]] and *[EventData[Data[@Name='TargetUserName']='$adminSam']]",
+            "*[System[(EventID=4728 or EventID=4732 or EventID=4756)]] and *[EventData[$groupFilter]]"
+          )
+          $query = '<QueryList><Query Id="0" Path="Security">' + (($selects | ForEach-Object {
+                '<Select Path="Security">' + [System.Security.SecurityElement]::Escape($_) + '</Select>' }) -join '') + '</Query></QueryList>'
+          $taskArgs = '-NoProfile -NonInteractive -ExecutionPolicy Bypass -File "' + $handler + '" -Channel "$(Channel)" -RecordId $(RecordId)'
+
+          $body = @"
+            <Triggers>
+              <EventTrigger>
+                <Enabled>true</Enabled>
+                <Subscription>$([System.Security.SecurityElement]::Escape($query))</Subscription>
+                <ValueQueries>
+                  <Value name="Channel">Event/System/Channel</Value>
+                  <Value name="RecordId">Event/System/EventRecordID</Value>
+                </ValueQueries>
+              </EventTrigger>
+            </Triggers>
+            <Principals>
+              <Principal id="Author"><UserId>S-1-5-18</UserId><RunLevel>HighestAvailable</RunLevel></Principal>
+            </Principals>
+            <Settings>
+              <MultipleInstancesPolicy>Parallel</MultipleInstancesPolicy>
+              <DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries>
+              <StopIfGoingOnBatteries>false</StopIfGoingOnBatteries>
+              <StartWhenAvailable>true</StartWhenAvailable>
+              <ExecutionTimeLimit>PT5M</ExecutionTimeLimit>
+              <Enabled>true</Enabled>
+            </Settings>
+            <Actions Context="Author">
+              <Exec>
+                <Command>powershell.exe</Command>
+                <Arguments>$([System.Security.SecurityElement]::Escape($taskArgs))</Arguments>
+              </Exec>
+            </Actions>
+          "@
+          # The hash of the definition goes in the description, so a rerun
+          # changes nothing when the definition is the same.
+          $sha = [System.Security.Cryptography.SHA256]::Create()
+          $hash = -join ($sha.ComputeHash([Text.Encoding]::UTF8.GetBytes($body)) | ForEach-Object { $_.ToString('x2') })
+          $to = (Get-Content -Raw "$env:ProgramData\Patchwork\alerts\mail.json" | ConvertFrom-Json).to
+          $desc = "Mails $to on use of the built-in Administrator and on privileged group changes. " +
+                  "ansible/ad.yml -t breakglass-alert. sha256=$hash"
+          $xml = @"
+          <?xml version="1.0" encoding="UTF-16"?>
+          <Task version="1.4" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
+            <RegistrationInfo><Description>$([System.Security.SecurityElement]::Escape($desc))</Description></RegistrationInfo>
+          $body
+          </Task>
+          "@
+          $have = Get-ScheduledTask -TaskPath '\Patchwork\' -TaskName 'BreakGlassAlert' -ErrorAction SilentlyContinue
+          if (-not $have -or "$($have.Description)" -notlike "*sha256=$hash") {
+            if ($PSCmdlet.ShouldProcess('\Patchwork\BreakGlassAlert', 'Register task')) {
+              Register-ScheduledTask -TaskPath '\Patchwork\' -TaskName 'BreakGlassAlert' -Xml $xml -Force | Out-Null
+            }
+            $Ansible.Changed = $true
+          }
+          $Ansible.Result = @{ administrator = $adminSam; sid = $adminSid; groups = $groupSids; registered = $Ansible.Changed }
+      register: ad_breakglass
+      tags: [breakglass-alert, never]
+
+    - name: Break-glass | Report
+      ansible.builtin.debug:
+        var: ad_breakglass.result
+      tags: [breakglass-alert, never]
+
+    - name: Break-glass | Send one test mail (-e ad_alert_test=true)
+      ansible.windows.win_powershell:
+        script: |
+          Import-Module PatchworkAlert
+          $ok = Send-PatchworkAlert -Subject "Test alert from $env:COMPUTERNAME" -Body 'ad.yml -t breakglass-alert -e ad_alert_test=true. No action needed.'
+          if (-not $ok) { throw 'The test mail failed. Read event 1900 (source Patchwork-Alert) in the Application log of this DC.' }
+      when: ad_alert_test | bool
+      tags: [breakglass-alert, never]
+
+    # -------------------------------------------------- administrator-random
+    # TIERING.md section 4: nobody stores or knows the built-in
+    # Administrator password. The DC makes a random password and sets it
+    # straight from a SecureString. It is never a plain string, never
+    # returned, never logged. Refuses while the account is enabled.
+    - name: Administrator | Refuse while the built-in Administrator is enabled
+      ansible.windows.win_powershell:
+        script: |
+          [CmdletBinding(SupportsShouldProcess)]
+          param()
+          $Ansible.Changed = $false
+          Import-Module ActiveDirectory
+          $u = Get-ADUser -Identity "$((Get-ADDomain).DomainSID)-500"
+          if ($u.Enabled) {
+            throw ("The built-in Administrator ($($u.SamAccountName)) is enabled. This tag runs only on a disabled account. " +
+                   'Disable it first (converge.ps1 Build), then run again.')
+          }
+      when: ad_is_primary_dc
+      tags: [administrator-random, never]
+
+    - name: Administrator | Discarded random password, sensitive, still disabled
+      ansible.windows.win_powershell:
+        parameters:
+          length: "{{ ad_admin_random_length | int }}"
+          min_age_hours: "{{ ad_admin_random_min_age_hours | int }}"
+          force: "{{ ad_admin_random_force | bool }}"
+        script: |
+          [CmdletBinding(SupportsShouldProcess)]
+          param([int]$length, [int]$min_age_hours, [bool]$force)
+          $Ansible.Changed = $false
+          Import-Module ActiveDirectory
+          if ($length -lt 64) { throw 'ad_admin_random_length must be 64 or more.' }
+          $sid = "$((Get-ADDomain).DomainSID)-500"
+          $u = Get-ADUser -Identity $sid -Properties pwdLastSet, AccountNotDelegated
+          if ($u.Enabled) {
+            throw "The built-in Administrator ($($u.SamAccountName)) is enabled. Refused."
+          }
+          $age = ((Get-Date).ToUniversalTime() - [DateTime]::FromFileTimeUtc([int64]$u.pwdLastSet)).TotalHours
+          $actions = @()
+          if (-not $u.AccountNotDelegated) {
+            if ($PSCmdlet.ShouldProcess($u.SamAccountName, 'Set "sensitive and cannot be delegated"')) {
+              Set-ADUser -Identity $u -AccountNotDelegated $true
+            }
+            $actions += 'set sensitive and cannot be delegated'
+            $Ansible.Changed = $true
+          }
+          if ($force -or $age -ge $min_age_hours) {
+            if ($PSCmdlet.ShouldProcess($u.SamAccountName, "Set a random $length-character password")) {
+              $sets = 'ABCDEFGHJKLMNPQRSTUVWXYZ', 'abcdefghijkmnopqrstuvwxyz', '23456789', '!#%+-=?@^_~'
+              $all = [char[]](-join $sets)
+              $rng = [System.Security.Cryptography.RandomNumberGenerator]::Create()
+              $buf = New-Object byte[] 1
+              $limit = 256 - (256 % $all.Length)
+              do {
+                $pw = New-Object System.Security.SecureString
+                $seen = @($false, $false, $false, $false)
+                while ($pw.Length -lt $length) {
+                  $rng.GetBytes($buf)
+                  if ($buf[0] -ge $limit) { continue }
+                  $c = $all[$buf[0] % $all.Length]
+                  for ($s = 0; $s -lt 4; $s++) { if ($sets[$s].IndexOf($c) -ge 0) { $seen[$s] = $true } }
+                  $pw.AppendChar($c)
+                }
+                $c = $null
+                $complete = -not ($seen -contains $false)
+                if (-not $complete) { $pw.Dispose() }
+              } until ($complete)
+              $pw.MakeReadOnly()
+              Set-ADAccountPassword -Identity $u -Reset -NewPassword $pw
+              $pw.Dispose(); $rng.Dispose()
+            }
+            $actions += "set a new discarded random password (old one $([int]$age) h old)"
+            $Ansible.Changed = $true
+          } else {
+            $actions += "password is $([int]$age) h old, younger than $min_age_hours h: not changed (use -e ad_admin_random_force=true)"
+          }
+          $Ansible.Result = @{ account = $u.SamAccountName; enabled = $u.Enabled; actions = $actions }
+      register: ad_admin_random
+      no_log: true
+      when: ad_is_primary_dc
+      tags: [administrator-random, never]
+
+    - name: Administrator | Report (no password in it)
+      ansible.builtin.debug:
+        var: ad_admin_random.result
+      when: ad_is_primary_dc
+      tags: [administrator-random, never]
+
+    # ---------------------------------------------------------- krbtgt-reset
+    # TIERING.md phase 6: two resets, 10 hours or more apart. Each run
+    # resets once at most. It refuses while the password is younger than
+    # ad_krbtgt_min_age_hours or while any DC shows a replication failure.
+    # Each DC checks itself and pulls the change itself: a WinRM NTLM session
+    # cannot use its credentials on a second DC.
+    - name: Krbtgt | Replication is healthy on this DC
+      ansible.windows.win_powershell:
+        script: |
+          [CmdletBinding(SupportsShouldProcess)]
+          param()
+          $Ansible.Changed = $false
+          Import-Module ActiveDirectory
+          $problems = @()
+          try {
+            $meta = @(Get-ADReplicationPartnerMetadata -Target $env:COMPUTERNAME -Partition * -ErrorAction Stop)
+            if (-not $meta.Count) { $problems += "$env:COMPUTERNAME has no inbound replication partner" }
+            foreach ($m in $meta) {
+              if ($m.LastReplicationResult -ne 0) {
+                $problems += "$env:COMPUTERNAME <- $($m.Partner) ($($m.Partition)): last result $($m.LastReplicationResult)"
+              }
+            }
+            foreach ($f in @(Get-ADReplicationFailure -Target $env:COMPUTERNAME -ErrorAction Stop | Where-Object { $_.FailureCount -gt 0 })) {
+              $problems += "$env:COMPUTERNAME : $($f.FailureCount) failures from $($f.Partner), last error $($f.LastError)"
+            }
+          } catch {
+            $problems += "$env:COMPUTERNAME : cannot read the replication state: $($_.Exception.Message)"
+          }
+          $Ansible.Result = @{ dc = $env:COMPUTERNAME; problems = $problems }
+      register: ad_krbtgt_repl
+      tags: [krbtgt-reset, never]
+
+    - name: Krbtgt | Reset the password once
+      ansible.windows.win_powershell:
+        parameters:
+          min_age_hours: "{{ ad_krbtgt_min_age_hours | int }}"
+          problems_json: >-
+            {{ ansible_play_hosts | map('extract', hostvars, ['ad_krbtgt_repl', 'result', 'problems'])
+               | flatten | to_json }}
+        script: |
+          [CmdletBinding(SupportsShouldProcess)]
+          param([int]$min_age_hours, [string]$problems_json)
+          $Ansible.Changed = $false
+          Import-Module ActiveDirectory
+          $problems = @($problems_json | ConvertFrom-Json)
+          $k = Get-ADUser -Identity krbtgt -Properties pwdLastSet
+          $age = ((Get-Date).ToUniversalTime() - [DateTime]::FromFileTimeUtc([int64]$k.pwdLastSet)).TotalHours
+          if ($age -lt $min_age_hours) {
+            $problems += ("the krbtgt password is $([math]::Round($age, 1)) h old. " +
+                          "Wait until it is $min_age_hours h old, so tickets from before the first reset expire.")
+          }
+          if ($problems.Count) { throw ("krbtgt reset refused:`n - " + ($problems -join "`n - ")) }
+          if ($PSCmdlet.ShouldProcess('krbtgt', 'Reset the password')) {
+            $rng = [System.Security.Cryptography.RandomNumberGenerator]::Create()
+            $all = [char[]]'ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789!#%+-=?@^_~'
+            $buf = New-Object byte[] 1
+            $limit = 256 - (256 % $all.Length)
+            $pw = New-Object System.Security.SecureString
+            # A fixed start makes each class appear once; the rest is random.
+            foreach ($c in [char[]]'Aa2!') { $pw.AppendChar($c) }
+            while ($pw.Length -lt 64) {
+              $rng.GetBytes($buf)
+              if ($buf[0] -lt $limit) { $pw.AppendChar($all[$buf[0] % $all.Length]) }
+            }
+            $pw.MakeReadOnly()
+            Set-ADAccountPassword -Identity krbtgt -Reset -NewPassword $pw
+            $pw.Dispose(); $rng.Dispose()
+          }
+          $Ansible.Changed = $true
+          $after = (Get-ADUser -Identity krbtgt -Properties pwdLastSet).pwdLastSet
+          $Ansible.Result = @{ previousAgeHours = [math]::Round($age, 1); pwdLastSet = [int64]$after }
+      register: ad_krbtgt_reset
+      when: ad_is_primary_dc
+      tags: [krbtgt-reset, never]
+
+    - name: Krbtgt | Each DC pulls the change from its partners
+      ansible.windows.win_powershell:
+        script: |
+          $out = repadmin /syncall /Ade 2>&1 | Out-String
+          if ($LASTEXITCODE -ne 0) { throw "repadmin /syncall /Ade failed:`n$out" }
+          $Ansible.Result = $out
+      register: ad_krbtgt_sync
+      when:
+        - not ansible_check_mode
+        - hostvars[ad_dcs[0].name.split('.')[0]].ad_krbtgt_reset is changed
+      tags: [krbtgt-reset, never]
+
+    - name: Krbtgt | Each DC has the new password
+      ansible.windows.win_powershell:
+        parameters:
+          want: "{{ hostvars[ad_dcs[0].name.split('.')[0]].ad_krbtgt_reset.result.pwdLastSet | int }}"
+        script: |
+          param([int64]$want)
+          $Ansible.Changed = $false
+          Import-Module ActiveDirectory
+          $deadline = (Get-Date).AddMinutes(3)
+          do {
+            $have = [int64](Get-ADUser -Identity krbtgt -Server $env:COMPUTERNAME -Properties pwdLastSet).pwdLastSet
+            if ($have -ge $want) { break }
+            Start-Sleep -Seconds 10
+          } while ((Get-Date) -lt $deadline)
+          if ($have -lt $want) { throw "$env:COMPUTERNAME still has the old krbtgt password after 3 minutes. Check replication." }
+          $Ansible.Result = @{ dc = $env:COMPUTERNAME; pwdLastSet = $have }
+      when:
+        - not ansible_check_mode
+        - hostvars[ad_dcs[0].name.split('.')[0]].ad_krbtgt_reset is changed
+      tags: [krbtgt-reset, never]
+
+    - name: Krbtgt | Report
+      ansible.builtin.debug:
+        msg:
+          replication: "{{ ad_krbtgt_repl.result }}"
+          reset: "{{ ad_krbtgt_reset.result | default('not on this DC') }}"
+          next: >-
+            Run -t krbtgt-reset again 10 hours or more after this reset. Two
+            resets in total (TIERING.md decision 10).
+      tags: [krbtgt-reset, never]
+
+    # ---------------------------------------------------------- jit-endpoint
+    # TIERING.md section 3. The PatchworkT0 JEA endpoint on each DC. Only
+    # GG-T0-Eligible can connect, and it can run Request-T0Admin and
+    # Get-T0AdminGrant only. This tag does NOT enable the AD Privileged
+    # Access Management feature, which cannot be undone. It fails while the
+    # feature is off. Enable it by hand, once, after approval:
+    #   Enable-ADOptionalFeature 'Privileged Access Management Feature' `
+    #     -Scope ForestOrConfigurationSet -Target patchwork.internal
+    - name: JIT | The PAM feature is on and the groups exist
+      ansible.windows.win_powershell:
+        parameters:
+          groups_json: "{{ [ad_org.tiering.jit.group, ad_org.tiering.jit.eligible] | to_json }}"
+        script: |
+          [CmdletBinding(SupportsShouldProcess)]
+          param([string]$groups_json)
+          $Ansible.Changed = $false
+          Import-Module ActiveDirectory
+          $f = Get-ADOptionalFeature -Identity 'Privileged Access Management Feature'
+          if (-not @($f.EnabledScopes).Count) {
+            throw ("The AD 'Privileged Access Management Feature' is OFF. A JIT grant needs it. " +
+                   "This play never enables it, because it cannot be undone. After approval, run once on loom: " +
+                   "Enable-ADOptionalFeature 'Privileged Access Management Feature' -Scope ForestOrConfigurationSet -Target patchwork.internal")
+          }
+          foreach ($g in ($groups_json | ConvertFrom-Json)) {
+            if (-not (Get-ADGroup -Filter "SamAccountName -eq '$g'")) { throw "$g does not exist. Run ad/converge.ps1 (Build) first." }
+          }
+      tags: [jit-endpoint, never]
+
+    - name: JIT | Directories exist
+      ansible.windows.win_file:
+        path: "{{ item }}"
+        state: directory
+      loop:
+        - "{{ ad_jea_dir }}"
+        - "{{ ad_jea_dir }}\\transcripts"
+        - "{{ ad_ps_modules }}\\PatchworkT0\\RoleCapabilities"
+      tags: [jit-endpoint, never]
+
+    - name: JIT | PatchworkT0 module and role capability are installed
+      ansible.windows.win_copy:
+        src: "{{ ad_tiering_files }}/PatchworkT0/{{ item.src }}"
+        dest: "{{ ad_ps_modules }}\\PatchworkT0\\{{ item.dest }}"
+      loop:
+        - { src: PatchworkT0.psm1, dest: PatchworkT0.psm1 }
+        - { src: PatchworkT0.psd1, dest: PatchworkT0.psd1 }
+        - { src: RoleCapabilities/PatchworkT0.psrc, dest: 'RoleCapabilities\PatchworkT0.psrc' }
+      loop_control:
+        label: "{{ item.src }}"
+      tags: [jit-endpoint, never]
+
+    - name: JIT | Limits from ad/org.json tiering.jit
+      ansible.windows.win_copy:
+        content: "{{ ad_org.tiering.jit | to_nice_json }}"
+        dest: "{{ ad_jea_dir }}\\jit.json"
+      tags: [jit-endpoint, never]
+
+    - name: JIT | Session configuration file
+      ansible.windows.win_copy:
+        content: |
+          @{
+              SchemaVersion       = '2.0.0.0'
+              GUID                = 'ed9a8ffc-abb3-4e94-b81a-c4b7677a9841'
+              Author              = 'Patchwork Labs'
+              Description         = 'Tier 0 JIT requests. ansible/ad.yml -t jit-endpoint.'
+              SessionType         = 'RestrictedRemoteServer'
+              TranscriptDirectory = '{{ ad_jea_dir }}\transcripts'
+              RunAsVirtualAccount = $true
+              RoleDefinitions     = @{
+                  '{{ domain_netbios }}\{{ ad_org.tiering.jit.eligible }}' = @{ RoleCapabilities = 'PatchworkT0' }
+              }
+          }
+        dest: "{{ ad_jea_dir }}\\PatchworkT0.pssc"
+      tags: [jit-endpoint, never]
+
+    # Registering changes the WinRM plugin config. It needs a WinRM restart,
+    # which would cut this Ansible connection, so the restart runs from a
+    # one-shot task after this step returns.
+    - name: JIT | Endpoint PatchworkT0 is registered
+      ansible.windows.win_powershell:
+        parameters:
+          pssc: "{{ ad_jea_dir }}\\PatchworkT0.pssc"
+        script: |
+          [CmdletBinding(SupportsShouldProcess)]
+          param([string]$pssc)
+          $Ansible.Changed = $false
+          if (-not (Test-PSSessionConfigurationFile -Path $pssc)) { throw "$pssc is not a valid session configuration file." }
+          $hash = (Get-FileHash -Path $pssc -Algorithm SHA256).Hash
+          $marker = "$pssc.registered"
+          $have = Get-PSSessionConfiguration -Name PatchworkT0 -ErrorAction SilentlyContinue
+          $old = if (Test-Path $marker) { (Get-Content -Raw $marker).Trim() } else { '' }
+          if (-not $have -or $old -ne $hash) {
+            if ($PSCmdlet.ShouldProcess('PatchworkT0', 'Register JEA endpoint')) {
+              if ($have) { Unregister-PSSessionConfiguration -Name PatchworkT0 -NoServiceRestart -Force }
+              Register-PSSessionConfiguration -Name PatchworkT0 -Path $pssc -NoServiceRestart -Force | Out-Null
+              Set-Content -Path $marker -Value $hash -Encoding ASCII
+            }
+            $Ansible.Changed = $true
+          }
+      register: ad_jea_register
+      tags: [jit-endpoint, never]
+
+    - name: JIT | Restart WinRM after the registration
+      ansible.windows.win_powershell:
+        script: |
+          $a = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument '-NoProfile -Command "Start-Sleep -Seconds 3; Restart-Service WinRM -Force"'
+          Register-ScheduledTask -TaskPath '\Patchwork\' -TaskName 'RestartWinRM' -Action $a -User 'NT AUTHORITY\SYSTEM' -RunLevel Highest -Force | Out-Null
+          Start-ScheduledTask -TaskPath '\Patchwork\' -TaskName 'RestartWinRM'
+      when: ad_jea_register is changed and not ansible_check_mode
+      tags: [jit-endpoint, never]
+
+    - name: JIT | Wait for WinRM
+      ansible.builtin.wait_for_connection:
+        delay: 15
+        timeout: 180
+      when: ad_jea_register is changed and not ansible_check_mode
+      tags: [jit-endpoint, never]
+
+    - name: JIT | The endpoint allows only the eligible group
+      ansible.windows.win_powershell:
+        parameters:
+          eligible: "{{ domain_netbios }}\\{{ ad_org.tiering.jit.eligible }}"
+        script: |
+          [CmdletBinding(SupportsShouldProcess)]
+          param([string]$eligible)
+          $Ansible.Changed = $false
+          Unregister-ScheduledTask -TaskPath '\Patchwork\' -TaskName 'RestartWinRM' -Confirm:$false -ErrorAction SilentlyContinue
+          $c = Get-PSSessionConfiguration -Name PatchworkT0 -ErrorAction SilentlyContinue
+          if (-not $c) {
+            if ($Ansible.CheckMode) { $Ansible.Result = 'not registered yet (check mode)'; return }
+            throw 'The PatchworkT0 endpoint is not registered.'
+          }
+          $perm = "$($c.Permission)"
+          if ($perm -notlike "*$eligible AccessAllowed*") { throw "PatchworkT0 permission is '$perm', expected $eligible AccessAllowed." }
+          if (($perm -split ',').Count -ne 1) { throw "PatchworkT0 allows more than one principal: $perm" }
+          $Ansible.Result = @{ permission = $perm; runAsVirtualAccount = $c.RunAsVirtualAccount }
+      register: ad_jea_check
+      tags: [jit-endpoint, never]
+
+    - name: JIT | Report
+      ansible.builtin.debug:
+        var: ad_jea_check.result
+      tags: [jit-endpoint, never]

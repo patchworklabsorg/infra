@@ -128,6 +128,10 @@ function Set-ADForest { param($Identity, [hashtable]$UPNSuffixes, $Server)
 
 # --- Generic objects ---------------------------------------------------------
 function Get-ADObject { param([string]$Filter, $SearchBase, $SearchScope, $Properties, $Server, $Identity)
+    # Like the real cmdlet: an empty -Properties fails validation.
+    if ($PSBoundParameters.ContainsKey('Properties') -and @($Properties).Count -eq 0) {
+        throw "Cannot validate argument on parameter 'Properties'."
+    }
     if ($Identity) { return ConvertTo-Fake (Find-Fake $Identity) }
     Select-Fake $Filter $SearchBase | ForEach-Object { ConvertTo-Fake $_ }
 }

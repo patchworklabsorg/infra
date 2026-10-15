@@ -128,7 +128,10 @@ function Get-ParentDN([string]$DN) {
 }
 
 function Find-Object([string]$Filter, [string[]]$Properties = @()) {
-    Get-ADObject -Filter $Filter -Properties $Properties @ad
+    # Get-ADObject rejects an empty -Properties, so pass it only when set.
+    $extra = @{}
+    if ($Properties.Count -gt 0) { $extra.Properties = $Properties }
+    Get-ADObject -Filter $Filter @extra @ad
 }
 
 function Find-User([string]$Sam) {

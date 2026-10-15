@@ -32,15 +32,15 @@ ad_dcs:
 # hosts read it from secrets/ad-join.age (agenix).
 ad_join_account: svc-lnx-join
 
-# OU root: OU=Patchwork-Objects,DC=patchwork,DC=internal.
-ad_computer_ou_client: "OU=Staff-Computers,OU=Staff-Production,OU=Patchwork-Objects,DC=patchwork,DC=internal"
-ad_computer_ou_server: "OU=Member-Servers,OU=Infrastructure,OU=Patchwork-Objects,DC=patchwork,DC=internal"
+# OU root: OU=Patchwork,DC=patchwork,DC=internal (ad/org.json).
+ad_computer_ou_client: "OU=Computers,OU=Patchwork,DC=patchwork,DC=internal"
+ad_computer_ou_server: "OU=Servers,OU=Patchwork,DC=patchwork,DC=internal"
 # ad.yml -t host-groups creates lnx-<host>-users here ...
-ad_group_ou_users:     "OU=Box-Users,OU=Linux-Access-Control,OU=Security-Groups,OU=Patchwork-Objects,DC=patchwork,DC=internal"
+ad_group_ou_users:     "OU=Resources,OU=Groups,OU=Patchwork,DC=patchwork,DC=internal"
 # ... and lnx-<host>-admins here.
-ad_group_ou_admins:    "OU=Box-Admins,OU=Linux-Access-Control,OU=Security-Groups,OU=Patchwork-Objects,DC=patchwork,DC=internal"
-# svc-ansible and svc-lnx-join live here.
-ad_service_account_ou: "OU=Service-Accounts,OU=Patchwork-Objects,DC=patchwork,DC=internal"
+ad_group_ou_admins:    "OU=Resources,OU=Groups,OU=Patchwork,DC=patchwork,DC=internal"
+# svc-lnx-join lives here. svc-ansible is in OU=Admin-Accounts (Tier 0).
+ad_service_account_ou: "OU=Service-Accounts,OU=Patchwork,DC=patchwork,DC=internal"
 
 # --- LDAP bind accounts (ad.yml -t ldap-binds) ---------------------------------
 # Read-only accounts for apps that check logins against AD over LDAP. Each is

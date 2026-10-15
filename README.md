@@ -11,6 +11,7 @@ Declarative infrastructure for Patchwork Labs: every Patchwork host, the NixOS m
 | `hosts/proxmox-vm.nix` | Hardware and disk layout shared by every VM. |
 | `hosts/installer.nix` | The installer ISO: NixOS minimal with the admin SSH keys on root. |
 | `bin/install-host` | Plans and applies the VM, reads its address, runs nixos-anywhere. |
+| `bin/new-quilt-staging-secrets` | Writes the two Quilt staging secrets with a new random password and `SECRET_KEY_BASE`. Prints no value. |
 | `hosts/central-db-schema.nix` | Apps and shared schemas of the central databases. |
 | `hosts/alastor/` | Modules that `jaspermayone/infra` imports for alastor. |
 | `modules/common/` | Accounts, SSH, sudo, Tailscale, Nix. Every host imports it. `keys.nix` holds the SSH keys. |
@@ -38,7 +39,7 @@ The lab hosts below are NixOS VMs on pve01, VLAN 90 (`patchwork.internal`). alas
 | `warp` | 356 | 10.100.90.56 | 6 GB | Weave prod + staging, future apps. nginx on `tailscale0:80` for alastor. |
 | `skein` | 355 | 10.100.90.55 | 4 GB | `patchwork_central`, prod. LAN + tailnet. |
 | `seam` | 357 | 10.100.90.57 | 2 GB | `patchwork_central_restricted`, prod. Tailnet only. |
-| `hem` | 358 | 10.100.90.58 | 2 GB | Both staging clusters: central on 5432, restricted on 5433. |
+| `hem` | 358 | 10.100.90.58 | 2 GB | Both staging clusters: central on 5432, restricted on 5433. Quilt staging uses the restricted one. |
 
 The Windows hosts are managed by Ansible (`ansible/`):
 
@@ -160,6 +161,74 @@ Both containers use the host network, so they reach `seam.wildebeest-stargazer.t
 `RESTRICTED_DATABASE_URL` in `quilt-env.age` holds the database password. It must be the same password as in `restricted-prod-quilt.age`, which seam sets on the role `quilt`.
 
 To deploy a new `main` image, run `sudo systemctl restart quilt-web` on alastor. That restarts the worker too. To change the module, follow the same steps as for Weave above.
+
+## Quilt staging
+
+Quilt staging is a second instance on alastor, next to production. It uses the Mercury sandbox, Weave staging and the restricted staging cluster on hem. It can never move real money: with `RAILS_ENV=staging`, Quilt refuses to boot unless `MERCURY_API_BASE` is the sandbox URL (patchworklabsorg/quilt#35). The option is `staging` in `modules/quilt`. `hosts/alastor/quilt.nix` turns it on.
+
+| Item | Production | Staging |
+|---|---|---|
+| URL | `https://quilt.patchworklabs.org` | `https://quilt-staging.patchworklabs.org` (router `quilt-staging`) |
+| Units | `quilt-web`, `quilt-worker` | `quilt-staging-web`, `quilt-staging-worker` |
+| Port | `127.0.0.1:3005` | `127.0.0.1:3006` |
+| `RAILS_ENV` | `production` | `staging` |
+| Image | `ghcr.io/patchworklabsorg/quilt:main` (option `image`) | `ghcr.io/patchworklabsorg/quilt:main` (option `staging.image`) |
+| Mercury | `https://api.mercury.com/api/v1/`, live tokens | `https://api-sandbox.mercury.com/api/v1/` (set in Nix), sandbox tokens |
+| Weave | Weave production | `https://weave-staging.patchworklabs.org` (set in Nix), a Weave staging app |
+| Database | seam:5432, `patchwork_central_restricted` | hem:5433, `patchwork_central_restricted` (the restricted staging cluster) |
+| Env file | `quilt-env.age` | `quilt-staging-env.age` |
+| Role password | `restricted-prod-quilt.age` (seam) | `restricted-staging-quilt.age` (hem) |
+| Registry token | `quilt-ghcr-token.age` | The same file |
+
+```mermaid
+flowchart LR
+  internet((Internet)) --> traefik["alastor: Traefik"]
+  traefik -- "127.0.0.1:3006" --> web[quilt-staging-web]
+  worker[quilt-staging-worker] -- "waits for /up" --> web
+  web -- "tailnet :5433" --> hem["hem: restricted-staging container, schema quilt"]
+  worker -- "tailnet :5433" --> hem
+  worker -- sandbox only --> mercury["api-sandbox.mercury.com"]
+  web -- OIDC --> weave["weave-staging.patchworklabs.org"]
+```
+
+`MERCURY_API_BASE` and `WEAVE_ISSUER` are in `staging.extraEnv`, not in the env file. `extraEnv` overrides the env file, so a value in the env file cannot point staging at the live Mercury API.
+
+The database URL in `quilt-staging-env.age`:
+
+```text
+RESTRICTED_DATABASE_URL=postgres://quilt:<password>@hem.wildebeest-stargazer.ts.net:5433/patchwork_central_restricted?sslmode=disable
+```
+
+`<password>` must be the value in `restricted-staging-quilt.age`. hem decrypts that file to `/run/central-db-passwords/patchwork_central_restricted/quilt` and binds the directory into the `restricted-staging` container, where `central-db-setup` sets the password on the role `quilt`. `hosts/hem/configuration.nix` explains why hem does not use `/run/agenix` for this. hem has no server TLS. Tailscale encrypts the path, so the URL uses `sslmode=disable`.
+
+To deploy a new `main` image to staging, run `sudo systemctl restart quilt-staging-web` on alastor. That restarts the staging worker too.
+
+### Go live
+
+Do the steps in this order.
+
+1. Merge patchworklabsorg/quilt#35. Wait until `image.yml` pushes `ghcr.io/patchworklabsorg/quilt:main`. An older image has no `staging` environment and does not boot.
+2. Free 2 GiB of memory on pve01. Make sure that VMID 358 and `10.100.90.58` are free.
+3. Prepare AD for hem. Run `cd ansible && ansible-playbook ad.yml -t host-groups`. Add the A record for hem in AD DNS. See "Login".
+4. Create the VM: `cd terraform/proxmox && tofu apply -target='proxmox_virtual_environment_vm.nixos["hem"]'`. Read the address with `tofu output ipv4_addresses`.
+5. Install hem: `nixos-anywhere --flake .#hem --build-on remote --target-host root@<ip>`.
+6. Join hem to the tailnet. Make sure that the tailnet policy lets alastor reach `hem:5433`.
+7. Get the host key: `ssh-keyscan -t ed25519 10.100.90.58`. Add it as `hem` in `secrets/secrets.nix`. Add `hem` to `restricted-staging-quilt.age` and `ad-join.age`. Remove the TODO.
+8. Create the secrets: `nix develop -c bin/new-quilt-staging-secrets`. The script writes `restricted-staging-quilt.age` and `quilt-staging-env.age` with a random password and `SECRET_KEY_BASE`. It leaves the Weave client and the Mercury tokens empty.
+9. In Weave staging (`https://weave-staging.patchworklabs.org`), register Quilt as a confidential app:
+   - Redirect URI: `https://quilt-staging.patchworklabs.org/auth/callback`.
+   - Scopes: `openid profile email roles directory introspect`. A superadmin allows `directory` and `introspect`.
+   - App roles: `viewer`, `finance`, `admin`.
+10. In the Mercury sandbox dashboard (Settings, API Tokens), create a read-only token. Staging refuses to boot without `MERCURY_API_TOKEN`.
+11. Add the values: `cd secrets && agenix -e quilt-staging-env.age`. Set `WEAVE_CLIENT_ID`, `WEAVE_CLIENT_SECRET` and `MERCURY_API_TOKEN`. Keep `QUILT_TOPUPS=off`.
+12. Re-key: `cd secrets && agenix -r`. Commit the `.age` files and merge.
+13. Deploy hem: `deploy .#hem`. In the container, make sure that `central-db-setup` succeeded and does not log "no password file for quilt": `sudo nixos-container run restricted-staging -- journalctl -u central-db-setup`.
+14. From alastor, test the connection: `psql "<RESTRICTED_DATABASE_URL>" -c 'SHOW search_path'`. The result must be `quilt`.
+15. Merge the DNS record `quilt-staging` (A `129.213.163.213`, proxied) in patchworklabsorg/dns.
+16. In `jaspermayone/infra`, run `nix flake update patchwork-infra` and deploy alastor.
+17. On alastor, check `systemctl status quilt-staging-web quilt-staging-worker` and `curl -i http://127.0.0.1:3006/up`. Then sign in at `https://quilt-staging.patchworklabs.org`.
+
+To test top-ups on staging, add a sandbox `MERCURY_WRITE_TOKEN` with alastor's IP on its allowlist, and set `QUILT_TOPUPS` to `approval_only`.
 
 ## Commands
 

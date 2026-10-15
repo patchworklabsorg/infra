@@ -149,6 +149,9 @@
             packages = [
               pkgs.opentofu
               pkgs.google-cloud-sdk
+              # agenix -e / -r, and bin/new-quilt-staging-secrets.
+              agenix.packages.${system}.default
+              pkgs.openssl
             ];
           };
         }

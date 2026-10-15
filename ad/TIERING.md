@@ -1,6 +1,6 @@
 # AD tiering, silos and just-in-time admin
 
-Status: **proposal**. This document changes nothing. Each live step in the rollout needs approval first. The steps that you cannot undo are in **bold**.
+Status: **approved in part**. See [Decisions (2026-10-14)](#decisions-2026-10-14). This document changes nothing by itself. Each live step in the rollout starts only after its approval. The steps that you cannot undo are in **bold**.
 
 This design covers the `patchwork.internal` forest:
 
@@ -11,23 +11,41 @@ This design covers the `patchwork.internal` forest:
 5. LAPS.
 6. A phased rollout, audit mode first, and which tool owns each piece after the rollout.
 
+## Decisions (2026-10-14)
+
+| # | Topic | Decision |
+|---|---|---|
+| 1 | Tier placement | Approved. bobbin, shuttle and the Proxmox hosts of the Tier 0 VMs are Tier 0. |
+| 2 | pattern | pattern is the offline root CA. Keep it off and out of the domain. |
+| 3 | Jump host | Approved. NLA off, firewall limited to Jasper's VPN address, Proxmox console as the fallback. Name: `spool` (computer object `SPOOL`). |
+| 4 | `T0-Silo` | Approved. 240-minute non-renewable TGT. Audit mode first. |
+| 5 | PAM optional feature | **Not approved yet.** Read [What JIT looks like in practice](#what-jit-looks-like-in-practice) for the lockout analysis. |
+| 6 | JIT limits | Approved: 1 h default and 4 h max for Domain Admins, 1 h for Enterprise Admins, justification required. `adm_mayonej` loses standing Domain Admins, Enterprise Admins, DnsAdmins and DHCP Administrators only after JIT works and is tested. |
+| 7 | Alerts | Email to `security@patchworklabs.org` only. No webhook. |
+| 8 | `svc-ansible` | Approved: compensating controls now, then Kerberos with Protected Users, then a Tier 0 control node. |
+| 9 | Break-glass | Approved with a change: nobody stores or remembers the `Administrator` password. The account stays disabled. See [section 4](#4-break-glass). Remove it from Enterprise Admins and Schema Admins. |
+| 10 | `krbtgt` | Approved: two resets, 10 hours or more apart. |
+| 11 | AD Recycle Bin | Approved and **done** on 2026-10-14. `EnabledScopes` = `CN=Partitions,CN=Configuration,DC=patchwork,DC=internal`. |
+
+Also done on 2026-10-14: the real `converge.ps1` Build ran. It made the `OU=Patchwork` tree, the `GG-*` groups and the fine-grained password policies (PSOs), and it disabled the built-in `Administrator`. Some live facts below are from before that run. The notes in the tables say which.
+
 ## Facts read from the live forest
 
-These facts come from read-only `Get-*` queries against loom on 2026-10-14. No change was made.
+These facts come from read-only `Get-*` queries against loom on 2026-10-14, before the converge Build and the Recycle Bin change of the same night. No change was made by these queries.
 
 | Item | Live value |
 |---|---|
 | Forest functional level | `Windows2025Forest` |
 | Domain functional level | `Windows2025Domain` |
 | DCs | loom and spindle, both Windows Server 2025 Datacenter (10.0.26100), both GC. loom holds all five FSMO roles. |
-| Optional features | Privileged Access Management: **not enabled**. Recycle Bin: **not enabled**. Database 32k Pages: not enabled. |
+| Optional features | Privileged Access Management: **not enabled**. Recycle Bin: not enabled at query time, **enabled later on 2026-10-14**. Database 32k Pages: not enabled. |
 | Authentication policies and silos | None |
 | KDC "claims, compound authentication and Kerberos armoring" | Not configured on loom (no policy value) |
 | Kerberos client armoring policy | Not configured on loom |
 | NTLM restriction or NTLM audit policy | Not configured (`RestrictNTLMInDomain`, `AuditNTLMInDomain`, `LmCompatibilityLevel` have no value) |
 | `Microsoft-Windows-Authentication/*` logs | All four exist and are **disabled**, `AuthenticationPolicyFailures-DomainController` too |
 | Audit policy (loom) | Logon: success and failure. Credential Validation, Kerberos Authentication Service, Security Group Management: success only |
-| Fine-grained password policies | None (another change adds them) |
+| Fine-grained password policies | None at query time. The converge Build added them later the same night. |
 | Windows LAPS | Schema has the `msLAPS-*` attributes. `Get-LapsADPassword` exists. loom, spindle, bobbin and shuttle all have a LAPS password, expiry 2026-11-11. skein has none (Linux). |
 | GPOs | `Default Domain Policy`, `Default Domain Controllers Policy`, `Cert-AutoEnroll` (domain), `LAPS-DSRM` (Domain Controllers), `LAPS-Local-Admin` (Member-Servers), `Client-Baseline` (Staff-Production), `Tier0-Admin-Protection` (Staff-Computers) |
 | `Tier0-Admin-Protection` | Denies local logon and RDP logon to `Domain Admins` on Staff-Computers |
@@ -46,13 +64,13 @@ These facts come from read-only `Get-*` queries against loom on 2026-10-14. No c
 | Group Policy Creator Owners | `Administrator` |
 | Cert Publishers | `BOBBIN$` |
 | Account, Backup, Server, Print Operators | empty |
-| `GG-Domain-Admins-Tier0` | does not exist yet |
+| `GG-Domain-Admins-Tier0` | did not exist at query time. The converge Build made it later the same night. |
 
 ### Privileged accounts
 
 | Account | Facts |
 |---|---|
-| `Administrator` | Enabled. Password set 2026-08-09, never expires. **Last logon 2026-10-12.** Not "sensitive and cannot be delegated". |
+| `Administrator` | Enabled at query time. **Last logon 2026-10-12.** Password set 2026-08-09, never expires. Not "sensitive and cannot be delegated". **The converge Build disabled it later on 2026-10-14.** |
 | `adm_mayonej` | Enabled. In `OU=Admin-Accounts,OU=Administrative,OU=Patchwork-Objects`. Password set 2026-10-14. Also in `pve-operators`, `DHCP Administrators`, `DnsAdmins`. Not "sensitive and cannot be delegated". `msDS-SupportedEncryptionTypes` = 0. |
 | `svc-ansible` | Domain Admins. AES only (24), not delegatable, password never expires. Last logon 2026-10-14. Ansible logs in with NTLM over WinRM HTTP 5985 (`group_vars/windows.yml`). |
 | `krbtgt` | Password set 2026-08-09 (forest creation). Never rotated. |
@@ -66,9 +84,9 @@ The repo and the forest use different names today. This document uses the **live
 |---|---|
 | `adm_mayonej` | `jasper.adm` |
 | `mayonej` | `jasper` |
-| `OU=Patchwork-Objects` tree | `OU=Patchwork` tree (after Migrate) |
+| `OU=Patchwork-Objects` tree (objects not yet moved) | `OU=Patchwork` tree (built 2026-10-14, objects move at Migrate) |
 
-Another change moves `adm_mayonej` into `GG-Domain-Admins-Tier0` and adds fine-grained password policies. This PR does not touch `org.json` or `converge.ps1`. The sections below say what those files must change later.
+Another change moves `adm_mayonej` into `GG-Domain-Admins-Tier0` and adds fine-grained password policies. This document does not touch `org.json` or `converge.ps1`. The sections below say what those files must change later.
 
 ## 1. Tier model
 
@@ -76,7 +94,7 @@ The rule: an account of tier N logs on only to assets of tier N. A higher tier c
 
 | Tier | Assets | Accounts |
 |---|---|---|
-| **0** | loom, spindle (DCs). bobbin (issuing CA). pattern (offline root CA). shuttle (NPS). The Proxmox hosts that run these VMs. The proposed Tier 0 jump host. remus, as long as it holds the `svc-ansible` password. | `adm_mayonej`, `svc-ansible`, `Administrator`, DSRM (LAPS-DSRM) |
+| **0** | loom, spindle (DCs). bobbin (issuing CA). pattern (offline root CA). shuttle (NPS). The Proxmox hosts that run these VMs. The proposed Tier 0 jump host. remus, as long as it holds the `svc-ansible` password. | `adm_mayonej`, `svc-ansible`, `Administrator` (disabled), DSRM (LAPS-DSRM) |
 | **1** | warp, skein, seam, hem (NixOS). thimble (VyOS edge). App servers. | `lnx-<host>-admins` members. `svc-lnx-join`, `svc-pve-ldap`, `svc-dhcp-dns`. No dedicated Tier 1 person account yet. |
 | **2** | Staff workstations (`Computers` OU). VPN sessions. | Daily accounts: `mayonej`, staff, members |
 
@@ -92,7 +110,7 @@ flowchart TB
     jump["T0 jump host (new)"]
     adm["adm_mayonej"]
     ans["svc-ansible"]
-    bg["Administrator (break-glass)"]
+    bg["Administrator (disabled, break-glass)"]
   end
   subgraph T1["Tier 1: servers"]
     nix["warp, skein, seam, hem"]
@@ -106,13 +124,13 @@ flowchart TB
   daily -. "sudo via GG-Infra (accepted, see below)" .-> nix
 ```
 
-### bobbin: Tier 0
+### bobbin: Tier 0 (approved)
 
-bobbin is an enterprise CA. A CA that the forest trusts for smart card logon can issue a certificate for any account, `Administrator` too. A person who controls bobbin controls the forest. `BOBBIN$` is in `Cert Publishers`. bobbin is Tier 0 with no exceptions. pattern, the offline root CA, is Tier 0 for the same reason. It is off and has no computer object, so it is outside the silo. Confirm that pattern is the offline root CA (the Ansible inventory says so).
+bobbin is an enterprise CA. A CA that the forest trusts for smart card logon can issue a certificate for any account, `Administrator` too. A person who controls bobbin controls the forest. `BOBBIN$` is in `Cert Publishers`. bobbin is Tier 0 with no exceptions. pattern, the offline root CA, is Tier 0 for the same reason. It stays off and out of the domain. It has no computer object, so it is outside the silo.
 
-### shuttle: Tier 0
+### shuttle: Tier 0 (approved)
 
-Recommendation: put shuttle in Tier 0.
+shuttle is in Tier 0.
 
 - `svc-ansible`, a Domain Admin, logs on to shuttle over WinRM. Any host where a Tier 0 credential logs on is a Tier 0 host.
 - shuttle checks every staff VPN login. An attacker on shuttle can let any device into the lab network and can collect MS-CHAPv2 responses of every VPN user.
@@ -120,7 +138,7 @@ Recommendation: put shuttle in Tier 0.
 
 The other choice is Tier 1 with a separate Tier 1 Ansible account. That removes Domain Admin logons from shuttle. It is a good change if more Windows member servers come later.
 
-### Proxmox: Tier 0
+### Proxmox: Tier 0 (approved)
 
 A Proxmox administrator can read the disk of a DC VM and take `ntds.dit`. The Proxmox hosts that run loom, spindle, bobbin and shuttle are Tier 0. `adm_mayonej` is in `pve-operators`. That is correct for a Tier 0 account. A daily account must never be in it. Keep `root@pam` on each Proxmox host as the hypervisor break-glass, because an AD login to Proxmox can break during the silo rollout (see risks).
 
@@ -138,7 +156,7 @@ An authentication policy controls the Kerberos TGT of an account. It sets a shor
 Important limits:
 
 - **NTLM fails** for an account whose policy has access control conditions. The DC logs event 101.
-- The built-in `Administrator` (RID 500) is **always exempt** from authentication policies, also when it is in a silo. That makes it a working break-glass, and it means the silo does not protect it.
+- The built-in `Administrator` (RID 500) is **always exempt** from authentication policies, also when it is in a silo. The silo does not protect it. It stays disabled (section 4), and any Domain Admin can enable it for recovery.
 - A device that is not domain joined has no computer ticket. It cannot armor a request. remus (macOS, not joined) can never satisfy "allowed to authenticate from".
 
 ### Proposed objects
@@ -149,7 +167,7 @@ Important limits:
 | User policy | `T0-User`: `UserTGTLifetimeMins 240`, `UserAllowedToAuthenticateFrom` = device in `T0-Silo` |
 | Computer policy | `T0-Computer`: no TGT lifetime (Microsoft says not to set one for computers), no conditions at first |
 | Service policy | `T0-Service`: for `svc-ansible`, see below |
-| Silo members, computers | `LOOM$`, `SPINDLE$`, `BOBBIN$`, `SHUTTLE$`, the jump host |
+| Silo members, computers | `LOOM$`, `SPINDLE$`, `BOBBIN$`, `SHUTTLE$`, `SPOOL$` |
 | Silo members, users | `adm_mayonej` |
 | Not in the silo | `Administrator` (exempt anyway), `svc-ansible` (phase 5), all daily and Tier 1 accounts |
 
@@ -169,7 +187,7 @@ New-ADAuthenticationPolicy -Name T0-Computer -Enforce:$false -ProtectedFromAccid
 New-ADAuthenticationPolicySilo -Name T0-Silo -UserAuthenticationPolicy T0-User `
   -ComputerAuthenticationPolicy T0-Computer -ServiceAuthenticationPolicy T0-Service `
   -Enforce:$false -ProtectedFromAccidentalDeletion $true
-foreach ($a in 'LOOM$','SPINDLE$','BOBBIN$','SHUTTLE$','<JUMP>$','adm_mayonej') {
+foreach ($a in 'LOOM$','SPINDLE$','BOBBIN$','SHUTTLE$','SPOOL$','adm_mayonej') {
   Grant-ADAuthenticationPolicySiloAccess -Identity T0-Silo -Account $a
   Set-ADAccountAuthenticationPolicySilo -Identity $a -AuthenticationPolicySilo T0-Silo
 }
@@ -187,22 +205,28 @@ remus cannot armor. So `adm_mayonej` must never type its password into remus for
 
 - A Windows Server 2025 VM on the Tier 0 Proxmox host, joined, in `T0-Silo`. It holds RSAT, GPMC, the AD module and the JIT client.
 - It is on the server VLAN. Its firewall and thimble allow RDP to it only from Jasper's VPN address.
-- Proposed name: `heddle`. The name is your choice.
+- Name: `spool`. It is free: no AD object, no DNS record in `patchwork.internal`, and no host in either infra repo uses it.
 
-The difficulty is RDP from macOS. With Network Level Authentication (NLA), the Mac client authenticates first with CredSSP. CredSSP uses NTLM or Kerberos from the Mac. NTLM fails (Protected Users and the silo). Kerberos from the Mac is not armored, so the KDC refuses the TGT. Two working paths:
+#### What NLA is
+
+Network Level Authentication (NLA) is an RDP setting. With NLA on, Windows checks the login before it opens the RDP session. The client must prove the password first, with Kerberos or NTLM. Without NLA, Windows opens the session and shows its own logon screen. Then you type the password on the server.
+
+#### Why the Mac fails with NLA on
+
+The difficulty is RDP from macOS. With NLA on, the Mac client authenticates first with CredSSP. CredSSP uses NTLM or Kerberos from the Mac. NTLM fails (Protected Users and the silo). Kerberos from the Mac is not armored, so the KDC refuses the TGT. Two working paths:
 
 | Path | How | Risk |
 |---|---|---|
 | A. NLA off on the jump host only | The Mac opens the RDP session without pre-authentication. The logon happens on the jump host's own logon screen. The jump host armors the request. | The logon screen is open to anyone who reaches TCP 3389. The firewall limits that to Jasper's VPN address. Patch the jump host first. |
-| B. Proxmox console | Open the jump host console in the Proxmox web UI (noVNC or SPICE) and log on there. | Depends on the Proxmox login. Slower to use. Good as a fallback. |
+| B. Proxmox console | Open the `spool` console in the Proxmox web UI (noVNC or SPICE) and log on there. | Depends on the Proxmox login. Slower to use. Good as a fallback. |
 
-Recommendation: path A as the daily path, path B as the fallback. From the jump host, manage the DCs, bobbin and shuttle with PowerShell remoting or RSAT (Kerberos network logon, no TGT request on the target). For RDP to a Tier 0 server, use `mstsc /remoteGuard`. Protected Users blocks the credential delegation that plain CredSSP needs.
+Decision: path A is the daily path, path B is the fallback. From the jump host, manage the DCs, bobbin and shuttle with PowerShell remoting or RSAT (Kerberos network logon, no TGT request on the target). For RDP to a Tier 0 server, use `mstsc /remoteGuard`. Protected Users blocks the credential delegation that plain CredSSP needs.
 
 ```mermaid
 sequenceDiagram
   participant R as remus (macOS, not joined)
   participant T as thimble (WireGuard)
-  participant J as Jump host (T0-Silo)
+  participant J as spool (T0-Silo)
   participant K as KDC (loom/spindle)
   participant S as DC / bobbin / shuttle
   R->>T: WireGuard tunnel (daily identity)
@@ -260,30 +284,63 @@ Use the AD PAM feature (a) and put a small request flow on top of it, modeled on
 | Entitlement `infra-admin`, max 4 h | Entitlement `t0-ea`: membership of `Enterprise Admins`, max 1 h, rarely used |
 | Eligible principals: the admins group | Eligible: a new group `GG-T0-Eligible` with `adm_mayonej` |
 | Justification required, no approval | Justification required, no approval. One admin cannot approve their own request. |
-| Email to `security@`, audit sink | A Windows event on the DC, and a message to `security@` (target to decide) |
+| Email to `security@`, audit sink | A Windows event on the DC, and an email to `security@patchworklabs.org` |
 | `tf apply` asks for a grant, reuses an open grant | `Request-T0Admin` asks for a grant, reuses an open TTL membership |
 
 Why a JEA endpoint: `GG-Domain-Admins-Tier0` is nested in Domain Admins. AdminSDHolder (SDProp) resets the ACL of protected groups every 60 minutes. A delegated "write members" right on the group disappears. So the request must run as a principal that already has the right. A Just Enough Administration (JEA) endpoint on loom and spindle does that:
 
 - It runs as a virtual account on the DC.
-- Only `GG-T0-Eligible` can connect, and only with Kerberos from the jump host (the silo).
+- Only `GG-T0-Eligible` can connect, and only with Kerberos from `spool` (the silo).
 - It exposes one function: `Request-T0Admin -Entitlement t0-da -Minutes 60 -Reason "..."`. The function checks the limits, calls `Add-ADGroupMember -MemberTimeToLive`, writes an event to a custom `Patchwork-JIT` log, and sends the notification.
 
 ```mermaid
 sequenceDiagram
-  participant A as adm_mayonej on jump host
+  participant A as adm_mayonej on spool
   participant E as JEA endpoint (loom)
   participant D as AD (PAM feature on)
   participant N as security@ / event log
   A->>E: Request-T0Admin -Minutes 60 -Reason "patch GPO"
   E->>E: check caller in GG-T0-Eligible, minutes <= 240
   E->>D: Add-ADGroupMember GG-Domain-Admins-Tier0 adm_mayonej -MemberTimeToLive 01:00
-  E->>N: event 1000 + notification
+  E->>N: event 1000 + email to security@patchworklabs.org
   A->>A: klist purge, new logon: TGT capped at TTL
   D-->>D: TTL ends: DC removes member, tickets expire
 ```
 
 What this protects: `adm_mayonej` has no standing Domain Admin. A stolen `adm_mayonej` session outside a grant can do nothing at Tier 0 except request a grant, and each request is logged and sent out. What this does not protect: an attacker with `adm_mayonej` on the jump host can request a grant. With one admin, there is no second person to approve. That is the same as the GCP setup today.
+
+### What JIT looks like in practice
+
+A worked example. Jasper must change a GPO on a Tuesday evening.
+
+1. Jasper connects to the thimble VPN from remus with the daily account.
+2. Jasper opens RDP to `spool` and logs on as `adm_mayonej`. The account is in Protected Users and in `T0-Silo`, but it has no Domain Admin rights now.
+3. In PowerShell on `spool`: `Request-T0Admin -Entitlement t0-da -Minutes 60 -Reason "Change Client-Baseline firewall rule"`.
+4. The JEA endpoint on loom adds `adm_mayonej` to `GG-Domain-Admins-Tier0` with a TTL of 1 hour. It writes an event and sends an email to `security@patchworklabs.org`.
+5. Jasper logs off and on again (or runs `klist purge`). The new TGT carries Domain Admins. The KDC caps it at the time left in the grant.
+6. Jasper opens GPMC and makes the change.
+7. After 1 hour the DC removes the membership. The tickets expire at the same time. Nothing must be cleaned up.
+
+If the work takes longer, Jasper requests again, up to 4 hours for each grant.
+
+#### Can JIT lock out the only admin?
+
+Short answer: enabling the feature alone cannot. The risk starts only when standing Domain Admin is removed from `adm_mayonej`.
+
+| Step | Lockout risk | Why |
+|---|---|---|
+| Enable the PAM optional feature | None | It adds the TTL option to group membership. It changes no existing membership, ACL or logon. No TTL membership exists until someone makes one. |
+| Install the JEA endpoint | None | It adds a new way in. It removes nothing. |
+| Test grants while `adm_mayonej` still has standing Domain Admin | None | The standing membership stays. A broken grant changes nothing. |
+| Remove standing Domain Admin from `adm_mayonej` | Low | Only this step removes access. It happens only after JIT works and is tested (decision 6). |
+
+The fallbacks if JIT breaks after standing Domain Admin is gone:
+
+1. **`svc-ansible`** keeps standing Domain Admin. From remus, Ansible can add `adm_mayonej` back to `GG-Domain-Admins-Tier0` with no TTL.
+2. **The built-in `Administrator`**. It is disabled, and nobody knows its password. Any Domain Admin path (a JIT grant or `svc-ansible`) can reset its password and enable it. The silo always exempts it.
+3. **DSRM on each DC**. LAPS manages the DSRM password (`LAPS-DSRM`). Boot a DC into Directory Services Restore Mode from the Proxmox console and use it. This is the last resort.
+
+A lockout needs all three to fail at the same time: the JEA endpoint, the `svc-ansible` password, and the DSRM passwords in AD. Read the DSRM passwords (`Get-LapsADPassword -Identity loom -AsPlainText` as a Domain Admin) only during an incident. Do not keep a copy.
 
 ### Changes to org.json and converge.ps1 (later PR)
 
@@ -296,30 +353,35 @@ What this protects: `adm_mayonej` has no standing Domain Admin. A stolen `adm_ma
 
 ### What you must approve
 
-1. **Enable the Privileged Access Management optional feature in the forest. You cannot disable it after this.** Command: `Enable-ADOptionalFeature 'Privileged Access Management Feature' -Scope ForestOrConfigurationSet -Target patchwork.internal`.
+Items 2, 3 and 4 are approved (see the decisions table). Item 1 is open.
+
+1. **Enable the Privileged Access Management optional feature in the forest. You cannot disable it after this.** Not approved yet. Command: `Enable-ADOptionalFeature 'Privileged Access Management Feature' -Scope ForestOrConfigurationSet -Target patchwork.internal`.
 2. Remove `adm_mayonej` from standing Domain Admins (through `GG-Domain-Admins-Tier0`), Enterprise Admins, DnsAdmins and DHCP Administrators.
 3. The maximum grant length (proposed: 1 h default, 4 h max for `t0-da`, 1 h for `t0-ea`).
-4. The notification target for grants and break-glass use.
+4. The notification target for grants and break-glass use. Decided: `security@patchworklabs.org`.
 
 ## 4. Break-glass
 
-The built-in `Administrator` is the break-glass account. Live state: it logged on 2026-10-12, so it is in use as a working account. It is in Enterprise Admins, Schema Admins and Group Policy Creator Owners.
+The built-in `Administrator` is the break-glass account. It logged on 2026-10-12, so it was in use as a working account. The converge Build disabled it on 2026-10-14. It is in Enterprise Admins, Schema Admins and Group Policy Creator Owners.
 
-Recommendations:
+Decision: nobody stores or remembers the `Administrator` password.
 
-- Stop all routine use. After the Tier 0 account and the jump host work, use `Administrator` only when `adm_mayonej`, the silo or the KDC is broken.
-- **Rotate the password** after routine use stops. Use a long random password (at least 30 characters). Store it in two places: the password manager vault for infra break-glass, and a sealed paper copy in a physical safe. Do not put it in the Ansible vault or in agenix. After each use, rotate it again.
+- Set a long random password (at least 64 characters) that is generated and discarded. Nobody sees it, and nobody keeps it. No password manager, no paper copy, no Ansible vault, no agenix.
+- Keep the account disabled.
+- Recovery: any Domain Admin path resets the password and enables the account. The paths are `adm_mayonej` (standing today, through a JIT grant later) and `svc-ansible` (standing Domain Admin).
+- Last resort: DSRM on a DC. `LAPS-DSRM` manages that password. Boot the DC into Directory Services Restore Mode from the Proxmox console.
+- After each use, set a new discarded random password and disable the account again.
 - Keep it out of Protected Users and out of the silo. It must work when Kerberos is broken, and the silo exempts it anyway.
 - Set "Account is sensitive and cannot be delegated".
 - Remove it from Schema Admins and Enterprise Admins. As a Domain Admin in the forest root it can add itself back when needed. Leave Schema Admins empty. This needs a change to `allowedDirectMembers` in `org.json`.
-- DSRM passwords are already managed by `LAPS-DSRM`. They are the second break-glass, for a DC that does not boot into AD.
+- DSRM passwords are already managed by `LAPS-DSRM`. They are the last break-glass, also for a DC that does not boot into AD.
 - `root@pam` on each Proxmox host is the hypervisor break-glass.
 
 Alerting on use:
 
-- On both DCs, an event-triggered scheduled task for 4768 (TGT), 4776 (NTLM validation) and 4624 where the account SID ends in `-500`. The task sends a message to the notification target.
+- On both DCs, an event-triggered scheduled task for 4722 (account enabled) and 4724 (password reset) on the account whose SID ends in `-500`, and for 4768 (TGT), 4776 (NTLM validation) and 4624 by that account. The task sends an email to `security@patchworklabs.org`.
 - Nothing ships DC logs off the DCs yet. The task is the smallest working alert. Event forwarding to a central log can replace it later.
-- Test the alert every quarter with a planned break-glass logon, then rotate the password.
+- Test the alert every quarter: enable the account, log on once, then set a new discarded password and disable it.
 
 ## 5. LAPS
 
@@ -361,7 +423,7 @@ flowchart LR
 
 - Enable `Microsoft-Windows-Authentication/AuthenticationPolicyFailures-DomainController` and `ProtectedUserFailures-DomainController` on both DCs.
 - Audit policy on the DCs: Kerberos Authentication Service and Kerberos Service Ticket Operations, success and failure. Credential Validation, success and failure. Today failures are not logged.
-- Build the jump host. Join it. Do not add it to the silo yet.
+- Build `spool`, the jump host. Join it. Do not add it to the silo yet.
 - Check that `adm_mayonej` can log on to the jump host and run RSAT with Kerberos.
 - Rollback: disable the logs. No risk.
 
@@ -412,8 +474,8 @@ flowchart LR
 
 ### Phase 6: break-glass and krbtgt
 
-- Rotate the `Administrator` password. Store it as section 4 says. Install and test the alert task.
-- Rotate the `krbtgt` password two times, with at least 10 hours (the maximum TGT lifetime) between the two resets. It has not changed since the forest was built, and `Administrator` was in daily use.
+- Set a discarded random password on `Administrator` and keep it disabled (section 4). Remove it from Enterprise Admins and Schema Admins. Install and test the alert task.
+- Rotate the `krbtgt` password two times (approved), with at least 10 hours (the maximum TGT lifetime) between the two resets. It has not changed since the forest was built, and `Administrator` was in daily use.
 
 ### Who owns each piece after the rollout
 
@@ -439,7 +501,7 @@ A sketch of the `org.json` block for the later PR:
   "computerPolicy": { "name": "T0-Computer" },
   "servicePolicy": { "name": "T0-Service", "tgtMinutes": 60, "deviceInSilo": false },
   "users": ["adm_mayonej"],
-  "computers": ["LOOM", "SPINDLE", "BOBBIN", "SHUTTLE", "<jump host>"],
+  "computers": ["LOOM", "SPINDLE", "BOBBIN", "SHUTTLE", "SPOOL"],
   "jit": { "group": "GG-Domain-Admins-Tier0", "eligible": "GG-T0-Eligible", "maxMinutes": 240 }
 }
 ```
@@ -448,26 +510,17 @@ A sketch of the `org.json` block for the later PR:
 
 | Risk | Effect | Mitigation |
 |---|---|---|
-| Lockout of `adm_mayonej` after enforce | No named admin access | `Administrator` is exempt from silos. Rollback is `-Enforce $false`. Test in audit mode first. |
+| Lockout of `adm_mayonej` after enforce | No named admin access | `Administrator` is exempt from silos. Any Domain Admin path (`svc-ansible`) can enable it. Rollback is `-Enforce $false`. Test in audit mode first. |
 | NLA off on the jump host | Pre-authentication logon screen reachable | Firewall limits 3389 to Jasper's VPN address. Patch first. Proxmox console as fallback. |
 | Proxmox AD login (`svc-pve-ldap`, LDAP bind) for `adm_mayonej` | Can fail under Protected Users or the silo | Watch events 101 and 305 in phase 2. Keep `root@pam`. |
-| PAM feature is irreversible | Cannot go back to a forest without it | It changes nothing until a TTL membership exists. The forest is single-domain and already at 2025 level. |
+| PAM feature is irreversible | Cannot go back to a forest without it | It changes nothing until a TTL membership exists. Lockout risk comes only from removing standing Domain Admin (see [What JIT looks like in practice](#what-jit-looks-like-in-practice)). |
 | `converge.ps1` undoes JIT | Standing DA comes back, or a grant disappears early | Merge the `org.json` and `converge.ps1` change before phase 4. |
 | `svc-ansible` stays a NTLM Domain Admin until phase 5 | NTLM relay or password theft from remus gives Domain Admin | Compensating controls in 5a. Move to Kerberos, then to a Tier 0 control node. |
 | One admin approves their own JIT requests | No two-person control | Same as GCP PAM. Every grant is logged and sent to `security@`. |
-| Recycle Bin is not enabled | An accidental delete of a Tier 0 object needs an authoritative restore | Optional: **enable the Recycle Bin feature. This also cannot be undone.** It is outside this design but helps recovery. |
+| Nobody knows the `Administrator` password | Break-glass depends on a working Domain Admin path or DSRM | Two independent Domain Admin paths (`adm_mayonej`, `svc-ansible`) plus DSRM through LAPS on each DC. Test the reset path every quarter. |
 
-## Decisions for you
+## Open decisions
 
-1. Approve the tier placement: bobbin, shuttle and the Proxmox hosts in Tier 0.
-2. Confirm that pattern is the offline root CA.
-3. Approve a new Tier 0 jump host (name, Windows Server 2025, on Tier 0 Proxmox).
-4. Choose the jump host logon path: NLA off with a firewall limit (recommended), or the Proxmox console only.
-5. Approve the `T0-User` TGT lifetime (240 minutes) and the silo members.
-6. **Approve enabling the Privileged Access Management optional feature. It is irreversible.**
-7. Approve the JIT limits (1 h default, 4 h max for Domain Admins, 1 h for Enterprise Admins) and the removal of standing Domain Admins, Enterprise Admins, DnsAdmins and DHCP Administrators from `adm_mayonej`.
-8. Choose the notification target for JIT grants and break-glass use (email to `security@`, a webhook, or both).
-9. Approve the `svc-ansible` path: compensating controls now, Kerberos with Protected Users next, a Tier 0 control node later.
-10. Approve the break-glass changes: stop routine use of `Administrator`, rotate its password, store it in the password manager and on paper, remove it from Schema Admins and Enterprise Admins.
-11. Approve two `krbtgt` resets.
-12. Optional: **approve enabling the AD Recycle Bin. It is irreversible.**
+1. **Approve enabling the Privileged Access Management optional feature. It is irreversible.** Read [What JIT looks like in practice](#what-jit-looks-like-in-practice) first.
+
+All other decisions are recorded in [Decisions (2026-10-14)](#decisions-2026-10-14). The AD Recycle Bin is enabled.

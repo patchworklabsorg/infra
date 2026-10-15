@@ -15,6 +15,7 @@ Declarative infrastructure for Patchwork Labs: every Patchwork host, the NixOS m
 | `modules/ad-join/` | Joins the host to `patchwork.internal` with sssd. `modules/common` imports it. |
 | `modules/central-db/` | One central PostgreSQL cluster and its access model. |
 | `modules/weave/` | The Weave service module. |
+| `modules/quilt/` | The Quilt service module. |
 | `tests/` | NixOS VM tests. |
 | `secrets/` | agenix secrets. `secrets.nix` lists the recipients of each file. |
 | `ansible/` | Ansible for the Windows hosts and AD: `windows.yml`, `ad.yml`. See `ansible/README.md`. |
@@ -91,7 +92,7 @@ This repo is public. Nothing here depends on `jaspermayone/infra`, which is priv
 flowchart LR
   pinfra["patchworklabsorg/infra (this repo)"]
   jinfra["jaspermayone/infra (private)"]
-  pinfra -- "nixosModules.weave-alastor" --> jinfra
+  pinfra -- "nixosModules.weave-alastor, quilt-alastor" --> jinfra
   jinfra -- "deploy-rs" --> alastor
   pinfra -- "deploy-rs" --> lab["warp, skein, seam, hem"]
 ```
@@ -115,6 +116,33 @@ To change Weave on alastor:
 3. Deploy alastor from `jaspermayone/infra` (`deploy .#alastor`).
 
 alastor also rebuilds itself at 04:00 from `jaspermayone/infra` `main`. It uses the revision in that repo's `flake.lock`, so a merge here does nothing on alastor until step 2.
+
+## Quilt on alastor
+
+[Quilt](https://github.com/patchworklabsorg/quilt) runs on alastor as two Docker containers, like Weave. `hosts/alastor/quilt.nix` is the instance, exported as `nixosModules.quilt-alastor`. `modules/quilt` is the service module. The contract with the app is `docs/deploy.md` in the quilt repo.
+
+| Item | Value |
+|---|---|
+| URL | `https://quilt.patchworklabs.org` (Traefik router `quilt`, option `traefik.hosts`) |
+| Units | `quilt-web` (`./bin/rails server` on `127.0.0.1:3005`, migrates on start) and `quilt-worker` (`bundle exec good_job start`) |
+| Image | `ghcr.io/patchworklabsorg/quilt:main` (option `image`). Pin it to `:<sha>` for a known build. |
+| Database | `patchwork_central_restricted` on seam, role and schema `quilt`, over the tailnet |
+| Secrets | `quilt-env.age`, `quilt-ghcr-token.age` (alastor), `restricted-prod-quilt.age` (seam) |
+
+```mermaid
+flowchart LR
+  internet((Internet)) --> traefik["alastor: Traefik"]
+  traefik -- "127.0.0.1:3005" --> web[quilt-web]
+  worker[quilt-worker] -- "waits for /up" --> web
+  web -- "tailnet :5432" --> seam["seam: patchwork_central_restricted, schema quilt"]
+  worker -- "tailnet :5432" --> seam
+```
+
+Both containers use the host network, so they reach `seam.wildebeest-stargazer.ts.net` through alastor's Tailscale. The worker waits until `GET /up` on the web server answers. The web server answers only after the migrations ran.
+
+`RESTRICTED_DATABASE_URL` in `quilt-env.age` holds the database password. It must be the same password as in `restricted-prod-quilt.age`, which seam sets on the role `quilt`.
+
+To deploy a new `main` image, run `sudo systemctl restart quilt-web` on alastor. That restarts the worker too. To change the module, follow the same steps as for Weave above.
 
 ## Commands
 

@@ -65,6 +65,11 @@
         # alastor as the public edge for apps on lab hosts. Replaces
         # weave-alastor on alastor after the move to warp.
         edge-alastor = ./hosts/alastor/edge.nix;
+        # The Quilt service module alone, with no instance settings.
+        quilt = ./modules/quilt;
+        # Quilt on alastor: instance settings, Traefik route and agenix
+        # secrets. Needs alastor's Tailscale to reach seam.
+        quilt-alastor = ./hosts/alastor/quilt.nix;
       };
 
       nixosConfigurations = nixpkgs.lib.genAttrs hosts mkHost;
@@ -124,6 +129,12 @@
               }
               // nixpkgs.lib.optionalAttrs pkgs.stdenv.isLinux {
                 central-db = import ./tests/central-db.nix { inherit pkgs; };
+                quilt-alastor = import ./tests/quilt-alastor.nix {
+                  inherit pkgs;
+                  inherit (nixpkgs.lib) nixosSystem;
+                  module = self.nixosModules.quilt-alastor;
+                  agenixModule = agenix.nixosModules.default;
+                };
               }
             )
           );

@@ -43,6 +43,33 @@ in
     alastor
   ];
 
+  # Quilt (quilt.patchworklabs.org on alastor) runtime env. Must contain the
+  # variables in docs/deploy.md of patchworklabsorg/quilt:
+  #   RESTRICTED_DATABASE_URL=postgres://quilt:<password>@seam.wildebeest-stargazer.ts.net:5432/patchwork_central_restricted?sslmode=disable
+  #     (<password> is the value in restricted-prod-quilt.age)
+  #   SECRET_KEY_BASE=...
+  #   WEAVE_ISSUER=...  WEAVE_CLIENT_ID=...  WEAVE_CLIENT_SECRET=...
+  #   MERCURY_API_TOKEN=...  (read-only token)
+  #   MERCURY_API_BASE=https://api.mercury.com/api/v1/
+  #   MERCURY_WRITE_TOKEN=   (may be blank while QUILT_TOPUPS=off)
+  #   QUILT_TOPUPS=off
+  "quilt-env.age".publicKeys = [
+    jsp
+    alastor
+  ];
+
+  # GitHub classic PAT with read:packages only, for ghcr.io/patchworklabsorg/quilt
+  # (a private package). The token only, no newline needed.
+  "quilt-ghcr-token.age".publicKeys = [
+    jsp
+    alastor
+  ];
+
+  # Quilt's role password in patchwork_central_restricted (seam). Password
+  # only. Add seam after its install, then `agenix -r`. alastor does not get
+  # this file: the same password is in quilt-env.age.
+  "restricted-prod-quilt.age".publicKeys = [ jsp ];
+
   # svc-lnx-join password only (modules/ad-join, ansible/sync-join-password.yml).
   # Add each lab host key after its install, then `agenix -r`.
   "ad-join.age".publicKeys = [ jsp ];

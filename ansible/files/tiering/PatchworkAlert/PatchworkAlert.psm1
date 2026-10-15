@@ -1,9 +1,9 @@
-# Sends one alert mail to security@ through the Google Workspace SMTP relay,
-# and writes the same text to the Application log first, so the event stays
-# on the DC when the mail fails.
+# Writes one alert to the Application log of the DC. It sends a mail to
+# security@ through the Google Workspace SMTP relay only when "enabled" is
+# true in mail.json. The mail is off by default (ad_alert_mail_enabled).
 #
 # ansible/ad.yml (-t breakglass-alert, -t jit-endpoint) installs this module
-# and writes the relay settings to C:\ProgramData\Patchwork\alerts\mail.json.
+# and writes the settings to C:\ProgramData\Patchwork\alerts\mail.json.
 # The relay accepts the lab WAN address without a login (IP authentication),
 # so this file holds no secret.
 
@@ -18,7 +18,7 @@ function Get-PatchworkHostName {
 
 function Send-PatchworkAlert {
     [CmdletBinding()]
-    [OutputType([bool])]
+    [OutputType([bool])]  # True only when a mail was sent
     param(
         [Parameter(Mandatory)][string]$Subject,
         [Parameter(Mandatory)][string]$Body,
@@ -26,15 +26,20 @@ function Send-PatchworkAlert {
         [string]$Source = 'Patchwork-Alert',
         [int]$EventId = 1000
     )
-    $cfg = Get-Content -Raw -Path $script:ConfigPath | ConvertFrom-Json
+    $cfg = $null
+    try { $cfg = Get-Content -Raw -Path $script:ConfigPath | ConvertFrom-Json } catch { Write-Verbose "No mail settings: $($_.Exception.Message)" }
+    $mailEnabled = $null -ne $cfg -and $cfg.PSObject.Properties['enabled'] -and [bool]$cfg.enabled
     $fqdn = Get-PatchworkHostName
     $text = "{0}`r`n`r`nHost: {1}`r`nTime (UTC): {2:u}" -f $Body, $fqdn, (Get-Date).ToUniversalTime()
 
+    # The event is the alert. It is always written, with or without mail.
     try {
         Write-EventLog -LogName Application -Source $Source -EventId $EventId -EntryType Warning -Message "$Subject`r`n`r`n$text"
     } catch {
         Write-Warning "Cannot write to the Application log: $($_.Exception.Message)"
     }
+
+    if (-not $mailEnabled) { return $false }
 
     $msg = New-Object System.Net.Mail.MailMessage($cfg.from, $cfg.to, "[$($cfg.subjectPrefix)] $Subject", $text)
     $smtp = New-Object System.Net.Mail.SmtpClient($cfg.host, [int]$cfg.port)

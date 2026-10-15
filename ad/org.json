@@ -16,8 +16,8 @@
     { "path": "Users/Staff", "description": "Staff and volunteers with operational roles" },
     { "path": "Users/Board-Only", "description": "Directors with no operational role" },
     { "path": "Users/Sponsored-Projects", "description": "Fiscally sponsored projects" },
-    { "path": "Users/Sponsored-Projects/HackBoston", "description": "HackBoston (hackboston.dev)" },
-    { "path": "Users/Sponsored-Projects/hackathon.help", "description": "hackathon.help" },
+    { "path": "Users/Sponsored-Projects/HackBoston", "description": "HackBoston (hackboston.dev)", "upnSuffix": "hackboston.dev" },
+    { "path": "Users/Sponsored-Projects/hackathon.help", "description": "hackathon.help", "upnSuffix": "hackathon.help" },
     { "path": "Users/Members", "description": "Community members. Weave creates and changes these; converge.ps1 does not.", "managed": false },
     { "path": "Service-Accounts", "description": "Non-human accounts for integrations" },
     { "path": "Disabled", "description": "Suspended users, all access off (Workspace: Purgatory)" },
@@ -30,13 +30,13 @@
   ],
 
   "users": [
-    { "sam": "jasper", "kind": "person", "ou": "Users/Staff", "givenName": "Jasper", "surname": "Mayone",
+    { "sam": "mayonej", "upn": "jasper", "kind": "person", "ou": "Users/Staff", "givenName": "Jasper", "surname": "Mayone",
       "division": "Programs", "department": "Programs", "title": "Founder & Director of Programs", "manager": null },
     { "sam": "adam.sidwa", "kind": "person", "ou": "Users/Staff", "givenName": "Adam", "surname": "Sidwa",
-      "division": "Programs", "department": "Project Ganymede", "title": "Project Ganymede Administrator", "manager": "jasper" },
-    { "sam": "kieran", "kind": "person", "ou": "Users/Board-Only",
+      "division": "Programs", "department": "Project Ganymede", "title": "Project Ganymede Administrator", "manager": "mayonej" },
+    { "sam": "klukask", "upn": "kieran", "kind": "person", "ou": "Users/Board-Only", "givenName": "Kieran", "surname": "Klukas",
       "division": "Operations", "department": "Governance", "title": "Treasurer & Secretary", "manager": null },
-    { "sam": "dominic", "kind": "person", "ou": "Users/Board-Only",
+    { "sam": "petrarcad", "upn": "dominic", "kind": "person", "ou": "Users/Board-Only", "givenName": "Dominic", "surname": "Petrarca",
       "division": "Operations", "department": "Governance", "title": "Director", "manager": null },
     { "sam": "cj", "kind": "person", "ou": "Users/Sponsored-Projects/HackBoston",
       "division": "Sponsored Projects", "department": "HackBoston", "title": "Organizer", "manager": null },
@@ -47,12 +47,14 @@
     { "sam": "wei", "kind": "person", "ou": "Users/Sponsored-Projects/hackathon.help",
       "division": "Sponsored Projects", "department": "hackathon.help", "title": "Organizer", "manager": null },
 
-    { "sam": "service", "kind": "service", "ou": "Service-Accounts",
+    { "sam": "svc-service", "upn": "service", "kind": "service", "ou": "Service-Accounts",
       "company": "Patchwork Labs inc.", "division": "Operations", "department": "Infrastructure", "title": "Service account", "manager": null },
     { "sam": "svc-lnx-join", "kind": "service", "ou": "Service-Accounts", "create": false },
+    { "sam": "svc-dhcp-dns", "kind": "service", "ou": "Service-Accounts", "create": false },
+    { "sam": "svc-pve-ldap", "kind": "service", "ou": "Service-Accounts", "create": false },
 
-    { "sam": "jasper.adm", "kind": "admin", "ou": "Admin-Accounts", "givenName": "Jasper", "surname": "Mayone",
-      "title": "Tier 0 administrator", "manager": null },
+    { "sam": "adm_mayonej", "kind": "admin", "ou": "Admin-Accounts", "givenName": "Jasper", "surname": "Mayone",
+      "displayName": "Jasper Mayone (Admin)", "title": "Tier 0 administrator", "manager": null },
     { "sam": "svc-ansible", "kind": "admin", "ou": "Admin-Accounts", "create": false },
 
     { "sam": "vi", "kind": "disabled", "ou": "Disabled" },
@@ -60,16 +62,20 @@
   ],
 
   "roleGroups": [
-    { "name": "GG-Board", "description": "Board of Directors", "members": ["jasper", "kieran", "dominic"] },
-    { "name": "GG-President", "description": "President", "members": ["jasper"] },
-    { "name": "GG-Treasurer", "description": "Treasurer", "members": ["kieran"] },
-    { "name": "GG-Secretary", "description": "Secretary", "members": ["kieran"] },
-    { "name": "GG-Ganymede-Admins", "description": "Project Ganymede admins", "members": ["jasper", "adam.sidwa"] },
+    { "name": "GG-Board", "description": "Board of Directors", "members": ["mayonej", "klukask", "petrarcad"] },
+    { "name": "GG-President", "description": "President", "members": ["mayonej"] },
+    { "name": "GG-Treasurer", "description": "Treasurer", "members": ["klukask"] },
+    { "name": "GG-Secretary", "description": "Secretary", "members": ["klukask"] },
+    { "name": "GG-Ganymede-Admins", "description": "Project Ganymede admins", "members": ["mayonej", "adam.sidwa"] },
     { "name": "GG-Ganymede-Users", "description": "Project Ganymede users", "members": [], "manageMembers": false },
-    { "name": "GG-HackBoston-Organizers", "description": "HackBoston organizers", "members": ["cj", "daniel", "logan", "jasper"] },
+    { "name": "GG-HackBoston-Organizers", "description": "HackBoston organizers", "members": ["cj", "daniel", "logan", "mayonej"] },
     { "name": "GG-HackathonHelp-Organizers", "description": "hackathon.help organizers", "members": ["wei"] },
-    { "name": "GG-Infra", "description": "Infrastructure", "members": ["jasper"] },
-    { "name": "GG-Domain-Admins-Tier0", "description": "Tier 0 admin accounts. Member of Domain Admins.", "members": ["jasper.adm"] }
+    { "name": "GG-Infra", "description": "Infrastructure", "members": ["mayonej"] },
+    { "name": "GG-All-Staff", "description": "Every person in org.json: staff, board, organizers. Gets PSO-Staff.",
+      "members": ["mayonej", "adam.sidwa", "klukask", "petrarcad", "cj", "daniel", "logan", "wei"] },
+    { "name": "GG-Service-Accounts", "description": "Service accounts. Gets PSO-Service.",
+      "members": ["svc-service", "svc-lnx-join", "svc-dhcp-dns", "svc-pve-ldap", "svc-ansible"] },
+    { "name": "GG-Domain-Admins-Tier0", "description": "Tier 0 admin accounts. Member of Domain Admins. Gets PSO-Tier0.", "members": ["adm_mayonej"] }
   ],
 
   "linuxHosts": ["hem", "seam", "skein", "warp"],
@@ -79,6 +85,27 @@
     { "name": "lnx-{host}-admins", "description": "Linux sudo on {host}", "members": ["GG-Infra"] }
   ],
   "resourceGroups": [],
+
+  "passwordPolicy": {
+    "default": {
+      "minPasswordLength": 12, "maxPasswordAgeDays": 0, "passwordHistoryCount": 24, "complexityEnabled": true,
+      "lockoutThreshold": 10, "lockoutDurationMinutes": 15, "lockoutObservationWindowMinutes": 15
+    },
+    "psos": [
+      { "name": "PSO-Tier0", "precedence": 10, "description": "Tier 0 admin accounts", "appliesTo": ["GG-Domain-Admins-Tier0"],
+        "minPasswordLength": 20, "maxPasswordAgeDays": 0, "passwordHistoryCount": 24, "complexityEnabled": true,
+        "lockoutThreshold": 5, "lockoutDurationMinutes": 30, "lockoutObservationWindowMinutes": 30 },
+      { "name": "PSO-Service", "precedence": 20, "description": "Service accounts. No lockout, so a bad password cannot stop a service.",
+        "appliesTo": ["GG-Service-Accounts"],
+        "minPasswordLength": 32, "maxPasswordAgeDays": 0, "passwordHistoryCount": 24, "complexityEnabled": true,
+        "lockoutThreshold": 0, "lockoutDurationMinutes": 15, "lockoutObservationWindowMinutes": 15 },
+      { "name": "PSO-Staff", "precedence": 30, "description": "Staff, board and organizers", "appliesTo": ["GG-All-Staff"],
+        "minPasswordLength": 14, "maxPasswordAgeDays": 0, "passwordHistoryCount": 24, "complexityEnabled": true,
+        "lockoutThreshold": 10, "lockoutDurationMinutes": 15, "lockoutObservationWindowMinutes": 15 }
+    ]
+  },
+
+  "builtinAdministrator": { "enabled": false },
 
   "privileged": {
     "tier0Group": "GG-Domain-Admins-Tier0",
@@ -106,6 +133,9 @@
       { "from": "Security-Groups/App-Access-Control",              "to": "Groups/Resources" },
       { "from": "Service-Accounts",                                "to": "Service-Accounts" },
       { "from": "Governance",                                      "to": "Users/Board-Only" },
+      { "from": "Governance/Board-of-Directors",                   "to": "Users/Board-Only" },
+      { "from": "Administrative",                                  "to": "Admin-Accounts" },
+      { "from": "Administrative/Admin-Accounts",                   "to": "Admin-Accounts" },
       { "from": "Members",                                         "to": "Users/Members" }
     ]
   }

@@ -64,7 +64,7 @@ in
 
     computerOU = lib.mkOption {
       type = lib.types.str;
-      default = "OU=Member-Servers,OU=Infrastructure,OU=Patchwork-Objects,DC=patchwork,DC=internal";
+      default = "OU=Servers,OU=Patchwork,DC=patchwork,DC=internal";
     };
 
     joinAccount = lib.mkOption {

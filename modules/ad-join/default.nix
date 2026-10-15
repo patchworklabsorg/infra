@@ -140,14 +140,18 @@ in
           ''
         else
           ''
+            # Join and test against the same DC (the PDC emulator). A test
+            # against the other DC can run before the new computer account
+            # replicates, and then fails with "not found in Kerberos database".
             # $(...) drops the trailing newline, which adcli would keep.
             printf '%s' "$(cat ${cfg.joinPasswordFile})" | adcli join ${cfg.domain} \
+              --domain-controller=${builtins.head cfg.dcs} \
               --login-user=${cfg.joinAccount} \
               --computer-ou='${cfg.computerOU}' \
               --host-fqdn=${host}.${cfg.domain} \
               --ldap-passwd \
               --stdin-password
-            adcli testjoin --domain=${cfg.domain}
+            adcli testjoin --domain=${cfg.domain} --domain-controller=${builtins.head cfg.dcs}
           '';
     };
 

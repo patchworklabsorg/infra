@@ -170,7 +170,10 @@ in
 
     passwordDir = lib.mkOption {
       type = lib.types.str;
-      default = "/run/agenix/${cfg.database}";
+      # Not under /run/agenix: agenix builds each generation in a new
+      # directory and then swaps the /run/agenix link, so a secret path inside
+      # it lands in the old generation and is gone after the swap.
+      default = "/run/central-db/${cfg.database}";
       description = "Directory with one password file per app, named after the app.";
     };
 

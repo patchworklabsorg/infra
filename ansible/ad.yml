@@ -421,6 +421,9 @@
     # ad_ca_subject_match selects. Run it before the first -t ca-chain.
     - name: CA check | Read the CA names
       ansible.windows.win_powershell:
+        # The output nests three levels. The default depth (2) turns the
+        # inner objects into strings, and the assert below cannot read them.
+        depth: 4
         script: |
           $Ansible.Changed = $false
           Import-Module ActiveDirectory

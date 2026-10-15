@@ -9,9 +9,11 @@ Declarative infrastructure for Patchwork Labs: every Patchwork host, the NixOS m
 | `flake.nix` | Hosts, exported modules, deploy-rs nodes, checks. |
 | `hosts/<name>/` | One directory per lab host. |
 | `hosts/proxmox-vm.nix` | Hardware and disk layout shared by every VM. |
+| `hosts/installer.nix` | The installer ISO: NixOS minimal with the admin SSH keys on root. |
+| `bin/install-host` | Plans and applies the VM, reads its address, runs nixos-anywhere. |
 | `hosts/central-db-schema.nix` | Apps and shared schemas of the central databases. |
 | `hosts/alastor/` | Modules that `jaspermayone/infra` imports for alastor. |
-| `modules/common/` | Accounts, SSH, sudo, Tailscale, Nix. Every host imports it. |
+| `modules/common/` | Accounts, SSH, sudo, Tailscale, Nix. Every host imports it. `keys.nix` holds the SSH keys. |
 | `modules/ad-join/` | Joins the host to `patchwork.internal` with sssd. `modules/common` imports it. |
 | `modules/central-db/` | One central PostgreSQL cluster and its access model. |
 | `modules/weave/` | The Weave service module. |
@@ -75,6 +77,18 @@ Before a host is installed:
 3. After the install, add the host key to `secrets/ad-join.age` and run `agenix -r`. `ad-join.service` then joins on the next boot or deploy.
 
 loom and spindle must run. They are the DNS servers, the KDCs and the time source of every host.
+
+## Install a host
+
+The installer ISO has the admin SSH keys on root. Nobody types in the Proxmox console. The keys come from `modules/common/keys.nix`, the same file the host accounts use.
+
+1. Build the ISO: `nix build .#installer-iso -o result-installer`. The build needs an x86_64-linux builder. On macOS, use a Linux builder in `/etc/nix/machines`, or pass `--builders 'ssh-ng://<user>@<linux-host> x86_64-linux'`. You can also run the command on a Linux host.
+2. Create or update the VM: `cd terraform/proxmox && tofu apply`. Terraform uploads the ISO and boots the VM from it. The guest agent reports the DHCP address.
+3. Read the address: `tofu output ipv4_addresses`. If the list is empty, wait one minute, run `tofu refresh`, and read again.
+4. Install: `nixos-anywhere --flake .#<host> --build-on remote --target-host root@<ip>`.
+5. Add the host key to `secrets/ad-join.age`. See "Login".
+
+`bin/install-host <host>` runs steps 2 to 4. It stops if the plan deletes a resource.
 
 ## Central databases
 

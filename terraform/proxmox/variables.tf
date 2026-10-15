@@ -28,10 +28,10 @@ variable "vlan_id" {
   default     = null
 }
 
-variable "installer_iso_url" {
-  description = "URL of the NixOS minimal installer ISO (x86_64). Terraform downloads it to the local storage of the node."
+variable "installer_iso_path" {
+  description = "Local path of the Patchwork installer ISO. Build it with: nix build .#installer-iso -o result-installer. Terraform uploads it to the local storage of the node."
   type        = string
-  default     = "https://channels.nixos.org/nixos-26.05/latest-nixos-minimal-x86_64-linux.iso"
+  default     = "../../result-installer/iso/patchwork-nixos-installer.iso"
 }
 
 variable "pool_id" {

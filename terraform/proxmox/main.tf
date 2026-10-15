@@ -18,13 +18,29 @@
 #   id = "pve01/358"
 # }
 
-# The installer ISO. Proxmox downloads it. The VMs boot from it.
-resource "proxmox_virtual_environment_download_file" "nixos_installer" {
+# The installer ISO. `nix build .#installer-iso -o result-installer` builds it
+# (root takes the admin SSH keys). Terraform uploads it to the node. The VMs
+# boot from it.
+resource "proxmox_virtual_environment_file" "installer_iso" {
   content_type = "iso"
   datastore_id = "local"
   node_name    = var.node_name
-  url          = var.installer_iso_url
-  file_name    = "nixos-minimal-x86_64-linux.iso"
+
+  source_file {
+    path      = var.installer_iso_path
+    file_name = "patchwork-nixos-installer.iso"
+  }
+}
+
+# The stock ISO download is gone. This block removes it from the state and
+# keeps the file on the node, because the CD-ROM of existing VMs may still
+# point to it. Delete the file by hand when no VM uses it.
+removed {
+  from = proxmox_virtual_environment_download_file.nixos_installer
+
+  lifecycle {
+    destroy = false
+  }
 }
 
 # Shape matches hosts/proxmox-vm.nix: SeaBIOS, one virtio-scsi disk at
@@ -59,8 +75,11 @@ resource "proxmox_virtual_environment_vm" "nixos" {
     floating  = 0
   }
 
+  # Wait 2 minutes for the guest agent, not the 15 minute default. A VM
+  # without an agent (before the install) then does not stall an apply.
   agent {
     enabled = true
+    timeout = "2m"
   }
 
   disk {
@@ -80,7 +99,7 @@ resource "proxmox_virtual_environment_vm" "nixos" {
 
   # Boot from the installer ISO. nixos-anywhere installs to the disk.
   cdrom {
-    file_id   = proxmox_virtual_environment_download_file.nixos_installer.id
+    file_id   = proxmox_virtual_environment_file.installer_iso.id
     interface = "ide2"
   }
 

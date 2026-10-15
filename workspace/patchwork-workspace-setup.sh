@@ -1,5 +1,12 @@
 #!/usr/bin/env bash
 # Patchwork Labs Google Workspace setup (GAM7)
+#
+# STATUS: Structure moved to Terraform. OUs, groups, group settings and
+# role memberships are now in terraform/workspace. Use this script only
+# for the "domains" and "verify" phases, which stay manual.
+# The "structure" phase is kept as history. Do not run it again.
+# User accounts and attributes belong to Weave.
+#
 # Usage:
 #   ./patchwork-workspace-setup.sh domains     add secondary domains, print verification records
 #   ./patchwork-workspace-setup.sh verify      verify domains after DNS records are in

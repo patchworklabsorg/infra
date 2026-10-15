@@ -144,6 +144,7 @@ A Proxmox administrator can read the disk of a DC VM and take `ntds.dit`. The Pr
 
 ### Tier 1 and Tier 2 today
 
+- Delegated rights below Domain Admins: `GG-T1-Admins` (computer objects in `Servers` and `Computers`, and the helpdesk rights) and `GG-T2-Helpdesk` (reset, unlock, change at next logon in the people OUs). Both are empty. No group except Domain Admins has rights on `Admin-Accounts` or `Servers/Tier0`. See "Delegation" in `README.md`.
 - `GG-Infra` gives the daily account sudo on the NixOS hosts. That is a Tier 2 account that administers Tier 1. Accept it for now. The NixOS hosts hold no Tier 0 credentials, and no Tier 0 account is in `GG-Infra`. Later, add a Tier 1 account (`mayonej.t1`) if more people get sudo.
 - `Tier0-Admin-Protection` denies Domain Admins local and RDP logon on Staff-Computers. Keep it. Link it to the new `Computers` OU at Migrate (Migrate copies links). Add a second GPO for member servers that are Tier 1, when such Windows servers exist.
 
@@ -377,6 +378,25 @@ Decision: nobody stores or remembers the `Administrator` password.
 - DSRM passwords are already managed by `LAPS-DSRM`. They are the last break-glass, also for a DC that does not boot into AD.
 - `root@pam` on each Proxmox host is the hypervisor break-glass.
 
+### GPO: Administrator account status = Disabled
+
+`ansible-playbook ad.yml -t admin-disabled-gpo` makes the GPO `T0-Builtin-Administrator-Disabled`. It sets Computer Configuration > Windows Settings > Security Settings > Local Policies > Security Options > "Accounts: Administrator account status" = Disabled. In `GptTmpl.inf` that is `[System Access]` `EnableAdminAccount = 0`. `converge.ps1` already disables the account (`builtinAdministrator.enabled` is `false`). The GPO is a second control: the DCs disable the account again by themselves.
+
+Where the GPO is linked:
+
+- A DC reads this setting **only from a GPO linked to the domain root**. A link on the Domain Controllers OU has no effect for this setting (Microsoft KB 259576, "Group Policy application rules for domain controllers"). So the GPO is linked to `DC=patchwork,DC=internal`.
+- A security filter limits it to the DCs. The `Domain Controllers` group has Apply. `Authenticated Users` has Read only (MS16-072 needs Read), not Apply. So member servers and workstations do not apply it.
+- It does not go to member servers or workstations. There LAPS manages the local Administrator account (`LAPS-Local-Admin`, section 5). LAPS needs that account enabled.
+
+Break-glass with this GPO:
+
+1. As a Domain Admin (`adm_mayonej`, a JIT grant later, or `svc-ansible`), disable the link of `T0-Builtin-Administrator-Disabled` on the domain root in GPMC. Or run `Set-GPLink -Name T0-Builtin-Administrator-Disabled -Target 'DC=patchwork,DC=internal' -LinkEnabled No`.
+2. Wait for AD and SYSVOL to replicate to the DC that you will use, or run `gpupdate /target:computer /force` on it.
+3. Reset the password and enable the account.
+4. After the work: set a new discarded password (`-t administrator-random -e ad_admin_random_force=true`), disable the account, and enable the link again: `Set-GPLink -Name T0-Builtin-Administrator-Disabled -Target 'DC=patchwork,DC=internal' -LinkEnabled Yes`. `-t admin-disabled-gpo` warns while the link is disabled.
+
+If you skip step 1, the DC disables the account again at a security policy refresh. DCs check for policy changes every 5 minutes. The security settings apply again when a GPO changes, and also on their own (about every 16 hours by default). Do not count on the time between them. Note also: Windows does not disable the account while it is in use on that DC.
+
 Alerting on use:
 
 - On both DCs, an event-triggered scheduled task for 4722 (account enabled) and 4724 (password reset) on the account whose SID ends in `-500`, and for 4768 (TGT), 4776 (NTLM validation) and 4624 by that account. The task sends an email to `security@patchworklabs.org`.
@@ -489,6 +509,8 @@ flowchart LR
 | Silo and JIT report | Ansible, new tag `ad.yml -t tiering-audit`, report only | Lists silo state, 101/105/305/306 counts, standing privileged members, open TTL grants. Fails with `-e ad_audit_strict=true`. |
 | Break-glass alert task | Ansible, new tag `ad.yml -t breakglass-alert` | Same on both DCs. |
 | Armoring GPOs, deny-logon GPOs | By hand today, documented in this file | GPOs are by hand in this repo. Move them to code when GPO management moves to code. |
+| `T0-Builtin-Administrator-Disabled` GPO | Ansible, `ad.yml -t admin-disabled-gpo` | Same file handling as `-t default-domain-gpo`. |
+| Delegation below Domain Admins, `Admin-Accounts/Tier*`, `Servers/Tier0` | `converge.ps1`, from the `delegation` block in `org.json` | See "Delegation" in `README.md`. |
 | `svc-ansible` posture | Ansible `-t svc-posture` and `-t audit` (extend for Protected Users after 5b) | They already own it. |
 
 A sketch of the `org.json` block for the later PR:

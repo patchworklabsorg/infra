@@ -1,6 +1,7 @@
 variable "proxmox_endpoint" {
-  description = "Proxmox API URL of pve01, for example https://pve01.example:8006/."
+  description = "Proxmox API URL. The public name is behind Cloudflare. To use the LAN address over the VPN, override this, for example https://<pve01-lan-address>:8006/."
   type        = string
+  default     = "https://proxmox.hogwarts.dev/"
 }
 
 variable "node_name" {
@@ -27,9 +28,16 @@ variable "vlan_id" {
   default     = null
 }
 
-variable "installer_iso_file_id" {
-  description = "File ID of the NixOS installer ISO, for example local:iso/nixos-minimal-x86_64-linux.iso. nixos-anywhere boots from it."
+variable "installer_iso_url" {
+  description = "URL of the NixOS minimal installer ISO (x86_64). Terraform downloads it to the local storage of the node."
   type        = string
+  default     = "https://channels.nixos.org/nixos-26.05/latest-nixos-minimal-x86_64-linux.iso"
+}
+
+variable "pool_id" {
+  description = "Proxmox pool for the VMs. The token ACL is scoped to this pool."
+  type        = string
+  default     = "patchwork"
 }
 
 variable "vms" {

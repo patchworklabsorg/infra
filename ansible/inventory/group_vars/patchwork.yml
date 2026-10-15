@@ -81,7 +81,12 @@ dhcp_scopes:
 ad_user_mail: {}
 
 # --- Tier 0 (ad.yml tiering tags, ad/TIERING.md) --------------------------------
-# Alert mail for -t breakglass-alert and -t jit-endpoint. The DCs send
+# Alerts for -t breakglass-alert and -t jit-endpoint. The DCs always write an
+# event to the Application log (sources Patchwork-Alert and Patchwork-JIT).
+# They send mail only when ad_alert_mail_enabled is true.
+ad_alert_mail_enabled: false
+
+# The values below are used only when mail is enabled. The DCs then send
 # through the Google Workspace SMTP relay: STARTTLS on 587, no login. The
 # relay accepts the lab WAN address. Add it in the Google Admin console:
 # Apps > Google Workspace > Gmail > Routing > SMTP relay service, "Only

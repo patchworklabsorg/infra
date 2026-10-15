@@ -44,7 +44,7 @@ These jobs are done by hand and are not in Ansible: AD CS setup and the offline 
 | `bin/vault-set` | Sets one key in the vault from stdin. |
 | `bin/vault-import` | One-time copy of the Patchwork values from the personal vault. |
 | `bin/t0-admin` | Asks the `PatchworkT0` endpoint for a just-in-time Domain Admins grant. See "Just-in-time admin". |
-| `files/tiering/` | PowerShell that the Tier 0 tags install on the DCs: `PatchworkAlert` (alert mail), `PatchworkT0` (JEA module and role capability), `Invoke-BreakGlassAlert.ps1`. |
+| `files/tiering/` | PowerShell that the Tier 0 tags install on the DCs: `PatchworkAlert` (alert events, optional mail), `PatchworkT0` (JEA module and role capability), `Invoke-BreakGlassAlert.ps1`. |
 | `templates/vyos/` | VyOS configs as `set` commands, with the secrets replaced by vault references. |
 | `filter_plugins/vyos_secrets.py` | Splits the secrets out of a VyOS config. Tested by `tests/`. |
 
@@ -157,7 +157,7 @@ Every tag is opt-in. A run without `-t` does nothing. Directory changes run once
 | `authn-log` | Enables the four `Microsoft-Windows-Authentication/*` logs on every DC. Sets the audit policy for Credential Validation, Kerberos Authentication Service, Kerberos Service Ticket Operations, User Account Management and Security Group Management to success and failure. |
 | `armoring` | Makes two GPOs. `T0-Kerberos-Armoring-KDC` on the Domain Controllers OU: "KDC support for claims, compound authentication and Kerberos armoring" = Supported. `T0-Kerberos-Armoring-Client` on the domain root: "Kerberos client support for claims, compound authentication and Kerberos armoring" = Enabled. |
 | `default-domain-gpo` | Makes the password and lockout values in the `Default Domain Policy` GPO match `passwordPolicy.default` in `../ad/org.json`, and raises the GPO version. On 2026-10-14 the GPO already matched, so the first run changes nothing. |
-| `breakglass-alert` | Installs an event-triggered scheduled task on every DC. It sends a mail to `security@patchworklabs.org` when the built-in Administrator logs on, gets a TGT, is checked with NTLM, is enabled or has its password reset, and when a member is added to Domain Admins, `GG-Domain-Admins-Tier0`, Enterprise Admins, Schema Admins or Administrators. `-e ad_alert_test=true` also sends one test mail. |
+| `breakglass-alert` | Installs an event-triggered scheduled task on every DC. It writes event 1000 (source `Patchwork-Alert`) to the Application log of the DC when the built-in Administrator logs on, gets a TGT, is checked with NTLM, is enabled or has its password reset, and when a member is added to Domain Admins, `GG-Domain-Admins-Tier0`, Enterprise Admins, Schema Admins or Administrators. It sends a mail to `security@patchworklabs.org` only when `ad_alert_mail_enabled` is `true`. `-e ad_alert_test=true` writes one test event (event 1001) and mails only when mail is enabled. |
 | `administrator-random` | Sets a random 96-character password on the built-in Administrator and sets "sensitive and cannot be delegated". The DC makes the password, and nobody sees it. Refuses while the account is enabled. Changes the password only when the old one is older than 24 hours, or with `-e ad_admin_random_force=true`. |
 | `krbtgt-reset` | Resets the `krbtgt` password once. Refuses while the password is younger than 10 hours, or while a DC shows a replication failure. Then each DC pulls the change and the play checks that each DC has it. |
 | `jit-endpoint` | Installs the `PatchworkT0` JEA endpoint on every DC. Fails while the AD Privileged Access Management feature is off. It never enables the feature. |
@@ -178,12 +178,12 @@ Run each step with `--check` first. Each step starts only after the one before i
 | 2 | `ansible-playbook ad.yml -t armoring` | In GPMC, both GPOs show the policy by name, not under "Extra Registry Settings". `gpresult /r` on loom lists both. |
 | 3 | `ansible-playbook ad.yml -t default-domain-gpo` | The report shows no change, or the changes you expect. |
 | 4 | `converge.ps1` Build (silo in audit mode, `tiering.enforce` is `false`) | `Get-ADAuthenticationPolicySilo T0-Silo`. Then read events 305 and 306 every day for two weeks (TIERING.md phase 2). |
-| 5 | `ansible-playbook ad.yml -t breakglass-alert -e ad_alert_test=true` | The test mail arrives at `security@`. |
+| 5 | `ansible-playbook ad.yml -t breakglass-alert -e ad_alert_test=true` | On a DC, `Get-WinEvent -FilterHashtable @{LogName='Application'; ProviderName='Patchwork-Alert'}` shows event 1001. |
 | 6 | `ansible-playbook ad.yml -t administrator-random` | The report says "set a new discarded random password". The account is still disabled. |
 | 7 | **`ansible-playbook ad.yml -t krbtgt-reset`**, then the same command again 10 hours or more later | Each run reports one reset. The second run refuses if you start it too early. |
 | 8 | **Enable the PAM optional feature by hand, once, after approval.** It cannot be undone. | `Get-ADOptionalFeature 'Privileged Access Management Feature'` shows `EnabledScopes`. |
 | 9 | `ansible-playbook ad.yml -t jit-endpoint` | The report shows `PATCHWORK\GG-T0-Eligible AccessAllowed`. |
-| 10 | `bin/t0-admin 1 "test the JIT endpoint"` | A grant, a mail, and `t0-admin status` shows the grant with the time left. |
+| 10 | `bin/t0-admin 1 "test the JIT endpoint"` | A grant, a `Patchwork-JIT` event on the DC, and `t0-admin status` shows the grant with the time left. |
 | 11 | Set `tiering.jit.enabled` to `true` in `../ad/org.json`, run Build | Build logs the grant as INFO and reports `adm_mayonej` as a standing member. |
 | 12 | Later: `tiering.jit.removeStanding` `true`, then `tiering.enforce` `true` | TIERING.md phases 3 and 4. |
 
@@ -193,11 +193,32 @@ Command for step 8, on loom, as `adm_mayonej`:
 Enable-ADOptionalFeature 'Privileged Access Management Feature' -Scope ForestOrConfigurationSet -Target patchwork.internal
 ```
 
-### Alert mail
+### Alerts
 
-The DCs send through the Google Workspace SMTP relay, `smtp-relay.gmail.com` port 587 with STARTTLS. They do not log in. The relay accepts mail from the lab WAN address `69.54.28.49`. The sender is `ad-alerts@patchworklabs.org`, the recipient is `security@patchworklabs.org`. The values are in `inventory/group_vars/patchwork.yml` (`ad_alert_*`). No secret is involved.
+Mail is off. The variable `ad_alert_mail_enabled` is `false` in `inventory/group_vars/patchwork.yml`. The DCs write each alert to the Application log of the DC. No Google setting is needed.
 
-Do this once in the Google Admin console before step 5:
+| Source | Event | Meaning |
+|---|---|---|
+| `Patchwork-Alert` | 1000 | The built-in Administrator was used, or a privileged group changed. The message has what, when and who. |
+| `Patchwork-Alert` | 1001 | Test event from `-e ad_alert_test=true`. |
+| `Patchwork-JIT` | 1000 | A JIT grant. The message has the account, the hours, the reason and the end time. |
+| `Patchwork-Alert` | 1900 | A mail failed. This happens only when mail is enabled. |
+
+To read the alerts, open Event Viewer on a DC. Go to Windows Logs > Application and filter by the source. Or run this on a DC:
+
+```powershell
+Get-WinEvent -FilterHashtable @{LogName='Application'; ProviderName='Patchwork-Alert','Patchwork-JIT'} | Format-List TimeCreated, ProviderName, Id, Message
+```
+
+Each DC keeps its own events. A JIT grant makes two events: one from the endpoint, with the reason, and one from the break-glass task, because the grant adds a member to `GG-Domain-Admins-Tier0`. The second event also comes when somebody adds a member without the endpoint. That is on purpose.
+
+### Mail alerts later
+
+This section is optional. Do it only when you want mail.
+
+The DCs send through the Google Workspace SMTP relay, `smtp-relay.gmail.com` port 587 with STARTTLS. They do not log in. The relay accepts mail from the lab WAN address `69.54.28.49`. The sender is `ad-alerts@patchworklabs.org`, the recipient is `security@patchworklabs.org`. These values are in `inventory/group_vars/patchwork.yml` (`ad_alert_*`). The DCs use them only when mail is enabled. No secret is involved.
+
+Do this once in the Google Admin console:
 
 1. Go to Apps > Google Workspace > Gmail > Routing.
 2. At "SMTP relay service", click Configure (or Add another rule).
@@ -207,13 +228,11 @@ Do this once in the Google Admin console before step 5:
 6. Encryption: select "Require TLS encryption".
 7. Save. The change can take up to an hour.
 
-The DCs must reach `smtp-relay.gmail.com` on TCP 587 through thimble. Each alert is also written to the Application log of the DC first (source `Patchwork-Alert` or `Patchwork-JIT`, event 1000). A failed mail writes event 1900.
-
-A JIT grant sends two mails: one from the endpoint, with the reason, and one from the break-glass task, because the grant adds a member to `GG-Domain-Admins-Tier0`. The second mail also comes when somebody adds a member without the endpoint. That is on purpose.
+Then set `ad_alert_mail_enabled: true` and run `ansible-playbook ad.yml -t breakglass-alert,jit-endpoint`. The DCs must reach `smtp-relay.gmail.com` on TCP 587 through thimble. Run `-t breakglass-alert -e ad_alert_test=true`. The test mail arrives at `security@`. The events stay in the Application log.
 
 ### Just-in-time admin
 
-`adm_mayonej` asks for Domain Admins for 1 to 4 hours. The `PatchworkT0` endpoint on the DC adds it to `GG-Domain-Admins-Tier0` with a time to live. The DC removes it when the time ends. The endpoint writes event 1000 and mails `security@`.
+`adm_mayonej` asks for Domain Admins for 1 to 4 hours. The `PatchworkT0` endpoint on the DC adds it to `GG-Domain-Admins-Tier0` with a time to live. The DC removes it when the time ends. The endpoint writes event 1000 (source `Patchwork-JIT`). It mails `security@` only when mail is enabled. `Mailed` is `False` while mail is off.
 
 From remus, while `T0-Silo` is in audit mode:
 
@@ -225,7 +244,7 @@ Group       GG-Domain-Admins-Tier0
 Status      granted
 Hours       1
 ExpiresUtc  2026-10-20 23:15:00Z
-Mailed      True
+Mailed      False
 Next        Run "klist purge" or log on again. The new TGT carries Domain Admins until the grant ends.
 ```
 

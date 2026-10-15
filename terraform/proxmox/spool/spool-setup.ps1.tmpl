@@ -1,0 +1,66 @@
+# spool-setup.ps1: first logon setup of spool, the Tier 0 jump host.
+# autounattend.xml runs it once, as the local Administrator, from the
+# answer ISO. build-unattend.sh renders this template. The log is
+# C:\Windows\Temp\spool-setup.log. See terraform/proxmox/README.md.
+
+$ErrorActionPreference = 'Continue'
+Start-Transcript -Path 'C:\Windows\Temp\spool-setup.log' -Append
+
+$IpAddress    = '@@IP_ADDRESS@@'
+$PrefixLength = @@PREFIX_LENGTH@@
+$Gateway      = '@@GATEWAY@@'
+$DnsServers   = @('@@DNS1@@', '@@DNS2@@')
+$RdpAllowed   = '@@RDP_ALLOWED@@'
+
+# 1. Static IPv4. The specialize pass sets it on the NIC named in the answer
+#    file. If that name was wrong, set it here on the first connected NIC.
+if (-not (Get-NetIPAddress -IPAddress $IpAddress -ErrorAction SilentlyContinue)) {
+  $nic = Get-NetAdapter | Where-Object Status -eq 'Up' | Sort-Object ifIndex | Select-Object -First 1
+  if ($nic) {
+    Write-Output "Set $IpAddress/$PrefixLength on $($nic.Name)"
+    Set-NetIPInterface -InterfaceIndex $nic.ifIndex -AddressFamily IPv4 -Dhcp Disabled
+    Get-NetIPAddress -InterfaceIndex $nic.ifIndex -AddressFamily IPv4 -ErrorAction SilentlyContinue |
+      Remove-NetIPAddress -Confirm:$false -ErrorAction SilentlyContinue
+    Get-NetRoute -InterfaceIndex $nic.ifIndex -DestinationPrefix '0.0.0.0/0' -ErrorAction SilentlyContinue |
+      Remove-NetRoute -Confirm:$false -ErrorAction SilentlyContinue
+    New-NetIPAddress -InterfaceIndex $nic.ifIndex -IPAddress $IpAddress -PrefixLength $PrefixLength -DefaultGateway $Gateway | Out-Null
+    Set-DnsClientServerAddress -InterfaceIndex $nic.ifIndex -ServerAddresses $DnsServers
+  } else {
+    Write-Warning 'No connected NIC. Set the address by hand.'
+  }
+}
+
+# 2. RDP on, NLA off, TLS on. The answer file sets these too. Set them again
+#    in case a component did not apply.
+$ts = 'HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server'
+Set-ItemProperty -Path $ts -Name fDenyTSConnections -Value 0 -Type DWord
+Set-ItemProperty -Path "$ts\WinStations\RDP-Tcp" -Name UserAuthentication -Value 0 -Type DWord
+Set-ItemProperty -Path "$ts\WinStations\RDP-Tcp" -Name SecurityLayer -Value 2 -Type DWord
+
+# 3. Firewall: the built-in Remote Desktop rules stay off. One rule allows
+#    TCP 3389 only from the Patchwork VPN clients.
+Get-NetFirewallRule -DisplayGroup 'Remote Desktop' -ErrorAction SilentlyContinue | Disable-NetFirewallRule
+Remove-NetFirewallRule -Name 'Spool-RDP-VPN' -ErrorAction SilentlyContinue
+New-NetFirewallRule -Name 'Spool-RDP-VPN' -DisplayName 'Spool: RDP from the Patchwork VPN' `
+  -Direction Inbound -Protocol TCP -LocalPort 3389 -RemoteAddress $RdpAllowed `
+  -Action Allow -Profile Any | Out-Null
+
+# 4. Print Spooler off. A Tier 0 host does not print.
+Stop-Service -Name Spooler -Force -ErrorAction SilentlyContinue
+Set-Service -Name Spooler -StartupType Disabled
+
+# 5. RSAT AD DS tools (with the AD PowerShell module) and GPMC.
+Install-WindowsFeature -Name RSAT-AD-Tools, GPMC -IncludeAllSubFeature
+
+# 6. Turn off the automatic logon and remove the cached answer files.
+$wl = 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon'
+Set-ItemProperty -Path $wl -Name AutoAdminLogon -Value '0'
+Remove-ItemProperty -Path $wl -Name DefaultPassword -ErrorAction SilentlyContinue
+Remove-ItemProperty -Path $wl -Name AutoLogonCount -ErrorAction SilentlyContinue
+Remove-Item -Path 'C:\Windows\Panther\unattend.xml', 'C:\Windows\Panther\Unattend\unattend.xml' -Force -ErrorAction SilentlyContinue
+
+New-Item -Path 'C:\Windows\Temp\spool-setup.done' -ItemType File -Force | Out-Null
+Stop-Transcript
+
+# 7. Restart, so that spool comes up at the logon screen.
+Restart-Computer -Force

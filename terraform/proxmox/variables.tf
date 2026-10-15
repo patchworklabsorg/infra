@@ -118,3 +118,9 @@ variable "spool" {
     ip        = "10.100.90.59"
   }
 }
+
+variable "spool_unattend_iso_path" {
+  description = "Local path of the spool answer ISO. Build it with spool/build-unattend.sh. When it is set and create_spool is true, Terraform uploads the ISO, attaches it to spool as a second CD-ROM (ide0) and starts the install. Keep it null after the install: Terraform then detaches the ISO and deletes it from the node."
+  type        = string
+  default     = null
+}

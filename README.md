@@ -224,7 +224,7 @@ Do the steps in this order.
 12. Re-key: `cd secrets && agenix -r`. Commit the `.age` files and merge.
 13. Deploy hem: `deploy .#hem`. In the container, make sure that `central-db-setup` succeeded and does not log "no password file for quilt": `sudo nixos-container run restricted-staging -- journalctl -u central-db-setup`.
 14. From alastor, test the connection: `psql "<RESTRICTED_DATABASE_URL>" -c 'SHOW search_path'`. The result must be `quilt`.
-15. Merge the DNS record `quilt-staging` (A `129.213.163.213`, proxied) in patchworklabsorg/dns.
+15. Merge the DNS record `quilt-staging` (A `129.213.163.213`, proxied): patchworklabsorg/dns#11.
 16. In `jaspermayone/infra`, run `nix flake update patchwork-infra` and deploy alastor.
 17. On alastor, check `systemctl status quilt-staging-web quilt-staging-worker` and `curl -i http://127.0.0.1:3006/up`. Then sign in at `https://quilt-staging.patchworklabs.org`.
 

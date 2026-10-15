@@ -105,7 +105,19 @@ Do not apply before you read the plan.
 
 ## Installer ISO
 
-The root downloads the NixOS minimal installer ISO to `local` storage on `pve01`. The URL is the variable `installer_iso_url`. The default is the latest `nixos-26.05` minimal ISO. The VMs boot from it.
+The root uploads the Patchwork installer ISO to `local` storage on `pve01`. The VMs boot from it. The ISO is the NixOS minimal ISO with the admin SSH keys on root, so nixos-anywhere connects at once. It also runs the QEMU guest agent, so `tofu output ipv4_addresses` shows the DHCP address.
+
+Build the ISO before you apply:
+
+```bash
+nix build .#installer-iso -o result-installer
+```
+
+The build needs an x86_64-linux builder. The variable `installer_iso_path` points to the file. The default is `../../result-installer/iso/patchwork-nixos-installer.iso`.
+
+The guest agent wait is 2 minutes (`agent.timeout`). A VM without an agent does not stall an apply for 15 minutes.
+
+The old resource `proxmox_virtual_environment_download_file.nixos_installer` is gone. A `removed` block forgets it in the state and keeps the stock ISO on the node. The CD-ROM of existing VMs is in `ignore_changes`, so the plan does not touch them. Delete the old ISO file by hand when no VM uses it. This needs OpenTofu 1.7 or newer.
 
 ## Existing VMs
 
@@ -119,7 +131,7 @@ The resource has `prevent_destroy`. It ignores the CD-ROM, the boot order, the p
 2. Add the host to `linuxHosts` in `ad/org.json`.
 3. Add an entry to the `vms` map in `variables.tf`.
 4. Add a commented `import` block if the VM already exists.
-5. Plan, apply, then install with nixos-anywhere from the installer ISO.
+5. Plan, apply, then install with nixos-anywhere from the installer ISO. See "Install a host" in the root `README.md`.
 
 ## Memory warning
 

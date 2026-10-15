@@ -1,0 +1,29 @@
+#!/usr/bin/env bash
+# Install a Patchwork NixOS host on its Proxmox VM.
+# Usage: bin/install-host <host>
+# The VM must exist and boot from the Patchwork installer ISO.
+set -euo pipefail
+
+host="${1:?usage: bin/install-host <host>}"
+root="$(cd "$(dirname "$0")/.." && pwd)"
+cd "$root/terraform/proxmox"
+
+echo "Plan check: the plan must not replace or destroy a VM."
+tofu plan -input=false -detailed-exitcode -out=install.tfplan || [ $? -eq 2 ]
+if tofu show -json install.tfplan | jq -e '[.resource_changes[]? | select(.change.actions | index("delete"))] | length > 0' >/dev/null; then
+  echo "The plan deletes a resource. Stop." >&2
+  rm -f install.tfplan
+  exit 1
+fi
+tofu apply -input=false install.tfplan
+rm -f install.tfplan
+
+ip="$(tofu output -json ipv4_addresses | jq -r --arg h "$host" '.[$h][0] // empty')"
+if [ -z "$ip" ]; then
+  echo "No address for $host yet. Wait for the VM to boot, then run again." >&2
+  exit 1
+fi
+
+echo "Install $host on root@$ip"
+cd "$root"
+exec nixos-anywhere --flake ".#$host" --build-on remote --target-host "root@$ip"

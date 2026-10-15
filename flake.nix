@@ -154,6 +154,12 @@
         }
       );
 
+      # The installer ISO for new VMs: root takes the admin keys, so
+      # nixos-anywhere connects without a console login.
+      # nix build .#installer-iso -o result-installer
+      packages.x86_64-linux.installer-iso =
+        (nixpkgs.lib.nixosSystem { modules = [ ./hosts/installer.nix ]; }).config.system.build.isoImage;
+
       formatter.x86_64-linux = nixpkgs.legacyPackages.x86_64-linux.nixfmt-tree;
       formatter.aarch64-linux = nixpkgs.legacyPackages.aarch64-linux.nixfmt-tree;
       formatter.aarch64-darwin = nixpkgs.legacyPackages.aarch64-darwin.nixfmt-tree;

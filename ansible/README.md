@@ -161,6 +161,7 @@ Every tag is opt-in. A run without `-t` does nothing. Directory changes run once
 | `administrator-random` | Sets a random 96-character password on the built-in Administrator and sets "sensitive and cannot be delegated". The DC makes the password, and nobody sees it. Refuses while the account is enabled. Changes the password only when the old one is older than 24 hours, or with `-e ad_admin_random_force=true`. |
 | `krbtgt-reset` | Resets the `krbtgt` password once. Refuses while the password is younger than 10 hours, or while a DC shows a replication failure. Then each DC pulls the change and the play checks that each DC has it. |
 | `jit-endpoint` | Installs the `PatchworkT0` JEA endpoint on every DC. Fails while the AD Privileged Access Management feature is off. It never enables the feature. |
+| `admin-disabled-gpo` | Makes the GPO `T0-Builtin-Administrator-Disabled`: "Accounts: Administrator account status" = Disabled. Links it to the domain root and applies it to the `Domain Controllers` group only. See "Built-in Administrator GPO" below. |
 
 Every Tier 0 tag supports `--check`, except that `krbtgt-reset` still refuses in check mode when a guard fails.
 
@@ -254,6 +255,20 @@ klist purge
 ```
 
 The endpoint has only `Request-T0Admin` and `Get-T0AdminGrant`. Every session is recorded in `C:\ProgramData\Patchwork\jea\transcripts` on the DC.
+
+### Built-in Administrator GPO
+
+```sh
+ansible-playbook ad.yml -t admin-disabled-gpo --check
+ansible-playbook ad.yml -t admin-disabled-gpo
+```
+
+The play makes the GPO, turns off its user settings, gives `Domain Controllers` Apply and `Authenticated Users` Read only, writes `EnableAdminAccount = 0` to `GptTmpl.inf`, adds the security extension to `gPCMachineExtensionNames`, raises the version, and then links the GPO to the domain root. A second run changes nothing.
+
+- The link is on the domain root, not on the Domain Controllers OU. A DC reads "Accounts: Administrator account status" only from a GPO linked to the domain root (Microsoft KB 259576).
+- Member servers and workstations do not apply it. LAPS manages their local Administrator.
+- Before you enable the built-in Administrator for break-glass, disable this link. Otherwise the DCs disable the account again. The steps are in `../ad/TIERING.md` section 4.
+- The report warns when the link is disabled, when another GPO on the domain root sets `EnableAdminAccount = 1`, and when the account is enabled now.
 
 ### Host groups come from the flake
 

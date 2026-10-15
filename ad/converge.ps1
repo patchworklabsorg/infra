@@ -51,6 +51,17 @@
     with a time to live, and it reports each standing member. Standing admin
     memberships are removed only when jit.removeStanding is also true.
 
+    The delegation block gives the domain local groups in delegation.grants
+    their rights on OUs (helpdesk on the people OUs, computer admin on
+    Servers and Computers), and puts explicit deny ACEs on the OUs in
+    delegation.deny (Admin-Accounts, Service-Accounts, Servers/Tier0). ACEs
+    are added only when missing. Extra ACEs are reported, never removed. It
+    also reports the AdminSDHolder state (adminCount=1 accounts, extra ACEs).
+
+    Build moves an object only down, into a child OU of the OU it is in now
+    (Admin-Accounts -> Admin-Accounts/Tier0, Servers -> Servers/Tier0 for
+    the Tier 0 member servers in tiering.computers). Other moves are Migrate.
+
     It never touches the contents of an OU marked "managed": false
     (Users/Members, which Weave owns) or the members of a group marked
     "manageMembers": false.
@@ -419,8 +430,45 @@ function Sync-User($u) {
         Write-Report "$($u.sam) is disabled. Enable it after the person sets a password."
     }
 
-    if ((Get-ParentDN $existing.DistinguishedName) -ne $target) {
-        Write-Report "$($u.sam) is in $(Get-ParentDN $existing.DistinguishedName), not $target. Migrate moves it."
+    Sync-Placement $existing $target $u.sam
+}
+
+# True when $Child is an OU below $Parent, and $Parent is in the new tree.
+function Test-BelowInNewTree([string]$Child, [string]$Parent) {
+    ($Parent -eq $rootDN -or $Parent -like "*,$rootDN") -and $Child -like "*,$Parent"
+}
+
+# Puts an object in its target OU. Build moves it only DOWN, into a child OU
+# of the OU it is in now, inside the new tree (Admin-Accounts ->
+# Admin-Accounts/Tier0, Servers -> Servers/Tier0). The GPOs of the old OU
+# still apply there by inheritance. Every other difference is reported.
+function Sync-Placement($Obj, [string]$Target, [string]$Label) {
+    $parent = Get-ParentDN $Obj.DistinguishedName
+    if ($parent -eq $Target) { return }
+    if (-not (Test-BelowInNewTree $Target $parent)) {
+        Write-Report "$Label is in $parent, not $Target. Migrate moves it."
+        return
+    }
+    $wasProtected = [bool](Get-Prop $Obj 'ProtectedFromAccidentalDeletion')
+    Invoke-Change $Obj.DistinguishedName "Move to $Target (a child OU of its OU)" {
+        if ($wasProtected) { Set-ADObject -Identity $Obj -ProtectedFromAccidentalDeletion $false @ad }
+        $movedObj = Move-ADObject -Identity $Obj -TargetPath $Target -PassThru @ad
+        if ($wasProtected) { Set-ADObject -Identity $movedObj -ProtectedFromAccidentalDeletion $true @ad }
+    }
+}
+
+# Tier 0 member servers (tiering.computers that are not DCs) belong in
+# tiering.serverOU, where the delegation block denies Tier 1 rights.
+function Sync-Tier0Servers {
+    $t = $data.tiering
+    if (-not (Test-Field $t 'serverOU')) { return }
+    $target = ConvertTo-OUDN $t.serverOU
+    foreach ($c in @($t.computers)) {
+        # A computer that does not exist is reported by Sync-SiloMembers.
+        $o = Find-Object "SamAccountName -eq '$c`$'" @('ProtectedFromAccidentalDeletion')
+        if (-not $o) { continue }
+        if ((Get-ParentDN $o.DistinguishedName) -eq "OU=Domain Controllers,$domainDN") { continue }
+        Sync-Placement $o $target $c
     }
 }
 
@@ -869,6 +917,7 @@ function Sync-Tiering {
         $svcEnforce = if (Test-Field $t.servicePolicy 'enforce') { [bool]$t.servicePolicy.enforce } else { $enforce }
         Sync-AuthPolicy $t.servicePolicy $svcEnforce $t.silo
     }
+    Sync-Tier0Servers
     $silo = Sync-Silo
     Sync-SiloMembers $silo
 }
@@ -963,6 +1012,259 @@ function Sync-StandingGroups($Jit) {
     }
 }
 
+# --- Delegation ----------------------------------------------------------------
+# The delegation block gives domain local resource groups rights on OUs, and
+# puts explicit deny ACEs on the OUs that hold admin, service and Tier 0
+# objects. ACEs are added only when missing. An extra ACE that a person made
+# is reported, never removed. No ACE can stop a Domain Admin, so Domain
+# Admins stays Tier 0 only.
+#
+# The ACLs are read and written through the AD: drive of the ActiveDirectory
+# module (Get-Acl / Set-Acl), as ansible/ad.yml -t join-delegation does. On a
+# DC the drive binds to that DC. Run Build on the PDC emulator.
+
+# Schema GUIDs (Microsoft Learn, adschema).
+$guids = @{
+    user          = [guid]'bf967aba-0de6-11d0-a285-00aa003049e2'  # class user
+    computer      = [guid]'bf967a86-0de6-11d0-a285-00aa003049e2'  # class computer
+    resetPassword = [guid]'00299570-246d-11d0-a768-00aa006e0529'  # User-Force-Change-Password
+    lockoutTime   = [guid]'28630ebf-41d5-11d1-a9c1-0000f80367c1'  # attribute lockoutTime
+    pwdLastSet    = [guid]'bf967a0a-0de6-11d0-a285-00aa003049e2'  # attribute pwdLastSet
+    none          = [guid]::Empty
+}
+
+# ActiveDirectoryRights values, so a mask needs no System.DirectoryServices type.
+$adRights = @{
+    CreateChild = 1; DeleteChild = 2; ListChildren = 4; Self = 8; ReadProperty = 16; WriteProperty = 32
+    DeleteTree = 64; ListObject = 128; ExtendedRight = 256; Delete = 65536; ReadControl = 131072
+    WriteDacl = 262144; WriteOwner = 524288; GenericRead = 131220; GenericAll = 983551
+}
+
+# What each rights template gives. Inheritance "All": this OU and every
+# object below it. "Descendents": only the objects below it, of the class in
+# inheritedObjectType.
+$rightsTemplates = @{
+    # Reset password, unlock, force a change at next logon and read all, on
+    # the user objects below the OU. Nothing on the OU itself.
+    'user-helpdesk'  = @(
+        @{ label = 'reset password'; rights = @('ExtendedRight'); objectType = 'resetPassword'; inheritance = 'Descendents'; inheritedObjectType = 'user' }
+        @{ label = 'unlock (lockoutTime)'; rights = @('ReadProperty', 'WriteProperty'); objectType = 'lockoutTime'; inheritance = 'Descendents'; inheritedObjectType = 'user' }
+        @{ label = 'change at next logon (pwdLastSet)'; rights = @('ReadProperty', 'WriteProperty'); objectType = 'pwdLastSet'; inheritance = 'Descendents'; inheritedObjectType = 'user' }
+        @{ label = 'read all'; rights = @('GenericRead'); objectType = 'none'; inheritance = 'Descendents'; inheritedObjectType = 'user' }
+    )
+    # Create and delete computer objects in the OU and its child OUs, and full
+    # control of each computer object below it (reset password, DNS host
+    # name, SPN and the rest).
+    'computer-admin' = @(
+        @{ label = 'create and delete computers'; rights = @('CreateChild', 'DeleteChild'); objectType = 'computer'; inheritance = 'All'; inheritedObjectType = 'none' }
+        @{ label = 'full control of computers'; rights = @('GenericAll'); objectType = 'none'; inheritance = 'Descendents'; inheritedObjectType = 'computer' }
+    )
+    # The deny on admin, service and Tier 0 OUs, for the OU and everything
+    # below it. Read stays allowed. An explicit deny on a child OU beats an
+    # allow inherited from the parent OU (Servers -> Servers/Tier0).
+    'deny-write'     = @(
+        @{ label = 'deny reset password and every extended right'; rights = @('ExtendedRight'); objectType = 'none'; inheritance = 'All'; inheritedObjectType = 'none' }
+        @{ label = 'deny write, create, delete, permissions and owner'
+            rights = @('WriteProperty', 'Self', 'CreateChild', 'DeleteChild', 'Delete', 'DeleteTree', 'WriteDacl', 'WriteOwner')
+            objectType = 'none'; inheritance = 'All'; inheritedObjectType = 'none' }
+    )
+}
+
+$inheritanceFlags = @{
+    All         = @('ContainerInherit', 'None')
+    Descendents = @('ContainerInherit', 'InheritOnly')
+}
+
+function Get-Delegation {
+    if (-not $data.PSObject.Properties['delegation']) { return $null }
+    $data.delegation
+}
+
+# The objectSid of a principal (a SecurityIdentifier from AD), or $null.
+function Get-PrincipalSid([string]$Sam) {
+    $o = Find-Object "SamAccountName -eq '$Sam'"
+    if (-not $o) { return $null }
+    Get-Prop (Get-ADObject -Identity $o.DistinguishedName -Properties objectSid @ad) 'objectSid'
+}
+
+# The wanted rules of one template for one principal, as plain objects.
+function Get-WantedRules([string]$Sid, [string]$Template, [string]$Type) {
+    foreach ($r in $rightsTemplates[$Template]) {
+        $inh, $prop = $inheritanceFlags[$r.inheritance]
+        $mask = 0
+        foreach ($n in $r.rights) { $mask = $mask -bor $adRights[$n] }
+        [pscustomobject]@{
+            Sid = $Sid; Type = $Type; Mask = $mask; Label = $r.label
+            ObjectType = $guids[$r.objectType]; InheritedObjectType = $guids[$r.inheritedObjectType]
+            InheritanceFlags = $inh; PropagationFlags = $prop
+        }
+    }
+}
+
+# Same principal, type, object types and inheritance as the wanted rule.
+function Test-SameAceKey($Ace, $Want) {
+    "$($Ace.IdentityReference.Value)" -eq $Want.Sid -and
+    "$($Ace.AccessControlType)" -eq $Want.Type -and
+    "$($Ace.ObjectType)" -eq "$($Want.ObjectType)" -and
+    "$($Ace.InheritedObjectType)" -eq "$($Want.InheritedObjectType)" -and
+    "$($Ace.InheritanceFlags)" -eq $Want.InheritanceFlags -and
+    "$($Ace.PropagationFlags)" -eq $Want.PropagationFlags
+}
+
+function Get-AclPath([string]$DN) { "AD:\$DN" }
+
+function Get-ExplicitAces($Acl) {
+    @($Acl.GetAccessRules($true, $false, [System.Security.Principal.SecurityIdentifier]))
+}
+
+# SID -> a readable name for a report line.
+function Get-SidName([string]$Sid) {
+    $o = Find-Object "objectSid -eq '$Sid'"
+    if ($o -and (Get-Prop $o 'SamAccountName')) { return "$($o.SamAccountName) ($Sid)" }
+    $Sid
+}
+
+# Adds the missing rules of one template for one principal on one OU, with
+# one Set-Acl. Returns the wanted rules, for the extra-ACE report.
+function Sync-Aces([string]$DN, [string]$Principal, [string]$Template, [string]$Type) {
+    $sidObj = Get-PrincipalSid $Principal
+    if (-not $sidObj) {
+        if ($WhatIfPreference) {
+            Write-Log 'WOULD' "$Type $Template for $Principal : $DN (after it is created)"
+        } else {
+            Write-Report "$Principal does not exist, so $Template was not set on $DN."
+        }
+        return
+    }
+    $wanted = @(Get-WantedRules "$sidObj" $Template $Type)
+    if (-not (Test-DN $DN)) {
+        Write-Log 'WOULD' "$Type $Template for $Principal : $DN (after the OU is created)"
+        return $wanted
+    }
+    $acl = Get-Acl -Path (Get-AclPath $DN)
+    $have = Get-ExplicitAces $acl
+    $missing = @($wanted | Where-Object {
+            $w = $_
+            -not ($have | Where-Object { (Test-SameAceKey $_ $w) -and (([int]$_.ActiveDirectoryRights -band $w.Mask) -eq $w.Mask) })
+        })
+    if ($missing.Count) {
+        Invoke-Change $DN "$Type for ${Principal}: $(($missing | ForEach-Object { $_.Label }) -join ', ')" {
+            foreach ($m in $missing) {
+                $acl.AddAccessRule($acl.AccessRuleFactory($sidObj, [int]$m.Mask, $false, $m.InheritanceFlags, $m.PropagationFlags,
+                        $m.Type, $m.ObjectType, $m.InheritedObjectType))
+            }
+            Set-Acl -Path (Get-AclPath $DN) -AclObject $acl
+        }
+    }
+    $wanted
+}
+
+# Principals with explicit ACEs on a new OU by default (the schema default
+# security descriptor), or that are Tier 0 anyway.
+function Get-DefaultAceSids {
+    $d = "$($domain.DomainSID)"
+    @('S-1-5-18', 'S-1-5-10', 'S-1-3-0', 'S-1-5-9', 'S-1-5-32-544', 'S-1-5-32-548', 'S-1-5-32-550', "$d-512", "$d-516", "$d-519")
+}
+
+# Reports each explicit allow ACE that gives more than read, unless
+# converge.ps1 manages it, a default principal holds it, or
+# delegation.knownAces lists its principal for this OU.
+function Write-ExtraAceReport([string]$DN, [object[]]$Wanted, [string[]]$KnownSids) {
+    if (-not (Test-DN $DN)) { return }
+    $defaults = Get-DefaultAceSids
+    foreach ($ace in Get-ExplicitAces (Get-Acl -Path (Get-AclPath $DN))) {
+        if ("$($ace.AccessControlType)" -ne 'Allow') { continue }
+        $sid = "$($ace.IdentityReference.Value)"
+        if ($defaults -contains $sid -or $KnownSids -contains $sid) { continue }
+        $mask = [int]$ace.ActiveDirectoryRights
+        if (($mask -band (-bnot $adRights.GenericRead)) -eq 0) { continue }
+        $same = @($Wanted | Where-Object { Test-SameAceKey $ace $_ })
+        $allowed = 0
+        foreach ($w in $same) { $allowed = $allowed -bor $w.Mask }
+        if ($same.Count -and ($mask -band (-bnot $allowed)) -eq 0) { continue }
+        Write-Report "$DN has an extra ACE: allow $($ace.ActiveDirectoryRights) for $(Get-SidName $sid) (object $($ace.ObjectType), inherited object $($ace.InheritedObjectType)). It stays. Remove it by hand if nobody needs it."
+    }
+}
+
+function Sync-Delegation {
+    $del = Get-Delegation
+    if (-not $del) { return }
+    $wantedByOU = @{}
+    $pairs = @()
+    foreach ($g in @($del.grants)) {
+        foreach ($ou in @($g.ous)) { $pairs += , @((ConvertTo-OUDN $ou), $g.group, $g.rights, 'Allow') }
+    }
+    foreach ($d in @($del.deny)) {
+        foreach ($ou in @($d.ous)) {
+            foreach ($p in @($d.principals)) { $pairs += , @((ConvertTo-OUDN $ou), $p, 'deny-write', 'Deny') }
+        }
+    }
+    foreach ($pair in $pairs) {
+        $dn, $principal, $template, $type = $pair
+        $w = @(Sync-Aces $dn $principal $template $type)
+        if (-not $wantedByOU.ContainsKey($dn)) { $wantedByOU[$dn] = @() }
+        $wantedByOU[$dn] += $w
+    }
+
+    # Extra ACEs: each OU in the block, and the Domain Controllers OU.
+    $paths = @(@($del.grants | ForEach-Object { $_.ous }) + @($del.deny | ForEach-Object { $_.ous }) + @($del.noDelegation))
+    $scan = @($paths | Sort-Object -Unique | ForEach-Object { ConvertTo-OUDN $_ }) + "OU=Domain Controllers,$domainDN"
+    foreach ($dn in $scan) {
+        $known = @()
+        foreach ($k in @(if (Test-Field $del 'knownAces') { $del.knownAces })) {
+            if (@($k.ous | ForEach-Object { ConvertTo-OUDN $_ }) -contains $dn) {
+                $s = Get-PrincipalSid $k.principal
+                if ($s) { $known += "$s" }
+            }
+        }
+        $wanted = if ($wantedByOU.ContainsKey($dn)) { $wantedByOU[$dn] } else { @() }
+        Write-ExtraAceReport $dn $wanted $known
+    }
+}
+
+# Report only. SDProp copies the ACL of CN=AdminSDHolder to each protected
+# account (adminCount=1) every 60 minutes, so a delegation on an OU never
+# reaches them. This checks that the expected accounts are protected, lists
+# protected accounts that org.json does not expect, and reports each ACE on
+# AdminSDHolder from a principal that is not there by default.
+function Test-AdminSDHolder {
+    $del = Get-Delegation
+    if (-not $del) { return }
+    $d = "$($domain.DomainSID)"
+    $expected = @(if (Test-Field $del 'expectAdminCount') { $del.expectAdminCount })
+    $protected = @(Get-ADUser -Filter 'adminCount -eq 1' @ad)
+    $protectedSams = @($protected | ForEach-Object { $_.SamAccountName })
+    foreach ($sam in $expected | Where-Object { $protectedSams -notcontains $_ }) {
+        Write-Report "$sam has no adminCount=1. SDProp has not protected it yet, or it is not in a protected group."
+    }
+    foreach ($u in $protected | Where-Object { $expected -notcontains $_.SamAccountName }) {
+        # The built-in Administrator and krbtgt are protected by design.
+        if (@("$d-500", "$d-502") -contains "$($u.SID)") { continue }
+        Write-Report "$($u.SamAccountName) has adminCount=1, but delegation.expectAdminCount does not list it. If it left the protected groups, its ACL inheritance is still off, so no delegated right reaches it. A Domain Admin can clear adminCount and turn inheritance on again."
+    }
+
+    $holder = "CN=AdminSDHolder,CN=System,$domainDN"
+    if (-not (Test-DN $holder)) {
+        Write-Report "$holder was not found."
+        return
+    }
+    $default = @('S-1-1-0', 'S-1-5-9', 'S-1-5-10', 'S-1-5-11', 'S-1-5-18', 'S-1-5-32-544', 'S-1-5-32-554', 'S-1-5-32-560',
+        'S-1-5-32-561', "$d-512", "$d-517", "$d-519", "$d-526", "$d-527", "$d-553")
+    foreach ($ace in Get-ExplicitAces (Get-Acl -Path (Get-AclPath $holder))) {
+        $sid = "$($ace.IdentityReference.Value)"
+        if ($default -contains $sid) { continue }
+        Write-Report "AdminSDHolder has a non-default ACE: $($ace.AccessControlType) $($ace.ActiveDirectoryRights) for $(Get-SidName $sid). SDProp copies it to every protected account. Check it."
+    }
+
+    $ao = Find-Group 'Account Operators'
+    if ($ao) {
+        $members = @(Get-ADGroupMember -Identity $ao @ad | ForEach-Object { $_.SamAccountName })
+        if ($members.Count) {
+            Write-Report "Account Operators has members ($($members -join ', ')). By default it can create and delete accounts in every OU. Keep it empty."
+        }
+    }
+}
+
 function Invoke-Build {
     $daPathsAtStart = @(Get-DomainAdminPaths)
     $jit = Get-Jit
@@ -998,6 +1300,8 @@ function Invoke-Build {
         Sync-StandingGroups $jit
     }
     Sync-Tiering
+    Sync-Delegation
+    Test-AdminSDHolder
 }
 
 # --- Migrate -----------------------------------------------------------------
@@ -1027,6 +1331,8 @@ function Get-Destination($obj) {
             return $null
         }
         'computer' {
+            $t = if ($data.PSObject.Properties['tiering']) { $data.tiering } else { $null }
+            if ($t -and (Test-Field $t 'serverOU') -and $sam -and @($t.computers) -contains $sam.TrimEnd('$')) { return $t.serverOU }
             if ($oldPath -like '*Computers*') { return 'Computers' }
             return 'Servers'
         }

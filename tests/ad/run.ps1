@@ -46,15 +46,24 @@ function New-BaseDirectory([string]$AdminName = 'Administrator') {
     Reset-FakeAD
     Add-FakeObject "CN=Users,$dom" 'container' | Out-Null
     Add-FakeObject "CN=Builtin,$dom" 'container' | Out-Null
-    foreach ($g in 'Domain Admins', 'Enterprise Admins', 'Schema Admins') {
-        Add-FakeObject "CN=$g,CN=Users,$dom" 'group' @{ Sam = $g; Scope = 'Global' } | Out-Null
+    foreach ($g in @(@('Domain Admins', 512), @('Enterprise Admins', 519), @('Schema Admins', 518))) {
+        Add-FakeObject "CN=$($g[0]),CN=Users,$dom" 'group' @{ Sam = $g[0]; Scope = 'Global'; Sid = "$domainSid-$($g[1])" } | Out-Null
     }
-    Add-FakeObject "CN=Administrators,CN=Builtin,$dom" 'group' @{ Sam = 'Administrators'; Scope = 'DomainLocal' } | Out-Null
-    Add-FakeObject "CN=$AdminName,CN=Users,$dom" 'user' @{ Sam = $AdminName; Sid = "$domainSid-500" } | Out-Null
+    Add-FakeObject "CN=Administrators,CN=Builtin,$dom" 'group' @{ Sam = 'Administrators'; Scope = 'DomainLocal'; Sid = 'S-1-5-32-544' } | Out-Null
+    Add-FakeObject "CN=Account Operators,CN=Builtin,$dom" 'group' @{ Sam = 'Account Operators'; Scope = 'DomainLocal'; Sid = 'S-1-5-32-548' } | Out-Null
+    $a = Add-FakeObject "CN=$AdminName,CN=Users,$dom" 'user' @{ Sam = $AdminName; Sid = "$domainSid-500" }
+    $a.Attrs['adminCount'] = 1
     Add-ADGroupMember -Identity 'Domain Admins' -Members $AdminName
-    Add-FakeObject "OU=Domain Controllers,$dom" 'organizationalUnit' @{ Protected = $true } | Out-Null
+    $dcOU = Add-FakeObject "OU=Domain Controllers,$dom" 'organizationalUnit' @{ Protected = $true }
+    Add-FakeDefaultOUAces $dcOU
     foreach ($dc in 'LOOM', 'SPINDLE') {
         Add-FakeObject "CN=$dc,OU=Domain Controllers,$dom" 'computer' @{ Sam = "$dc`$" } | Out-Null
+    }
+    # AdminSDHolder with a part of its default ACL.
+    Add-FakeObject "CN=System,$dom" 'container' | Out-Null
+    $h = Add-FakeObject "CN=AdminSDHolder,CN=System,$dom" 'container'
+    foreach ($ace in @(@('S-1-5-18', 983551), @("$domainSid-512", 983551), @('S-1-5-11', 131220), @('S-1-5-32-544', 983551))) {
+        $h.Acl.Add((New-FakeAce $ace[0] $ace[1]))
     }
 }
 
@@ -113,6 +122,12 @@ Add-ADGroupMember -Identity 'DnsAdmins' -Members 'adm_mayonej'
 Add-ADGroupMember -Identity 'Domain Admins' -Members 'mayonej'
 Add-ADGroupMember -Identity 'lnx-skein-users' -Members 'mayonej'
 Add-ADGroupMember -Identity 'lnx-skein-users' -Members 'vi'
+# SDProp state: the admin accounts are protected. mayonej was a Domain Admin,
+# so it still has adminCount=1. svc-ansible has none yet. A person gave
+# stranger a right on AdminSDHolder.
+$adm.Attrs['adminCount'] = 1
+$mayonej.Attrs['adminCount'] = 1
+Add-FakeAce "CN=AdminSDHolder,CN=System,$dom" (New-FakeAce $stranger.Sid 32)
 
 # --- Build ---------------------------------------------------------------------
 $before = Get-FakeADState
@@ -216,9 +231,61 @@ Check 'Administrator leaves Enterprise Admins and Schema Admins, stays in Domain
 Check 'JIT off: standing admin reported, not removed' ((MembersOf 'DnsAdmins') -contains 'adm_mayonej' -and
     $r.Output -match 'adm_mayonej is a standing member of DnsAdmins' -and $r.Output -match 'adm_mayonej is a direct member of Enterprise Admins')
 
+# Delegation
+$userGuid = 'bf967aba-0de6-11d0-a285-00aa003049e2'
+$computerGuid = 'bf967a86-0de6-11d0-a285-00aa003049e2'
+$resetGuid = '00299570-246d-11d0-a768-00aa006e0529'
+function SidOf([string]$Sam) { (Get-ADObject -Filter "SamAccountName -eq '$Sam'").SID }
+function AcesFor([string]$DN, [string]$Sam) { @(Get-FakeAces $DN | Where-Object { $_.IdentityReference.Value -eq (SidOf $Sam) }) }
+Check 'role groups GG-T1-Admins and GG-T2-Helpdesk exist, Global, empty' (
+    @('GG-T1-Admins', 'GG-T2-Helpdesk' | Where-Object { (G $_).GroupScope -eq 'Global' -and (G $_).DistinguishedName -like "*,OU=Roles,OU=Groups,$new" -and -not @(MembersOf $_).Count }).Count -eq 2)
+Check 'DL groups are DomainLocal in Resources and hold the role groups (AGDLP)' ((G 'DL-Users-PasswordReset').GroupScope -eq 'DomainLocal' -and
+    (G 'DL-Servers-ComputerAdmin').DistinguishedName -eq "CN=DL-Servers-ComputerAdmin,OU=Resources,OU=Groups,$new" -and
+    ((MembersOf 'DL-Users-PasswordReset' | Sort-Object) -join ',') -eq 'GG-T1-Admins,GG-T2-Helpdesk' -and ((MembersOf 'DL-Servers-ComputerAdmin') -join ',') -eq 'GG-T1-Admins')
+$helpdeskOUs = "OU=Staff,OU=Users,$new", "OU=Board-Only,OU=Users,$new", "OU=Sponsored-Projects,OU=Users,$new"
+Check 'helpdesk: reset, unlock, pwdLastSet, read on user objects in the three people OUs' (@($helpdeskOUs | Where-Object {
+            $a = @(AcesFor $_ 'DL-Users-PasswordReset')
+            $a.Count -eq 4 -and @($a | Where-Object { $_.AccessControlType -eq 'Allow' -and "$($_.InheritedObjectType)" -eq $userGuid -and $_.PropagationFlags -eq 'InheritOnly' }).Count -eq 4 -and
+            @($a | Where-Object { "$($_.ObjectType)" -eq $resetGuid -and $_.ActiveDirectoryRights -eq 256 }).Count -eq 1
+        }).Count -eq 3)
+Check 'computer admin: create/delete and full control on Servers and Computers' (@("OU=Servers,$new", "OU=Computers,$new" | Where-Object {
+            $a = @(AcesFor $_ 'DL-Servers-ComputerAdmin')
+            $a.Count -eq 2 -and @($a | Where-Object { $_.ActiveDirectoryRights -eq 983551 -and "$($_.InheritedObjectType)" -eq $computerGuid }).Count -eq 1 -and
+            @($a | Where-Object { $_.ActiveDirectoryRights -eq 3 -and "$($_.ObjectType)" -eq $computerGuid }).Count -eq 1
+        }).Count -eq 2)
+Check 'deny on Admin-Accounts and Service-Accounts for both DL groups, no allow' (@("OU=Admin-Accounts,$new", "OU=Service-Accounts,$new" | ForEach-Object {
+            $dn = $_; 'DL-Users-PasswordReset', 'DL-Servers-ComputerAdmin' | Where-Object {
+                $a = @(AcesFor $dn $_); $a.Count -eq 2 -and -not ($a | Where-Object { $_.AccessControlType -ne 'Deny' }) -and
+                @($a | Where-Object { $_.ActiveDirectoryRights -eq 256 -and $_.InheritanceFlags -eq 'ContainerInherit' -and $_.PropagationFlags -eq 'None' }).Count -eq 1
+            } }).Count -eq 4)
+Check 'deny on Servers/Tier0 for both DL groups and svc-lnx-join' (@('DL-Users-PasswordReset', 'DL-Servers-ComputerAdmin', 'svc-lnx-join' | Where-Object {
+            @(AcesFor "OU=Tier0,OU=Servers,$new" $_ | Where-Object { $_.AccessControlType -eq 'Deny' }).Count -eq 2 }).Count -eq 3)
+Check 'no delegation on Members, Disabled, Domain Controllers, Admin-Accounts/Tier1' (@("OU=Members,OU=Users,$new", "OU=Disabled,$new", "OU=Domain Controllers,$dom", "OU=Tier1,OU=Admin-Accounts,$new" | Where-Object {
+            @(AcesFor $_ 'DL-Users-PasswordReset').Count -or @(AcesFor $_ 'DL-Servers-ComputerAdmin').Count }).Count -eq 0)
+Check 'AdminSDHolder: extra ACE and adminCount drift reported' ($r.Output -match 'AdminSDHolder has a non-default ACE: Allow 32 for stranger' -and
+    $r.Output -match 'REPORT\s+mayonej has adminCount=1, but delegation.expectAdminCount' -and $r.Output -match 'REPORT\s+svc-ansible has no adminCount=1' -and
+    $r.Output -notmatch 'adm_mayonej has (no )?adminCount' -and $r.Output -notmatch 'Administrator has adminCount')
+Check 'admin account in the old tree: reported for Migrate, not moved by Build' ((U 'adm_mayonej').DistinguishedName -like "*,$old" -and
+    $r.Output -match 'adm_mayonej is in OU=Admin-Accounts,OU=Administrative,OU=Patchwork-Objects[^\n]*Migrate moves it')
+
 $r = Converge Build
 Check 'Build twice: zero changes' ($r.Changes -eq 0 -and $r.Errors -eq 0)
 if ($r.Changes) { Write-Host $r.Output }
+
+# Delegation drift: a hand-made extra right on Admin-Accounts, one managed
+# ACE removed, and the join account's known ACE on Servers.
+Add-FakeAce "OU=Admin-Accounts,$new" (New-FakeAce (SidOf 'GG-Board') 983551)
+Add-FakeAce "OU=Servers,$new" (New-FakeAce (SidOf 'svc-lnx-join') 3 'Allow' ([guid]$computerGuid))
+Remove-FakeAces "OU=Staff,OU=Users,$new" { $_.IdentityReference.Value -eq (SidOf 'DL-Users-PasswordReset') -and "$($_.ObjectType)" -eq $resetGuid }
+$before = Get-FakeADState
+$r = Converge Build -WhatIf
+Check 'delegation drift -WhatIf changes nothing' ((Get-FakeADState) -eq $before -and $r.Output -match 'WOULD\s+Allow for DL-Users-PasswordReset: reset password : OU=Staff')
+$r = Converge Build
+Check 'delegation drift: missing ACE added back, nothing else changed' ($r.Errors -eq 0 -and $r.Changes -eq 1 -and
+    @(AcesFor "OU=Staff,OU=Users,$new" 'DL-Users-PasswordReset' | Where-Object { "$($_.ObjectType)" -eq $resetGuid }).Count -eq 1)
+Check 'delegation drift: extra ACE reported and kept, known ACE not reported' ($r.Output -match "OU=Admin-Accounts,$new has an extra ACE: allow 983551 for GG-Board" -and
+    @(AcesFor "OU=Admin-Accounts,$new" 'GG-Board').Count -eq 1 -and $r.Output -notmatch 'extra ACE[^\n]*svc-lnx-join')
+Remove-FakeAces "OU=Admin-Accounts,$new" { $_.IdentityReference.Value -eq (SidOf 'GG-Board') }
 
 # Drift: a changed PSO, an extra subject and an unknown PSO.
 Set-ADFineGrainedPasswordPolicy -Identity 'PSO-Staff' -MinPasswordLength 8
@@ -260,9 +327,9 @@ Check 'Migrate has no errors' ($r.Errors -eq 0)
 if ($r.Errors) { Write-Host $r.Output }
 Check 'mayonej moved to Staff and still protected' ((U 'mayonej').DistinguishedName -eq "CN=Jasper Mayone,OU=Staff,OU=Users,$new" -and (U 'mayonej').ProtectedFromAccidentalDeletion)
 Check 'adam.sidwa manager follows the move' ((U 'adam.sidwa').manager -eq (U 'mayonej').DistinguishedName)
-Check 'adm_mayonej moved to Admin-Accounts' ((U 'adm_mayonej').DistinguishedName -eq "CN=Jasper Mayone (Admin),OU=Admin-Accounts,$new")
+Check 'adm_mayonej moved to Admin-Accounts/Tier0' ((U 'adm_mayonej').DistinguishedName -eq "CN=Jasper Mayone (Admin),OU=Tier0,OU=Admin-Accounts,$new")
 Check 'klukask moved to Board-Only' ((U 'klukask').DistinguishedName -eq "CN=Kieran Klukas,OU=Board-Only,OU=Users,$new")
-Check 'svc-ansible moved to Admin-Accounts' ((U 'svc-ansible').DistinguishedName -eq "CN=svc-ansible,OU=Admin-Accounts,$new")
+Check 'svc-ansible moved to Admin-Accounts/Tier0' ((U 'svc-ansible').DistinguishedName -eq "CN=svc-ansible,OU=Tier0,OU=Admin-Accounts,$new")
 foreach ($svc in 'svc-lnx-join', 'svc-dhcp-dns', 'svc-pve-ldap') {
     Check "$svc moved to Service-Accounts" ((U $svc).DistinguishedName -eq "CN=$svc,OU=Service-Accounts,$new")
 }
@@ -270,6 +337,8 @@ Check 'vi moved to Disabled' ((U 'vi').DistinguishedName -eq "CN=vi,OU=Disabled,
 Check 'member1 moved to Users/Members' ((U 'member1').DistinguishedName -eq "CN=member1,OU=Members,OU=Users,$new")
 Check 'lnx-skein-users DomainLocal in Resources' ((G 'lnx-skein-users').GroupScope -eq 'DomainLocal' -and (G 'lnx-skein-users').DistinguishedName -eq "CN=lnx-skein-users,OU=Resources,OU=Groups,$new")
 Check 'SKEIN moved to Servers' ([bool](Get-ADObject -Filter "distinguishedName -eq 'CN=SKEIN,OU=Servers,$new'"))
+Check 'BOBBIN and SHUTTLE (Tier 0) moved to Servers/Tier0' ([bool](Get-ADObject -Filter "distinguishedName -eq 'CN=BOBBIN,OU=Tier0,OU=Servers,$new'") -and
+    [bool](Get-ADObject -Filter "distinguishedName -eq 'CN=SHUTTLE,OU=Tier0,OU=Servers,$new'"))
 Check 'LAPTOP1 moved to Computers' ([bool](Get-ADObject -Filter "distinguishedName -eq 'CN=LAPTOP1,OU=Computers,$new'"))
 Check 'stranger stays and is reported' ((U 'stranger').DistinguishedName -like "*,$old" -and $r.Output -match 'No destination for user CN=stranger')
 
@@ -288,6 +357,28 @@ Check 'Prune deletes the old tree' ($r.Errors -eq 0 -and -not (Get-ADObject -Fil
 $r = Converge Build
 Check 'Build after migration: zero changes' ($r.Changes -eq 0 -and $r.Errors -eq 0 -and $r.Output -notmatch 'Migrate moves it')
 if ($r.Changes) { Write-Host $r.Output }
+
+# Build moves an object down into a child OU of its OU: the live state
+# before the tier OUs (adm_mayonej in Admin-Accounts, BOBBIN in Servers).
+Move-ADObject -Identity 'adm_mayonej' -TargetPath "OU=Admin-Accounts,$new"
+Move-ADObject -Identity 'BOBBIN$' -TargetPath "OU=Servers,$new"
+Set-ADObject -Identity 'BOBBIN$' -ProtectedFromAccidentalDeletion $true
+Set-ADObject -Identity 'mayonej' -ProtectedFromAccidentalDeletion $false
+Move-ADObject -Identity 'mayonej' -TargetPath "OU=Disabled,$new"
+$before = Get-FakeADState
+$r = Converge Build -WhatIf
+Check 'move down -WhatIf changes nothing' ((Get-FakeADState) -eq $before -and
+    $r.Output -match "WOULD\s+Move to OU=Tier0,OU=Admin-Accounts,$new \(a child OU of its OU\) : CN=Jasper Mayone \(Admin\)" -and
+    $r.Output -match "WOULD\s+Move to OU=Tier0,OU=Servers,$new [^\n]*: CN=BOBBIN")
+$r = Converge Build
+Check 'move down: adm_mayonej to Tier0, BOBBIN to Servers/Tier0, still protected, still in the silo' ($r.Errors -eq 0 -and
+    (U 'adm_mayonej').DistinguishedName -eq "CN=Jasper Mayone (Admin),OU=Tier0,OU=Admin-Accounts,$new" -and
+    (Get-ADObject -Filter "SamAccountName -eq 'BOBBIN$'").DistinguishedName -eq "CN=BOBBIN,OU=Tier0,OU=Servers,$new" -and
+    (Get-ADObject -Filter "SamAccountName -eq 'BOBBIN$'").ProtectedFromAccidentalDeletion -and (SiloSams) -match 'adm_mayonej' -and (SiloSams) -match 'BOBBIN')
+Check 'move up or sideways is only reported' ((U 'mayonej').DistinguishedName -eq "CN=Jasper Mayone,OU=Disabled,$new" -and
+    $r.Output -match "mayonej is in OU=Disabled,$new, not OU=Staff,OU=Users,$new")
+Move-ADObject -Identity 'mayonej' -TargetPath "OU=Staff,OU=Users,$new"
+Set-ADObject -Identity 'mayonej' -ProtectedFromAccidentalDeletion $true
 
 # --- Just-in-time admin ---------------------------------------------------------
 $jitOn = New-OrgJson { param($o) $o.tiering.jit.enabled = $true }

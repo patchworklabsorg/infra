@@ -135,8 +135,83 @@ let
         (jit.removeStanding or false) && !jit.enabled
       ) "tiering.jit.removeStanding needs tiering.jit.enabled";
 
+  # Delegation: rights below Domain Admins (converge.ps1 Sync-Delegation).
+  delegation = org.delegation or null;
+  resourceNames = map (g: g.name) org.resourceGroups;
+  rightsTemplates = [
+    "user-helpdesk"
+    "computer-admin"
+  ];
+  # True when OU path a is b or below b.
+  atOrBelow = a: b: a == b || lib.hasPrefix "${b}/" a;
+  delegationErrors =
+    if delegation == null then
+      [ ]
+    else
+      let
+        inherit (delegation) grants deny noDelegation;
+        denyOUs = lib.concatMap (d: d.ous) deny;
+        # A deny for principal p on OU m covers n when n is m or below m.
+        deniedAt = n: p: lib.any (d: lib.elem p d.principals && lib.any (m: atOrBelow n m) d.ous) deny;
+        principals = resourceNames ++ roleNames ++ sams;
+        mustProtect = [
+          "Admin-Accounts"
+          "Service-Accounts"
+          "Users/Members"
+        ];
+      in
+      map (g: "delegation.grants: ${g.group} is not a resource group. AGDLP: only domain local groups get rights.") (
+        builtins.filter (g: !lib.elem g.group resourceNames) grants
+      )
+      ++ map (g: "delegation.grants: ${g.group}: unknown rights template ${g.rights}") (
+        builtins.filter (g: !lib.elem g.rights rightsTemplates) grants
+      )
+      ++ lib.concatMap (
+        g:
+        lib.concatMap (
+          ou:
+          lib.optional (!lib.elem ou ouPaths) "delegation.grants: ${g.group}: OU ${ou} is not in ous"
+          ++ map (n: "delegation.grants: ${g.group} on ${ou} is in or below ${n}, which is in noDelegation") (
+            builtins.filter (n: atOrBelow ou n) noDelegation
+          )
+          ++ map (
+            n: "delegation.grants: ${g.group} on ${ou} is inherited by ${n} (noDelegation). Add a deny for ${g.group} on ${n}."
+          ) (builtins.filter (n: n != ou && atOrBelow n ou && !(deniedAt n g.group)) noDelegation)
+        ) g.ous
+      ) grants
+      ++ map (ou: "delegation: OU ${ou} is not in ous") (
+        builtins.filter (ou: !lib.elem ou ouPaths) (denyOUs ++ noDelegation)
+      )
+      ++ map (ou: "delegation.deny: ${ou} must also be in noDelegation") (
+        builtins.filter (ou: !lib.elem ou noDelegation) denyOUs
+      )
+      ++ map (ou: "delegation.noDelegation must list ${ou}") (
+        builtins.filter (ou: !lib.elem ou noDelegation) mustProtect
+      )
+      ++ map (p: "delegation.deny: ${p} is not a group or user in org.json") (
+        builtins.filter (p: !lib.elem p principals) (lib.concatMap (d: d.principals) deny)
+      )
+      ++ lib.concatMap (
+        k:
+        lib.optional (!lib.elem k.principal sams) "delegation.knownAces: ${k.principal} is not a user"
+        ++ map (ou: "delegation.knownAces: ${k.principal}: OU ${ou} is not in ous") (
+          builtins.filter (ou: !lib.elem ou ouPaths) k.ous
+        )
+      ) (delegation.knownAces or [ ])
+      ++ map (s: "delegation.expectAdminCount: ${s} is not an admin account") (
+        builtins.filter (s: !lib.elem s adminSams) (delegation.expectAdminCount or [ ])
+      )
+      ++ map (u: "${u.sam}: an admin account must be in Admin-Accounts/Tier0, Tier1 or Tier2") (
+        builtins.filter (u: u.kind == "admin" && !lib.hasPrefix "Admin-Accounts/Tier" u.ou) org.users
+      )
+      ++ lib.optionals (tiering != null && tiering ? serverOU) (
+        lib.optional (!lib.elem tiering.serverOU ouPaths) "tiering.serverOU ${tiering.serverOU} is not in ous"
+        ++ lib.optional (!lib.elem tiering.serverOU noDelegation) "tiering.serverOU must be in delegation.noDelegation"
+      );
+
   errors =
     tieringErrors
+    ++ delegationErrors
     ++ map (g: "builtinAdministrator.removeFrom: ${g} is not in privileged.groups") (
       builtins.filter (g: !lib.elem g org.privileged.groups) (org.builtinAdministrator.removeFrom or [ ])
     )

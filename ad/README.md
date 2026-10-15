@@ -44,9 +44,11 @@ These accounts existed before `org.json`. They keep their sAMAccountNames:
 | `Users/Staff`, `Users/Board-Only` | Staff, and directors with no operational role |
 | `Users/Sponsored-Projects/<project>` | Organizers of a fiscally sponsored project |
 | `Users/Members` | Community members (Weave) |
-| `Service-Accounts`, `Admin-Accounts`, `Disabled` | Non-human accounts, tier 0 accounts, suspended accounts |
+| `Service-Accounts`, `Disabled` | Non-human accounts, suspended accounts |
+| `Admin-Accounts/Tier0`, `Tier1`, `Tier2` | Admin accounts by tier. `adm_mayonej` and `svc-ansible` are in `Tier0`. `Tier1` and `Tier2` are empty. |
 | `Groups/Roles`, `Groups/Resources` | Global role groups, domain local resource groups |
 | `Computers`, `Servers` | Workstations; member servers and lab hosts |
+| `Servers/Tier0` | Tier 0 member servers: bobbin, shuttle, and spool when it exists. No Tier 1 rights. |
 
 ## Run it
 
@@ -141,6 +143,52 @@ flowchart LR
 | `jit.defaultHours`, `jit.maxHours` | 1, 4 | The grant length. `ad.yml -t jit-endpoint` copies these to the DCs. `nix flake check` refuses a maximum over 4 hours. |
 
 The order is in `../ansible/README.md`, "Tier 0 run order". Test a grant before you set `removeStanding`. `nix flake check` refuses `removeStanding` without `enabled`.
+
+## Delegation
+
+The goal: an admin cannot reset another admin. Only Domain Admins can. Domain Admins is Tier 0 only (`adm_mayonej` through `GG-Domain-Admins-Tier0`, and `svc-ansible`). No ACL can stop a Domain Admin. So the protection is to keep Domain Admins small, and to give the lower tiers rights that never reach an admin or a service account.
+
+The exception that the request named: `adm_mayonej` can reset the built-in `Administrator`. It is a Domain Admin, so it can already do that. Nothing extra is set for it. But the GPO `T0-Builtin-Administrator-Disabled` (`ansible/ad.yml -t admin-disabled-gpo`) keeps the account disabled on the DCs. To enable it for break-glass, a Domain Admin must first disable the GPO link on the domain root. Otherwise the DCs disable the account again at the next security policy refresh. See [`TIERING.md`](TIERING.md) section 4 for the steps.
+
+The `delegation` block in `org.json` holds the rights. Build makes AD match it.
+
+| Role group (global) | Resource group (domain local, holds the ACEs) | OU | Rights | Deny |
+|---|---|---|---|---|
+| `GG-T2-Helpdesk` | `DL-Users-PasswordReset` | `Users/Staff`, `Users/Board-Only`, `Users/Sponsored-Projects` and their child OUs | On user objects: reset password, write `lockoutTime` (unlock), write `pwdLastSet` (change at next logon), read all | `Admin-Accounts` (all tiers), `Service-Accounts`, `Servers/Tier0` |
+| `GG-T1-Admins` | `DL-Users-PasswordReset` | same as above | same as above | same as above |
+| `GG-T1-Admins` | `DL-Servers-ComputerAdmin` | `Servers`, `Computers` and their child OUs | Create and delete computer objects. Full control of computer objects (reset password, DNS host name, SPN and the rest) | `Admin-Accounts` (all tiers), `Service-Accounts`, `Servers/Tier0` |
+| `svc-lnx-join` (not a group) | none (`ansible/ad.yml -t join-delegation` sets its rights) | `Servers`, `Computers` | Join computers | `Servers/Tier0` |
+
+```mermaid
+flowchart LR
+  t2["GG-T2-Helpdesk (global)"] --> pr["DL-Users-PasswordReset (domain local)"]
+  t1["GG-T1-Admins (global)"] --> pr
+  t1 --> ca["DL-Servers-ComputerAdmin (domain local)"]
+  pr -- "reset, unlock, pwdLastSet" --> people["Users/Staff, Board-Only, Sponsored-Projects"]
+  ca -- "computer objects" --> srv["Servers, Computers"]
+  pr -. deny .-> adm["Admin-Accounts/*, Service-Accounts, Servers/Tier0"]
+  ca -. deny .-> adm
+  da["Domain Admins (Tier 0 only)"] -- "everything" --> adm
+```
+
+Rules:
+
+- **Nothing on `Users/Members`.** Weave owns it. Nothing on `Disabled`, and nothing on the Domain Controllers OU.
+- **No group except Domain Admins has rights on `Admin-Accounts`.** A Tier 1 admin account (in `Admin-Accounts/Tier1`) cannot reset another Tier 1 account or a Tier 0 account. `DL-Users-PasswordReset` and `DL-Servers-ComputerAdmin` also get an explicit deny there, in case somebody grants them a right on a parent OU later. The deny covers write, create, delete, permissions, owner and every extended right (reset password too). Read stays allowed.
+- **Tier 0 servers are in `Servers/Tier0`.** A Tier 1 admin with full control of the bobbin computer object could take over the CA (for example with resource-based constrained delegation), and with it the forest. So the deny on `Servers/Tier0` beats the right that `Servers` gives. The same deny covers `svc-lnx-join`, whose join rights on `Servers` reached bobbin and shuttle before this change. `tiering.serverOU` names the OU. Build moves each computer in `tiering.computers` that is not a DC into it.
+- **Both role groups are empty.** Add a member only after you make a Tier 1 or Tier 2 admin account in `Admin-Accounts/Tier1` or `Tier2`. Do not add a daily account.
+- **Helpdesk can reset each person in the three people OUs.** That includes `mayonej`, whose `GG-Infra` membership gives sudo on the lab hosts. Keep this in mind before you add a member to `GG-T2-Helpdesk`. An account with `adminCount=1` (it was in a protected group once) has inheritance off. No delegated right reaches it until a Domain Admin clears `adminCount` and turns inheritance on again. Build reports each such account.
+- **Extra ACEs.** Build adds a missing ACE, and never removes one. It reports each explicit allow ACE that gives more than read on an OU in the block (and on the Domain Controllers OU), unless it is a default ACE (SYSTEM, Domain Admins, Enterprise Admins, Administrators, Account Operators, Print Operators) or `delegation.knownAces` lists it. `Account Operators` can create and delete accounts in every OU by default. Keep it empty. Build reports its members.
+- **AdminSDHolder.** SDProp copies the ACL of `CN=AdminSDHolder` to each protected account every 60 minutes. Build only reports: an account in `delegation.expectAdminCount` without `adminCount=1`, an account with `adminCount=1` that is not in that list, and an ACE on AdminSDHolder from a principal that is not there by default.
+
+### How Build moves the admin accounts and the Tier 0 servers
+
+`adm_mayonej` and `svc-ansible` are in `Admin-Accounts`, and bobbin and shuttle are in `Servers`. Build moves an object only **down**, into a child OU of the OU that it is in now, inside `OU=Patchwork`. The GPOs of the old OU still apply in the child OU, and group memberships, the silo membership and `manager` follow the move. So the first Build after this change moves:
+
+- `adm_mayonej`, `svc-ansible`: `Admin-Accounts` to `Admin-Accounts/Tier0`.
+- `BOBBIN`, `SHUTTLE`: `Servers` to `Servers/Tier0`.
+
+Each move is one `Move to ... (a child OU of its OU)` line. Any other difference (up, or to another branch) stays a REPORT for Migrate.
 
 ## Add a sponsored project
 

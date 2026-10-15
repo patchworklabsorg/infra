@@ -38,6 +38,9 @@
 #                           last one, or while replication fails
 #   -t jit-endpoint         PatchworkT0 JEA endpoint for JIT Domain Admins.
 #                           Fails while the AD PAM feature is off
+#   -t admin-disabled-gpo   GPO T0-Builtin-Administrator-Disabled: "Accounts:
+#                           Administrator account status" = Disabled, on the
+#                           DCs only (domain root link, security filter)
 # ============================================================================
 - name: AD maintenance
   hosts: domain_controllers
@@ -1342,3 +1345,176 @@
       ansible.builtin.debug:
         var: ad_jea_check.result
       tags: [jit-endpoint, never]
+
+    # ---------------------------------------------------- admin-disabled-gpo
+    # TIERING.md section 4. GPO T0-Builtin-Administrator-Disabled sets
+    # Computer Configuration > Windows Settings > Security Settings > Local
+    # Policies > Security Options > "Accounts: Administrator account status"
+    # = Disabled ([System Access] EnableAdminAccount = 0 in GptTmpl.inf).
+    #
+    # A DC reads this setting ONLY from a GPO linked to the domain root, not
+    # from the Domain Controllers OU (Microsoft KB 259576, "Group Policy
+    # application rules for domain controllers"). So the GPO is linked to
+    # the domain root, and a security filter applies it to the "Domain
+    # Controllers" group only. Authenticated Users keeps Read (MS16-072) but
+    # not Apply, so member servers and workstations do not apply it. LAPS
+    # manages the local Administrator there.
+    #
+    # Same file handling as -t default-domain-gpo: the local SYSVOL copy
+    # (UTF-16 LE with BOM), then the computer version in GPT.INI and in AD.
+    # The filter is set before the link, so no member server ever applies it.
+    - name: Admin disabled GPO | Exists, sets EnableAdminAccount = 0, applies to DCs only, linked
+      ansible.windows.win_powershell:
+        parameters:
+          name: "{{ ad_admin_disabled_gpo }}"
+          domain: "{{ domain_name }}"
+          server: "{{ ad_dcs[0].name }}"
+          apply_group: "{{ ad_admin_disabled_gpo_apply_group }}"
+        script: |
+          [CmdletBinding(SupportsShouldProcess)]
+          param([string]$name, [string]$domain, [string]$server, [string]$apply_group)
+          $Ansible.Changed = $false
+          if (-not (Get-Module -ListAvailable GroupPolicy)) { throw 'The GroupPolicy module (GPMC) is missing on this DC.' }
+          Import-Module GroupPolicy, ActiveDirectory
+          $gp = @{ Domain = $domain; Server = $server }
+          $ad = Get-ADDomain -Server $server
+          $target = $ad.DistinguishedName
+          # Security CSE + Security Settings snap-in, as GPMC writes them.
+          $ext = '[{827D319E-6EAC-11D2-A4EA-00C04F79F83A}{803E14A0-B4FB-11D0-A0D0-00A0C90F574B}]'
+          $done = @(); $warn = @()
+
+          $gpo = Get-GPO -Name $name @gp -ErrorAction SilentlyContinue
+          if (-not $gpo) {
+            $Ansible.Changed = $true
+            if (-not $PSCmdlet.ShouldProcess($name, 'Create GPO')) {
+              $Ansible.Result = @{ changes = @("create GPO $name", 'user settings off', "apply only to $apply_group, Authenticated Users read only",
+                'EnableAdminAccount = 0', 'raise the version', "link to $target"); warnings = $warn }
+              return
+            }
+            $gpo = New-GPO -Name $name @gp -Comment ('TIERING.md section 4. Accounts: Administrator account status = Disabled, on the DCs only. ' +
+              'Unlink it before you enable Administrator for break-glass. Managed by ansible/ad.yml -t admin-disabled-gpo.')
+            $done += "create GPO $name"
+          }
+          if ("$($gpo.GpoStatus)" -ne 'UserSettingsDisabled') {
+            if ($PSCmdlet.ShouldProcess($name, 'Disable user settings')) { $gpo.GpoStatus = 'UserSettingsDisabled' }
+            $done += 'user settings off'
+          }
+
+          # Security filter: only the DCs apply it.
+          $au = Get-GPPermission -Guid $gpo.Id -TargetName 'Authenticated Users' -TargetType Group @gp -ErrorAction SilentlyContinue
+          if (-not $au -or "$($au.Permission)" -ne 'GpoRead') {
+            if ($PSCmdlet.ShouldProcess($name, 'Authenticated Users: read only')) {
+              Set-GPPermission -Guid $gpo.Id -TargetName 'Authenticated Users' -TargetType Group -PermissionLevel GpoRead -Replace @gp | Out-Null
+            }
+            $done += "Authenticated Users: $(if ($au) { $au.Permission } else { 'none' }) -> GpoRead"
+          }
+          $dc = Get-GPPermission -Guid $gpo.Id -TargetName $apply_group -TargetType Group @gp -ErrorAction SilentlyContinue
+          if (-not $dc -or "$($dc.Permission)" -ne 'GpoApply') {
+            if ($PSCmdlet.ShouldProcess($name, "$apply_group : apply")) {
+              Set-GPPermission -Guid $gpo.Id -TargetName $apply_group -TargetType Group -PermissionLevel GpoApply -Replace @gp | Out-Null
+            }
+            $done += "${apply_group}: $(if ($dc) { $dc.Permission } else { 'none' }) -> GpoApply"
+          }
+
+          # GptTmpl.inf: [System Access] EnableAdminAccount = 0.
+          $guid = "{$($gpo.Id.ToString().ToUpper())}"
+          $sysvol = (Get-ItemProperty 'HKLM:\SYSTEM\CurrentControlSet\Services\Netlogon\Parameters').SysVol
+          $root = Join-Path $sysvol "$($ad.DNSRoot)\Policies\$guid"
+          $inf = Join-Path $root 'MACHINE\Microsoft\Windows NT\SecEdit\GptTmpl.inf'
+          $ini = Join-Path $root 'GPT.INI'
+          if (-not (Test-Path $root)) { throw "Not found: $root. Wait for SYSVOL, then run again." }
+          $fileChange = $null
+          if (Test-Path $inf) {
+            $reader = New-Object System.IO.StreamReader($inf, $true)
+            $text = $reader.ReadToEnd(); $enc = $reader.CurrentEncoding; $reader.Close()
+          } else {
+            $text = "[Unicode]`r`nUnicode=yes`r`n[Version]`r`nsignature=`"`$CHICAGO`$`"`r`nRevision=1`r`n"
+            $enc = [System.Text.Encoding]::Unicode
+            $fileChange = 'create GptTmpl.inf'
+          }
+          $lines = [System.Collections.Generic.List[string]]($text -split "`r`n")
+          $start = $lines.FindIndex([Predicate[string]]{ param($l) $l.Trim() -eq '[System Access]' })
+          if ($start -lt 0) {
+            $at = $lines.FindIndex([Predicate[string]]{ param($l) $l.Trim() -eq '[Version]' })
+            if ($at -lt 0) { $at = $lines.Count }
+            $lines.Insert($at, '[System Access]'); $start = $at
+          }
+          $end = $start + 1
+          while ($end -lt $lines.Count -and -not $lines[$end].TrimStart().StartsWith('[')) { $end++ }
+          $have = $null
+          for ($i = $start + 1; $i -lt $end; $i++) {
+            if ($lines[$i] -match '^\s*EnableAdminAccount\s*=\s*(\S*)') { $have = $Matches[1]; $lines[$i] = 'EnableAdminAccount = 0'; break }
+          }
+          if ($null -eq $have) { $lines.Insert($end, 'EnableAdminAccount = 0') }
+          if ("$have" -ne '0') { $fileChange = "EnableAdminAccount $(if ($null -eq $have) { '(none)' } else { $have }) -> 0" }
+
+          $gpoDN = "CN=$guid,CN=Policies,CN=System,$target"
+          $obj = Get-ADObject -Identity $gpoDN -Properties versionNumber, gPCMachineExtensionNames -Server $server
+          $haveExt = "$($obj.gPCMachineExtensionNames)"
+          $newExt = $null
+          # The security CSE must head one entry. Its tool GUIDs may differ.
+          if ($haveExt -notmatch '\[\{827D319E-6EAC-11D2-A4EA-00C04F79F83A\}') {
+            # Keep the list sorted by CSE GUID, as GPMC does.
+            $entries = @([regex]::Matches($haveExt, '\[[^\]]*\]') | ForEach-Object { $_.Value }) + $ext
+            $newExt = ($entries | Sort-Object -Unique) -join ''
+          }
+
+          $version = $null
+          if ($fileChange -or $newExt) {
+            $iniText = if (Test-Path $ini) { Get-Content -Raw -Path $ini } else { "[General]`r`n" }
+            $iniVersion = if ($iniText -match '(?m)^Version=(\d+)') { [int64]$Matches[1] } else { 0 }
+            $base = [math]::Max($iniVersion, [int64]$obj.versionNumber)
+            # User version in the high 16 bits, computer version in the low 16.
+            if (($base -band 0xFFFF) -eq 0xFFFF) { throw "The computer version of the GPO is at its maximum ($base)." }
+            $version = $base + 1
+            if ($fileChange) { $done += $fileChange }
+            if ($newExt) { $done += "gPCMachineExtensionNames += security CSE" }
+            $done += "version $base -> $version"
+            if ($PSCmdlet.ShouldProcess($inf, "EnableAdminAccount = 0, version $version")) {
+              New-Item -ItemType Directory -Force -Path (Split-Path $inf) | Out-Null
+              [System.IO.File]::WriteAllText($inf, ($lines -join "`r`n"), $enc)
+              $newIni = if ($iniText -match '(?m)^Version=\d+') { $iniText -replace '(?m)^Version=\d+', "Version=$version" }
+                        else { $iniText.TrimEnd() + "`r`nVersion=$version`r`n" }
+              Set-Content -Path $ini -Value $newIni -NoNewline -Encoding ASCII
+              $replace = @{ versionNumber = [int]$version }
+              if ($newExt) { $replace.gPCMachineExtensionNames = $newExt }
+              Set-ADObject -Identity $gpoDN -Replace $replace -Server $server
+            }
+          }
+
+          # Link last: the filter and the setting are in place first.
+          $links = @((Get-GPInheritance -Target $target @gp).GpoLinks)
+          if (@($links | ForEach-Object { "$($_.GpoId)" }) -notcontains "$($gpo.Id)") {
+            if ($PSCmdlet.ShouldProcess($target, "Link $name")) { New-GPLink -Guid $gpo.Id -Target $target -LinkEnabled Yes @gp | Out-Null }
+            $done += "link to $target"
+          } elseif (-not ($links | Where-Object { "$($_.GpoId)" -eq "$($gpo.Id)" }).Enabled) {
+            $warn += "The link on $target is disabled. Somebody unlinked it for break-glass? Enable it again in GPMC when the work is done."
+          }
+
+          # A GPO with a higher link precedence on the domain root that sets
+          # EnableAdminAccount = 1 wins over this one.
+          foreach ($l in $links | Where-Object { "$($_.GpoId)" -ne "$($gpo.Id)" }) {
+            $other = Join-Path $sysvol "$($ad.DNSRoot)\Policies\{$("$($l.GpoId)".ToUpper())}\MACHINE\Microsoft\Windows NT\SecEdit\GptTmpl.inf"
+            if ((Test-Path $other) -and ((Get-Content $other) -match '^\s*EnableAdminAccount\s*=\s*1')) {
+              $warn += "$($l.DisplayName) (link order $($l.Order)) sets EnableAdminAccount = 1."
+            }
+          }
+          $builtin = Get-ADUser -Identity "$($ad.DomainSID)-500" -Server $server
+          if ($builtin.Enabled) {
+            $warn += "The built-in Administrator ($($builtin.SamAccountName)) is enabled now. The DCs disable it at the next security policy refresh."
+          }
+          if ($done.Count) { $Ansible.Changed = $true }
+          $Ansible.Result = @{ gpo = $name; id = "$($gpo.Id)"; changes = $done; warnings = $warn }
+      vars:
+        ad_admin_disabled_gpo: T0-Builtin-Administrator-Disabled
+        # The group that applies the GPO. Domain controllers only.
+        ad_admin_disabled_gpo_apply_group: Domain Controllers
+      register: ad_admin_disabled
+      when: ad_is_primary_dc
+      tags: [admin-disabled-gpo, never]
+
+    - name: Admin disabled GPO | Report
+      ansible.builtin.debug:
+        var: ad_admin_disabled.result
+      when: ad_is_primary_dc
+      tags: [admin-disabled-gpo, never]

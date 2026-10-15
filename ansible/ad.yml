@@ -1136,7 +1136,9 @@
           param([int]$min_age_hours, [string]$problems_json)
           $Ansible.Changed = $false
           Import-Module ActiveDirectory
-          $problems = @($problems_json | ConvertFrom-Json)
+          # Windows PowerShell 5.1 returns "[]" as ONE empty array object, so
+          # @(...) alone would count 1 problem. ForEach-Object unrolls it.
+          $problems = @(($problems_json | ConvertFrom-Json) | ForEach-Object { $_ })
           $k = Get-ADUser -Identity krbtgt -Properties pwdLastSet
           $age = ((Get-Date).ToUniversalTime() - [DateTime]::FromFileTimeUtc([int64]$k.pwdLastSet)).TotalHours
           if ($age -lt $min_age_hours) {
@@ -1167,18 +1169,10 @@
       when: ad_is_primary_dc
       tags: [krbtgt-reset, never]
 
-    - name: Krbtgt | Each DC pulls the change from its partners
-      ansible.windows.win_powershell:
-        script: |
-          $out = repadmin /syncall /Ade 2>&1 | Out-String
-          if ($LASTEXITCODE -ne 0) { throw "repadmin /syncall /Ade failed:`n$out" }
-          $Ansible.Result = $out
-      register: ad_krbtgt_sync
-      when:
-        - not ansible_check_mode
-        - hostvars[ad_dcs[0].name.split('.')[0]].ad_krbtgt_reset is changed
-      tags: [krbtgt-reset, never]
-
+    # No repadmin /syncall here: over WinRM the session has no credentials
+    # for the outbound RPC (double hop), so repadmin gets "Access is denied"
+    # even against the local DC. Intra-site change notification replicates
+    # the reset in seconds; the next task waits for it on each DC.
     - name: Krbtgt | Each DC has the new password
       ansible.windows.win_powershell:
         parameters:

@@ -4,7 +4,11 @@
 # exist, a protected object cannot move or be deleted, an OU with children
 # cannot be deleted, Global cannot change straight to DomainLocal, a PSO
 # applies only to global groups and users, and a lockout observation window
-# cannot be longer than the lockout duration.
+# cannot be longer than the lockout duration. For tiering: an account must
+# have access to a silo before the silo is assigned to it, a member with a
+# time to live needs the PAM optional feature, and the RID 500 account
+# cannot be a silo member in a way that matters (the test checks the
+# script never tries).
 
 $script:domainDN = 'DC=patchwork,DC=internal'
 $script:domainSid = 'S-1-5-21-1111111111-2222222222-3333333333'
@@ -12,6 +16,10 @@ $script:objects = [System.Collections.Generic.List[object]]::new()
 $script:upnSuffixes = [System.Collections.Generic.List[string]]::new()
 $script:psos = [System.Collections.Generic.List[object]]::new()
 $script:defaultPolicy = $null
+$script:pamEnabled = $false
+$script:configDN = "CN=Configuration,$script:domainDN"
+$script:policyBase = "CN=AuthN Policies,CN=AuthN Policy Configuration,CN=Services,$script:configDN"
+$script:siloBase = "CN=AuthN Silos,CN=AuthN Policy Configuration,CN=Services,$script:configDN"
 
 $policyParams = 'MinPasswordLength', 'PasswordHistoryCount', 'ComplexityEnabled', 'ReversibleEncryptionEnabled',
 'MinPasswordAge', 'MaxPasswordAge', 'LockoutThreshold', 'LockoutDuration', 'LockoutObservationWindow'
@@ -33,7 +41,11 @@ function Reset-FakeAD {
     $script:upnSuffixes.Clear()
     $script:psos.Clear()
     $script:defaultPolicy = New-PolicyDefaults
+    $script:pamEnabled = $false
 }
+
+# An operator running Enable-ADOptionalFeature for PAM.
+function Enable-FakePam { $script:pamEnabled = $true }
 
 # An operator enabling an account after the person set a password.
 function Enable-FakeUser([string]$Sam) { (Find-Fake $Sam).Enabled = $true }
@@ -44,7 +56,7 @@ function Get-FakeADState {
         $o = $_
         '{0}|{1}|{2}|{3}|{4}|{5}|{6}' -f $o.DN, $o.Class, $o.Enabled, $o.Scope, $o.Protected,
             (($o.Attrs.GetEnumerator() | Sort-Object Key | ForEach-Object { "$($_.Key)=$($_.Value)" }) -join ';'),
-            (($o.Members | Sort-Object) -join ';')
+            (($o.Members | Sort-Object | ForEach-Object { if ($o.Ttl.ContainsKey($_)) { "$_<TTL>" } else { "$_" } }) -join ';')
     }) + ($script:upnSuffixes -join ';') + (Format-FakePolicy $script:defaultPolicy) + ($script:psos | ForEach-Object {
         "PSO $($_.Name)|$($_.Precedence)|$($_.Description)|$(Format-FakePolicy $_.Policy)|$(($_.Subjects | Sort-Object) -join ';')"
     }) -join "`n"
@@ -58,7 +70,7 @@ function Add-FakeObject([string]$DN, [string]$Class, [hashtable]$Extra = @{}) {
     $o = [pscustomobject]@{
         Id = [guid]::NewGuid(); DN = $DN; Class = $Class; Sam = $null; Sid = $null; Enabled = $true
         Scope = $null; Protected = $false; Description = $null; Attrs = @{}
-        Members = [System.Collections.Generic.List[guid]]::new()
+        Members = [System.Collections.Generic.List[guid]]::new(); Ttl = @{}
     }
     foreach ($k in $Extra.Keys) { $o.$k = $Extra[$k] }
     $script:objects.Add($o)
@@ -89,6 +101,7 @@ function ConvertTo-Fake($o) {
         GroupScope = $o.Scope; Description = $o.Description; ProtectedFromAccidentalDeletion = $o.Protected
     }
     foreach ($a in $userAttrs) { $h[$a] = $o.Attrs[$a] }
+    foreach ($k in $o.Attrs.Keys) { if (-not $h.Contains($k)) { $h[$k] = $o.Attrs[$k] } }
     [pscustomobject]$h
 }
 
@@ -103,6 +116,7 @@ function Select-Fake([string]$Filter, [string]$SearchBase, [string[]]$Classes) {
         'distinguishedName' { { param($o) $o.DN } }
         'UserPrincipalName' { { param($o) $o.Attrs['userPrincipalName'] } }
         'objectClass' { { param($o) $o.Class } }
+        'Name' { { param($o) Get-RdnValue $o.DN } }
         default { throw "Fake AD does not support attribute: $attr" }
     }
     if ($op -eq 'eq') { $set | Where-Object { (& $get $_) -eq $value } }
@@ -144,8 +158,13 @@ function Move-ADObject { param($Identity, [string]$TargetPath, [switch]$PassThru
     Assert-Parent $TargetPath
     $oldDN = $o.DN
     $o.DN = (($o.DN -split '(?<!\\),', 2)[0]) + ',' + $TargetPath
-    # manager is a linked attribute: AD follows the move.
-    foreach ($x in $script:objects) { if ($x.Attrs['manager'] -eq $oldDN) { $x.Attrs['manager'] = $o.DN } }
+    # manager and the silo member list are linked attributes: AD follows the move.
+    foreach ($x in $script:objects) {
+        if ($x.Attrs['manager'] -eq $oldDN) { $x.Attrs['manager'] = $o.DN }
+        if ($x.Attrs.ContainsKey('msDS-AuthNPolicySiloMembers')) {
+            $x.Attrs['msDS-AuthNPolicySiloMembers'] = @($x.Attrs['msDS-AuthNPolicySiloMembers'] | ForEach-Object { if ($_ -eq $oldDN) { $o.DN } else { $_ } })
+        }
+    }
     if ($PassThru) { ConvertTo-Fake $o }
 }
 
@@ -200,8 +219,19 @@ function Disable-ADAccount { param($Identity, $Server) (Find-Fake $Identity).Ena
 function Enable-ADAccount { param($Identity, $Server) (Find-Fake $Identity).Enabled = $true }
 
 # --- Groups ------------------------------------------------------------------
-function Get-ADGroup { param([string]$Filter, $Properties, $Server, $Identity)
-    if ($Identity) { return ConvertTo-Fake (Find-Fake $Identity) }
+function Get-ADGroup { param([string]$Filter, $Properties, $Server, $Identity, [switch]$ShowMemberTimeToLive)
+    if ($Identity) {
+        $o = Find-Fake $Identity
+        $g = ConvertTo-Fake $o
+        if (@($Properties) -contains 'member') {
+            $list = foreach ($id in $o.Members) {
+                $dn = ($script:objects | Where-Object { $_.Id -eq $id }).DN
+                if ($ShowMemberTimeToLive -and $o.Ttl.ContainsKey($id)) { "<TTL=$($o.Ttl[$id])>,$dn" } else { $dn }
+            }
+            $g | Add-Member -NotePropertyName member -NotePropertyValue @($list)
+        }
+        return $g
+    }
     Select-Fake $Filter $null @('group') | ForEach-Object { ConvertTo-Fake $_ }
 }
 function New-ADGroup { param([string]$Name, [string]$SamAccountName, $GroupCategory, [string]$GroupScope, [string]$Path, $Description, $Server)
@@ -239,17 +269,19 @@ function Get-ADGroupMember { param($Identity, [switch]$Recursive, $Server)
         }
     }
 }
-function Add-ADGroupMember { param($Identity, $Members, $Server)
+function Add-ADGroupMember { param($Identity, $Members, [TimeSpan]$MemberTimeToLive, $Server)
     $g = Find-Fake $Identity
+    if ($PSBoundParameters.ContainsKey('MemberTimeToLive') -and -not $script:pamEnabled) { throw 'The parameter is incorrect (PAM feature is off)' }
     foreach ($m in @($Members)) {
         $o = Find-Fake $m
         if ($g.Members -contains $o.Id) { throw "Already a member: $($o.Sam)" }
         $g.Members.Add($o.Id)
+        if ($PSBoundParameters.ContainsKey('MemberTimeToLive')) { $g.Ttl[$o.Id] = [int]$MemberTimeToLive.TotalSeconds }
     }
 }
 function Remove-ADGroupMember { param($Identity, $Members, $Confirm, $Server)
     $g = Find-Fake $Identity
-    foreach ($m in @($Members)) { $g.Members.Remove((Find-Fake $m).Id) | Out-Null }
+    foreach ($m in @($Members)) { $id = (Find-Fake $m).Id; $g.Members.Remove($id) | Out-Null; $g.Ttl.Remove($id) }
 }
 function Get-ADPrincipalGroupMembership { param($Identity, $Server)
     $o = Find-Fake $Identity
@@ -341,6 +373,109 @@ function Add-ADFineGrainedPasswordPolicySubject { param($Identity, $Subjects, $S
 function Remove-ADFineGrainedPasswordPolicySubject { param($Identity, $Subjects, $Confirm, $Server)
     $pso = Find-FakePso $Identity
     foreach ($s in @($Subjects)) { $pso.Subjects.Remove((Find-Fake $s).Id) | Out-Null }
+}
+
+# --- Optional features -------------------------------------------------------
+function Get-ADOptionalFeature { param($Identity, $Server)
+    if ("$Identity" -ne 'Privileged Access Management Feature') { throw "Fake AD does not know feature: $Identity" }
+    [pscustomobject]@{ Name = "$Identity"; EnabledScopes = @(if ($script:pamEnabled) { "CN=Partitions,$script:configDN" }) }
+}
+
+# --- Authentication policies and silos ---------------------------------------
+# Kept as directory objects, so Get-FakeADState covers them.
+function ConvertTo-FakeAuthN($o) {
+    $h = [ordered]@{ ObjectGUID = $o.Id; DistinguishedName = $o.DN; Name = (Get-RdnValue $o.DN); ObjectClass = $o.Class
+        Description = $o.Description; ProtectedFromAccidentalDeletion = $o.Protected }
+    foreach ($k in $o.Attrs.Keys) { $h[$k] = $o.Attrs[$k] }
+    [pscustomobject]$h
+}
+function Find-FakeAuthN($Identity, [string]$Class) {
+    $o = Find-Fake $Identity
+    if ($o.Class -ne $Class) { throw "Not a $Class : $Identity" }
+    $o
+}
+function Get-ADAuthenticationPolicy { param([string]$Filter, $Identity, $Properties, $Server)
+    if ($Identity) { return ConvertTo-FakeAuthN (Find-FakeAuthN $Identity 'msDS-AuthNPolicy') }
+    Select-Fake $Filter $null @('msDS-AuthNPolicy') | ForEach-Object { ConvertTo-FakeAuthN $_ }
+}
+function New-ADAuthenticationPolicy { param([string]$Name, $Description, [switch]$Enforce, $ProtectedFromAccidentalDeletion,
+        [int]$UserTGTLifetimeMins, [string]$UserAllowedToAuthenticateFrom, $Server)
+    $dn = "CN=$Name,$script:policyBase"
+    if ($script:objects | Where-Object { $_.DN -eq $dn }) { throw "Already exists: $dn" }
+    $o = Add-FakeObject $dn 'msDS-AuthNPolicy' @{ Description = $Description; Protected = [bool]$ProtectedFromAccidentalDeletion }
+    $o.Attrs['Enforce'] = [bool]$Enforce
+    $o.Attrs['UserTGTLifetimeMins'] = if ($PSBoundParameters.ContainsKey('UserTGTLifetimeMins')) { $UserTGTLifetimeMins } else { $null }
+    $o.Attrs['UserAllowedToAuthenticateFrom'] = if ($UserAllowedToAuthenticateFrom) { $UserAllowedToAuthenticateFrom } else { $null }
+}
+function Set-ADAuthenticationPolicy { param($Identity, $Description, [bool]$Enforce, [int]$UserTGTLifetimeMins,
+        [string]$UserAllowedToAuthenticateFrom, [string[]]$Clear, $Server)
+    $o = Find-FakeAuthN $Identity 'msDS-AuthNPolicy'
+    if ($PSBoundParameters.ContainsKey('Description')) { $o.Description = $Description }
+    if ($PSBoundParameters.ContainsKey('Enforce')) { $o.Attrs['Enforce'] = $Enforce }
+    if ($PSBoundParameters.ContainsKey('UserTGTLifetimeMins')) { $o.Attrs['UserTGTLifetimeMins'] = $UserTGTLifetimeMins }
+    if ($PSBoundParameters.ContainsKey('UserAllowedToAuthenticateFrom')) { $o.Attrs['UserAllowedToAuthenticateFrom'] = $UserAllowedToAuthenticateFrom }
+    foreach ($c in @($Clear)) {
+        switch ($c) {
+            'description' { $o.Description = $null }
+            'msDS-UserTGTLifetime' { $o.Attrs['UserTGTLifetimeMins'] = $null }
+            'msDS-UserAllowedToAuthenticateFrom' { $o.Attrs['UserAllowedToAuthenticateFrom'] = $null }
+            $null { }
+            default { throw "Fake AD cannot clear $c" }
+        }
+    }
+}
+function Get-ADAuthenticationPolicySilo { param([string]$Filter, $Identity, $Properties, $Server)
+    if ($Identity) { return ConvertTo-FakeAuthN (Find-FakeAuthN $Identity 'msDS-AuthNPolicySilo') }
+    Select-Fake $Filter $null @('msDS-AuthNPolicySilo') | ForEach-Object { ConvertTo-FakeAuthN $_ }
+}
+function Resolve-FakePolicyDN($Name) {
+    if (-not $Name) { return $null }
+    (Find-FakeAuthN $Name 'msDS-AuthNPolicy').DN
+}
+function New-ADAuthenticationPolicySilo { param([string]$Name, $Description, [switch]$Enforce, $ProtectedFromAccidentalDeletion,
+        $UserAuthenticationPolicy, $ComputerAuthenticationPolicy, $ServiceAuthenticationPolicy, $Server)
+    $dn = "CN=$Name,$script:siloBase"
+    if ($script:objects | Where-Object { $_.DN -eq $dn }) { throw "Already exists: $dn" }
+    $o = Add-FakeObject $dn 'msDS-AuthNPolicySilo' @{ Description = $Description; Protected = [bool]$ProtectedFromAccidentalDeletion }
+    $o.Attrs['Enforce'] = [bool]$Enforce
+    $o.Attrs['UserAuthenticationPolicy'] = Resolve-FakePolicyDN $UserAuthenticationPolicy
+    $o.Attrs['ComputerAuthenticationPolicy'] = Resolve-FakePolicyDN $ComputerAuthenticationPolicy
+    $o.Attrs['ServiceAuthenticationPolicy'] = Resolve-FakePolicyDN $ServiceAuthenticationPolicy
+    $o.Attrs['msDS-AuthNPolicySiloMembers'] = @()
+}
+function Set-ADAuthenticationPolicySilo { param($Identity, $Description, [bool]$Enforce, $UserAuthenticationPolicy,
+        $ComputerAuthenticationPolicy, $ServiceAuthenticationPolicy, [string[]]$Clear, $Server)
+    $o = Find-FakeAuthN $Identity 'msDS-AuthNPolicySilo'
+    if ($PSBoundParameters.ContainsKey('Description')) { $o.Description = $Description }
+    if ($PSBoundParameters.ContainsKey('Enforce')) { $o.Attrs['Enforce'] = $Enforce }
+    foreach ($k in 'UserAuthenticationPolicy', 'ComputerAuthenticationPolicy', 'ServiceAuthenticationPolicy') {
+        if ($PSBoundParameters.ContainsKey($k)) { $o.Attrs[$k] = Resolve-FakePolicyDN $PSBoundParameters[$k] }
+    }
+    foreach ($c in @($Clear)) {
+        switch ($c) {
+            'description' { $o.Description = $null }
+            'msDS-UserAuthNPolicy' { $o.Attrs['UserAuthenticationPolicy'] = $null }
+            'msDS-ComputerAuthNPolicy' { $o.Attrs['ComputerAuthenticationPolicy'] = $null }
+            'msDS-ServiceAuthNPolicy' { $o.Attrs['ServiceAuthenticationPolicy'] = $null }
+            $null { }
+            default { throw "Fake AD cannot clear $c" }
+        }
+    }
+}
+function Grant-ADAuthenticationPolicySiloAccess { param($Identity, $Account, $Server)
+    $silo = Find-FakeAuthN $Identity 'msDS-AuthNPolicySilo'
+    $a = Find-Fake $Account
+    if ($a.Sid -and $a.Sid -like '*-500') { throw 'Test: converge.ps1 must not put the built-in Administrator in a silo' }
+    $have = @($silo.Attrs['msDS-AuthNPolicySiloMembers'])
+    if ($have -contains $a.DN) { throw "Already has access: $($a.DN)" }
+    $silo.Attrs['msDS-AuthNPolicySiloMembers'] = @($have + $a.DN)
+}
+function Set-ADAccountAuthenticationPolicySilo { param($Identity, $AuthenticationPolicySilo, $Server)
+    $a = Find-Fake $Identity
+    if ($a.Class -notin 'user', 'computer') { throw "Not an account: $($a.DN)" }
+    $silo = Find-FakeAuthN $AuthenticationPolicySilo 'msDS-AuthNPolicySilo'
+    if (@($silo.Attrs['msDS-AuthNPolicySiloMembers']) -notcontains $a.DN) { throw "Grant access to the silo first: $($a.DN)" }
+    $a.Attrs['msDS-AssignedAuthNPolicySilo'] = $silo.DN
 }
 
 Export-ModuleMember -Function *

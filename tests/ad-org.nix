@@ -82,8 +82,65 @@ let
     "krbtgt"
   ];
 
+  # Tiering: the silo, its policies and JIT.
+  tiering = org.tiering or null;
+  adminSams = map (u: u.sam) (builtins.filter (u: u.kind == "admin") org.users);
+  tieringErrors =
+    if tiering == null then
+      [ ]
+    else
+      let
+        jit = tiering.jit;
+        policies = builtins.filter (p: p != null) [
+          tiering.userPolicy
+          tiering.computerPolicy
+          (tiering.servicePolicy or null)
+        ];
+        policyNames = map (p: p.name) policies;
+      in
+      lib.optional (dupes (policyNames ++ [ tiering.silo ]) != [ ])
+        "tiering: the silo and the policies need different names"
+      ++ lib.optional (!builtins.isBool tiering.enforce) "tiering.enforce must be true or false"
+      ++ lib.optional (tiering.computerPolicy ? tgtMinutes)
+        "tiering.computerPolicy: Microsoft says not to set a TGT lifetime for computers"
+      ++ lib.concatMap (
+        p:
+        lib.optional (
+          p ? tgtMinutes && (p.tgtMinutes < 45 || p.tgtMinutes > 600)
+        ) "${p.name}: tgtMinutes must be 45 to 600 (AD minimum, domain maximum)"
+      ) policies
+      ++ lib.optional (!(tiering.userPolicy.deviceInSilo or false))
+        "tiering.userPolicy: deviceInSilo must be true, or the silo protects nothing"
+      ++ map (u: "tiering.users: ${u} is not an admin account in users") (
+        builtins.filter (u: !lib.elem u adminSams) tiering.users
+      )
+      ++ map (u: "tiering.users: ${u} is the built-in Administrator, which policies never apply to") (
+        builtins.filter (u: lib.toLower u == "administrator") tiering.users
+      )
+      ++ map (c: "tiering.computers: ${c} must be the computer name in capitals, without the $") (
+        builtins.filter (c: lib.hasSuffix "$" c || lib.toUpper c != c) tiering.computers
+      )
+      ++ lib.optional (dupes (tiering.users ++ tiering.computers) != [ ]) "tiering: duplicate silo members"
+      ++ lib.optional (jit.group != org.privileged.tier0Group) "tiering.jit.group must be privileged.tier0Group"
+      ++ map (g: "tiering.jit: ${g} is not a role group") (
+        builtins.filter (g: !lib.elem g roleNames) [
+          jit.group
+          jit.eligible
+        ]
+      )
+      ++ lib.optional (
+        jit.defaultHours < 1 || jit.defaultHours > jit.maxHours || jit.maxHours > 4
+      ) "tiering.jit: need 1 <= defaultHours <= maxHours <= 4 (decision 6 in TIERING.md)"
+      ++ lib.optional (
+        (jit.removeStanding or false) && !jit.enabled
+      ) "tiering.jit.removeStanding needs tiering.jit.enabled";
+
   errors =
-    lib.optional (dupes sams != [ ]) "duplicate users: ${toString (dupes sams)}"
+    tieringErrors
+    ++ map (g: "builtinAdministrator.removeFrom: ${g} is not in privileged.groups") (
+      builtins.filter (g: !lib.elem g org.privileged.groups) (org.builtinAdministrator.removeFrom or [ ])
+    )
+    ++ lib.optional (dupes sams != [ ]) "duplicate users: ${toString (dupes sams)}"
     ++ map (s: "${s}: the sAMAccountName is a reserved Windows name") (
       builtins.filter (s: lib.elem (lib.toLower s) reservedSams) sams
     )

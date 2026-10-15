@@ -89,7 +89,3 @@
 #   to = googleworkspace_group_settings.this["ganymede_users"]
 #   id = "ganymede-users@patchworklabs.org"
 # }
-#
-# Memberships that GAM already added import as "<group id>/<member email>".
-# Add one block per member only if you list that member in group_members.
-# Otherwise the first apply tries to add the member again and can fail with an "already exists" error.

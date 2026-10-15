@@ -5,6 +5,7 @@ provider "registry.opentofu.org/hashicorp/googleworkspace" {
   version     = "0.7.0"
   constraints = "~> 0.7"
   hashes = [
+    "h1:MgFklc1+CzsUE4+MmqSRo1a7xahLsAFhlrFNPxvhEAM=",
     "h1:RgOil5KfW8+vLlcuTcJljZ0iF4iBbZZO1s/m3F+Vt5A=",
     "zh:14413ba2234738c0e6d289115675e41f9208dc2b81094381dd72bf4fd1b20e0b",
     "zh:24a98856a80dfbb5cc86f440f05acefa7b9b10fc1471cc90e6a8f8186a518853",

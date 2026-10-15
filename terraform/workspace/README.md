@@ -7,7 +7,6 @@ Terraform root for the Patchwork Labs Google Workspace. The primary domain is `p
 - Org units: `/Staff`, `/Board-Only`, `/Service-Accounts`, `/Purgatory`, `/Sponsored-Projects` and its two children.
 - Groups: board, president, treasurer, secretary, ganymede-admins, ganymede-users, the two organizers groups, gcp-admins and infra.
 - Group settings: only `allow_external_members` on `ganymede-users`. This is the one setting that the GAM script sets.
-- Group memberships: only the ones you list in `group_members` and `group_owners`.
 
 ## What it leaves out
 
@@ -15,39 +14,24 @@ Terraform root for the Patchwork Labs Google Workspace. The primary domain is `p
 |---|---|---|
 | User accounts and their attributes (OU placement, title, department) | Weave | Weave is the source of truth for people. It creates the users. |
 | Domains and domain verification | GAM, by hand | The `domains` and `verify` phases of `workspace/patchwork-workspace-setup.sh` need DNS records. |
-| Memberships of person addresses in git | You, by variable | See the next section. |
+| Group memberships | Weave | Weave owns users and memberships. |
 
 ## Memberships
 
-The module takes memberships as variables. It does not commit any address.
-
-- `group_members` is a map of group key to a list of emails.
-- `group_owners` has the same shape. It sets the `OWNER` role.
-- The group key is a key of `local.groups` in `main.tf`, for example `board`.
-- A group with no entry has no managed members. Terraform does not remove members that you do not list.
-
-Why this choice: the GAM script adds people to groups, and Weave will create the people. Real addresses must not be in a public-style repo. A variable keeps the addresses in a local `.tfvars` file or in `TF_VAR_group_members`. The `.gitignore` here ignores `*.tfvars`. If Weave later manages group membership, leave both variables empty.
-
-Example, with placeholders:
-
-```hcl
-group_members = {
-  board     = ["person-one@example.org", "person-two@example.org"]
-  president = ["person-one@example.org"]
-}
-```
+Weave owns users and group memberships. This root manages the groups only. It has no membership resources and no membership variables. It does not add or remove members.
 
 ## Authentication
 
-No credential is in a file. The provider uses Application Default Credentials.
+No credential is in a file. The provider uses Application Default Credentials and impersonates a service account.
 
-1. Pick a service account with domain-wide delegation for the scopes in `versions.tf`.
-2. Run `gcloud auth application-default login --impersonate-service-account=<SERVICE_ACCOUNT_EMAIL>`.
-3. Set `GOOGLEWORKSPACE_IMPERSONATED_USER_EMAIL` to a super admin address.
-4. Set `GOOGLEWORKSPACE_SERVICE_ACCOUNT` to the service account email.
-5. Give your identity read and write access to the state bucket `pwl-tfstate`.
+The service account is `tf-workspace@<SEED_PROJECT>.iam.gserviceaccount.com`. The root `terraform/gcp-org` creates it. The output `tf_workspace_service_account_email` shows the address. Members of `gcp-admins` have `roles/iam.serviceAccountTokenCreator` on it. A super admin must add domain-wide delegation for the scopes in `versions.tf`. See `terraform/README.md`.
 
-Do not store service account key files in this repository.
+1. Run `gcloud auth application-default login --impersonate-service-account=tf-workspace@<SEED_PROJECT>.iam.gserviceaccount.com`.
+2. Set `GOOGLEWORKSPACE_IMPERSONATED_USER_EMAIL` to a super admin address.
+3. Set `GOOGLEWORKSPACE_SERVICE_ACCOUNT` to the service account email.
+4. Give your identity read and write access to the state bucket `pwl-tfstate`.
+
+Do not create keys for the service account. The org policy blocks them.
 
 ## Variables
 
@@ -55,7 +39,6 @@ Do not store service account key files in this repository.
 |---|---|
 | `customer_id` | Workspace customer ID (`C0...`). Required. Pass it with `-var` or `TF_VAR_customer_id`. |
 | `primary_domain` | Default `patchworklabs.org`. |
-| `group_members`, `group_owners` | See Memberships. |
 
 ## First plan
 
@@ -69,7 +52,7 @@ The GAM script already created the OUs and the groups. Import them so Terraform 
 6. Check that the plan shows imports. It must show no create for an item that exists.
 7. Run `tofu apply` only after review.
 
-Terraform sets OU descriptions and group descriptions on the first apply. The group description equals the group name. This can show as a small in-place update.
+Terraform sets OU descriptions and group descriptions on the first apply. Each group has a one-line description. This can show as a small in-place update.
 
 ## How names line up
 

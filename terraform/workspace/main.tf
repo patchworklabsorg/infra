@@ -42,64 +42,57 @@ locals {
   # Group addresses used by gcp-org/main.tf are marked.
   groups = {
     board = {
-      email = "board@${var.primary_domain}" # gcp-org
-      name  = "Board of Directors"
+      email       = "board@${var.primary_domain}" # gcp-org
+      name        = "Board of Directors"
+      description = "Board of directors of Patchwork Labs"
     }
     president = {
-      email = "president@${var.primary_domain}"
-      name  = "President"
+      email       = "president@${var.primary_domain}"
+      name        = "President"
+      description = "The president of Patchwork Labs"
     }
     treasurer = {
-      email = "treasurer@${var.primary_domain}" # gcp-org
-      name  = "Treasurer"
+      email       = "treasurer@${var.primary_domain}" # gcp-org
+      name        = "Treasurer"
+      description = "The treasurer of Patchwork Labs"
     }
     secretary = {
-      email = "secretary@${var.primary_domain}"
-      name  = "Secretary"
+      email       = "secretary@${var.primary_domain}"
+      name        = "Secretary"
+      description = "The secretary of Patchwork Labs"
     }
     ganymede_admins = {
-      email = "ganymede-admins@${var.primary_domain}" # gcp-org
-      name  = "Ganymede Admins"
+      email       = "ganymede-admins@${var.primary_domain}" # gcp-org
+      name        = "Ganymede Admins"
+      description = "Administrators of Project Ganymede"
     }
     ganymede_users = {
       email                  = "ganymede-users@${var.primary_domain}"
       name                   = "Ganymede Users"
+      description            = "Participants and users of Project Ganymede"
       allow_external_members = true
     }
     hackboston_organizers = {
-      email = "organizers@hackboston.dev" # gcp-org
-      name  = "HackBoston Organizers"
+      email       = "organizers@hackboston.dev" # gcp-org
+      name        = "HackBoston Organizers"
+      description = "Organizers of HackBoston, a sponsored project"
     }
     hackathon_help_organizers = {
-      email = "organizers@hackathon.help" # gcp-org
-      name  = "hackathon.help Organizers"
+      email       = "organizers@hackathon.help" # gcp-org
+      name        = "hackathon.help Organizers"
+      description = "Organizers of hackathon.help, a sponsored project"
     }
     gcp_admins = {
-      email = "gcp-admins@${var.primary_domain}" # gcp-org
-      name  = "GCP Admins"
+      email       = "gcp-admins@${var.primary_domain}" # gcp-org
+      name        = "GCP Admins"
+      description = "Administrators of the Google Cloud organization"
     }
     infra = {
-      email = "infra@${var.primary_domain}" # gcp-org
-      name  = "Infrastructure"
+      email       = "infra@${var.primary_domain}" # gcp-org
+      name        = "Infrastructure"
+      description = "The infrastructure team"
     }
   }
-
-  memberships = merge(
-    {
-      for pair in flatten([
-        for k, emails in var.group_members : [
-          for e in emails : { key = "${k}/${e}", group = k, email = e, role = "MEMBER" }
-        ]
-      ]) : pair.key => pair
-    },
-    {
-      for pair in flatten([
-        for k, emails in var.group_owners : [
-          for e in emails : { key = "${k}/${e}", group = k, email = e, role = "OWNER" }
-        ]
-      ]) : pair.key => pair
-    },
-  )
 }
 
 # Parents come first. The two sponsored project OUs depend on
@@ -125,7 +118,7 @@ resource "googleworkspace_group" "this" {
 
   email       = each.value.email
   name        = each.value.name
-  description = each.value.name
+  description = each.value.description
 }
 
 # Only the settings that the GAM script sets are managed here.
@@ -134,12 +127,4 @@ resource "googleworkspace_group_settings" "this" {
 
   email                  = googleworkspace_group.this[each.key].email
   allow_external_members = true
-}
-
-resource "googleworkspace_group_member" "this" {
-  for_each = local.memberships
-
-  group_id = googleworkspace_group.this[each.value.group].id
-  email    = each.value.email
-  role     = each.value.role
 }

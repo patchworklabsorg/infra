@@ -9,11 +9,18 @@
 # The disk is SATA and the NIC is e1000e, so the Windows installer needs no
 # extra driver ISO. Change to virtio later, after the virtio-win drivers
 # are installed, if the speed matters.
+#
+# Hands-off install: with create_spool and spool_unattend_iso_path set,
+# Terraform uploads the answer ISO (spool/build-unattend.sh), attaches it as a
+# second CD-ROM and starts the VM. Windows Setup reads autounattend.xml from
+# it. See "Create spool" in README.md.
 
 locals {
   spool_iso_file_id = var.windows_iso_file_id != null ? var.windows_iso_file_id : (
     var.create_spool ? proxmox_virtual_environment_download_file.windows_installer[0].id : null
   )
+
+  spool_unattend = var.create_spool && var.spool_unattend_iso_path != null
 }
 
 resource "proxmox_virtual_environment_vm" "spool" {
@@ -31,6 +38,10 @@ resource "proxmox_virtual_environment_vm" "spool" {
   machine       = "q35"
   scsi_hardware = "virtio-scsi-single"
   on_boot       = true
+
+  # With the answer ISO, terraform_data.spool_unattend_cdrom starts the VM
+  # after it attaches the ISO. Without it, start at once, as before.
+  started = !local.spool_unattend
 
   operating_system {
     type = "win11"
@@ -98,5 +109,73 @@ resource "proxmox_virtual_environment_vm" "spool" {
       tags,
       agent,
     ]
+  }
+}
+
+# The answer ISO for the hands-off install. Build it first with
+# spool/build-unattend.sh. It holds the local Administrator password, so keep
+# it on the node only during the install.
+resource "proxmox_virtual_environment_file" "spool_unattend_iso" {
+  count = local.spool_unattend ? 1 : 0
+
+  content_type = "iso"
+  datastore_id = "local"
+  node_name    = var.node_name
+
+  source_file {
+    path      = var.spool_unattend_iso_path
+    file_name = "spool-autounattend.iso"
+  }
+}
+
+# The second CD-ROM. bpg/proxmox 0.116 allows only one cdrom block on
+# proxmox_virtual_environment_vm (bpg/terraform-provider-proxmox#718), and
+# the Windows ISO uses it. A disk block with file_id imports the file as a
+# hard disk, and Windows Setup does not search hard disks for
+# autounattend.xml. So this resource sets ide0 through the Proxmox API with
+# spool/attach-unattend.sh. q35 supports ide0 and ide2.
+#
+# On create: attach ide0, then start the VM and press Enter for the "boot
+# from CD" prompt. On destroy (spool_unattend_iso_path back to null): detach
+# ide0, before Terraform deletes the ISO from the node.
+#
+# The script uses PROXMOX_VE_API_TOKEN and PROXMOX_VE_INSECURE from the
+# environment, as the provider does.
+resource "terraform_data" "spool_unattend_cdrom" {
+  count = local.spool_unattend ? 1 : 0
+
+  triggers_replace = [
+    proxmox_virtual_environment_vm.spool[0].id,
+    proxmox_virtual_environment_file.spool_unattend_iso[0].id,
+  ]
+
+  input = {
+    script   = "${path.module}/spool/attach-unattend.sh"
+    endpoint = var.proxmox_endpoint
+    node     = var.node_name
+    vmid     = tostring(var.spool.vmid)
+    iso      = proxmox_virtual_environment_file.spool_unattend_iso[0].id
+  }
+
+  provisioner "local-exec" {
+    command = "${self.input.script} attach"
+    environment = {
+      PVE_ENDPOINT = self.input.endpoint
+      PVE_NODE     = self.input.node
+      PVE_VMID     = self.input.vmid
+      PVE_ISO      = self.input.iso
+      PVE_IFACE    = "ide0"
+    }
+  }
+
+  provisioner "local-exec" {
+    when    = destroy
+    command = "${self.input.script} detach"
+    environment = {
+      PVE_ENDPOINT = self.input.endpoint
+      PVE_NODE     = self.input.node
+      PVE_VMID     = self.input.vmid
+      PVE_IFACE    = "ide0"
+    }
   }
 }

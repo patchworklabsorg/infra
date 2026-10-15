@@ -81,3 +81,28 @@ variable "vms" {
     }
   }
 }
+
+variable "windows_iso_file_id" {
+  description = "Proxmox file ID of the Windows Server 2025 ISO, for example local:iso/WindowsServer2025.iso. Upload it to the node first. While it is null, the spool VM is not created."
+  type        = string
+  default     = null
+}
+
+variable "spool" {
+  description = "The Tier 0 jump host spool (Windows Server 2025). VMID 359 and 10.100.90.59 are proposed: confirm they are free before the first apply."
+  type = object({
+    vmid      = number
+    memory_mb = number
+    cores     = number
+    disk_gb   = number
+    ip        = string
+  })
+
+  default = {
+    vmid      = 359
+    memory_mb = 4096
+    cores     = 2
+    disk_gb   = 60
+    ip        = "10.100.90.59"
+  }
+}

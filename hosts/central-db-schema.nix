@@ -21,7 +21,10 @@
   # Its own cluster on its own VM in prod. No app has access until it is
   # listed here.
   restricted = {
-    apps = { };
+    apps = {
+      # Quilt (funding and records). Its own schema only, no shared schemas.
+      quilt = { };
+    };
     sharedSchemas = { };
   };
 }

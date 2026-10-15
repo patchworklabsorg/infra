@@ -173,6 +173,11 @@ function Get-ADUser { param([string]$Filter, $Properties, $Server, $Identity)
 function New-ADUser { param([string]$Name, [string]$SamAccountName, [string]$Path, $Enabled, $ChangePasswordAtLogon, [hashtable]$OtherAttributes, $AccountPassword, $Server)
     if ($AccountPassword) { throw 'Test: converge.ps1 must never set a password' }
     if (-not $ChangePasswordAtLogon) { throw 'Test: new users must change the password at next logon' }
+    # Like the real cmdlet: an empty -OtherAttributes fails validation.
+    if ($PSBoundParameters.ContainsKey('OtherAttributes') -and ($null -eq $OtherAttributes -or $OtherAttributes.Count -eq 0)) {
+        throw "Cannot validate argument on parameter 'OtherAttributes'."
+    }
+    if (-not $OtherAttributes) { $OtherAttributes = @{} }
     Assert-Parent $Path
     $upn = $OtherAttributes['userPrincipalName']
     if ($upn -and $script:upnSuffixes -notcontains ($upn -split '@')[1] -and ($upn -split '@')[1] -ne 'patchwork.internal') {

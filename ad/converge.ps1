@@ -149,6 +149,9 @@ function Get-WantedUpn($u) {
     switch ($u.kind) {
         'person' { return "$local@$($data.upnSuffix)" }
         'admin' { if ($create) { return "$local@$($data.domain)" } }
+        # A service account gets a UPN only when org.json sets "upn", for
+        # example to match a Workspace address.
+        'service' { if (Test-Field $u 'upn') { return "$local@$($data.upnSuffix)" } }
     }
     $null
 }
@@ -312,9 +315,13 @@ function Sync-User($u) {
         $name = if ($want.Contains('displayName') -and $want.displayName) { $want.displayName } else { $u.sam }
         $other = @{}
         foreach ($k in $want.Keys) { if ($null -ne $want[$k]) { $other[$k] = $want[$k] } }
+        # New-ADUser rejects an empty -OtherAttributes (users with no
+        # attributes, such as the disabled ones), so pass it only when set.
+        $newArgs = @{}
+        if ($other.Count -gt 0) { $newArgs.OtherAttributes = $other }
         Invoke-Change "CN=$name,$target" 'Create user (disabled, must change password)' {
             New-ADUser -Name $name -SamAccountName $u.sam -Path $target -Enabled $false `
-                -ChangePasswordAtLogon $true -OtherAttributes $other @ad
+                -ChangePasswordAtLogon $true @newArgs @ad
         }
         return
     }

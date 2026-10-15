@@ -99,7 +99,7 @@ $before = Get-FakeADState
 $r = Converge Build -WhatIf
 Check 'Build -WhatIf changes nothing' ((Get-FakeADState) -eq $before)
 Check 'Build -WhatIf lists changes' ($r.Changes -gt 0 -and $r.Errors -eq 0)
-Check 'Build -WhatIf creates no existing person' ($r.Output -notmatch 'Create user[^\n]*(Jasper Mayone|Kieran|Dominic|klukask|petrarcad|svc-)')
+Check 'Build -WhatIf creates no existing person' ($r.Output -notmatch 'Create user[^\n]*(Jasper Mayone|Kieran|Dominic|klukask|petrarcad|svc-lnx-join|svc-dhcp-dns|svc-pve-ldap|svc-ansible)')
 Check 'Build -WhatIf shows the UPN change' ($r.Output -match "WOULD\s+Set [^\n]*userPrincipalName='jasper@patchworklabs.org'")
 Check 'Build -WhatIf shows the PSOs' ($r.Output -match 'WOULD\s+Create PSO[^\n]*PSO-Tier0' -and $r.Output -match 'Apply to GG-Service-Accounts : PSO PSO-Service')
 
@@ -128,7 +128,8 @@ Check 'adm_mayonej keeps its UPN and name' ((U 'adm_mayonej').userPrincipalName 
 Check 'svc-ansible not created or changed' ((U 'svc-ansible').DistinguishedName -like "*,$old")
 Check 'GG-Board members' (((MembersOf 'GG-Board') | Sort-Object) -join ',' -eq 'klukask,mayonej,petrarcad')
 Check 'GG-Board is Global in Roles' ((G 'GG-Board').GroupScope -eq 'Global' -and (G 'GG-Board').DistinguishedName -like "*,OU=Roles,OU=Groups,$new")
-Check 'GG-Service-Accounts members' (((MembersOf 'GG-Service-Accounts') | Sort-Object) -join ',' -eq 'service,svc-ansible,svc-dhcp-dns,svc-lnx-join,svc-pve-ldap')
+Check 'GG-Service-Accounts members' (((MembersOf 'GG-Service-Accounts') | Sort-Object) -join ',' -eq 'svc-ansible,svc-dhcp-dns,svc-lnx-join,svc-pve-ldap,svc-service')
+Check 'svc-service gets UPN service@patchworklabs.org' ((Get-ADUser -Filter "SamAccountName -eq 'svc-service'" -Properties UserPrincipalName).UserPrincipalName -eq 'service@patchworklabs.org')
 Check 'lnx-warp-users created DomainLocal' ((G 'lnx-warp-users').GroupScope -eq 'DomainLocal')
 Check 'lnx-skein-users holds only GG-Infra' (((MembersOf 'lnx-skein-users') -join ',') -eq 'GG-Infra')
 Check 'tier 0 group in Domain Admins' ((MembersOf 'Domain Admins') -contains 'GG-Domain-Admins-Tier0')
@@ -139,6 +140,7 @@ Check 'adm_mayonej direct DA and EA kept and reported' ((MembersOf 'Domain Admin
 Check 'svc-ansible stays in Domain Admins' ((MembersOf 'Domain Admins') -contains 'svc-ansible')
 Check 'built-in Administrator disabled, adm_mayonej is in Domain Admins' (-not (U 'Administrator').Enabled -and $r.Output -match 'CHANGE\s+Disable built-in Administrator Administrator \(S-1-5-21-[0-9-]+-500\)')
 Check 'vi disabled' (-not (U 'vi').Enabled)
+Check 'yc (no attributes) created disabled' ((U 'yc') -and -not (U 'yc').Enabled)
 Check 'retired host groups deleted' (-not (G 'lnx-sampler-users') -and -not (G 'lnx-swatch-admins'))
 Check 'new users must change password' ((Get-FakeADState) -match 'CN=Adam Sidwa,[^|]*\|user\|False\|[^|]*\|[^|]*\|[^|]*pwdLastSet=0')
 

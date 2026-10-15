@@ -47,7 +47,7 @@
     { "sam": "wei", "kind": "person", "ou": "Users/Sponsored-Projects/hackathon.help",
       "division": "Sponsored Projects", "department": "hackathon.help", "title": "Organizer", "manager": null },
 
-    { "sam": "service", "kind": "service", "ou": "Service-Accounts",
+    { "sam": "svc-service", "upn": "service", "kind": "service", "ou": "Service-Accounts",
       "company": "Patchwork Labs inc.", "division": "Operations", "department": "Infrastructure", "title": "Service account", "manager": null },
     { "sam": "svc-lnx-join", "kind": "service", "ou": "Service-Accounts", "create": false },
     { "sam": "svc-dhcp-dns", "kind": "service", "ou": "Service-Accounts", "create": false },
@@ -74,7 +74,7 @@
     { "name": "GG-All-Staff", "description": "Every person in org.json: staff, board, organizers. Gets PSO-Staff.",
       "members": ["mayonej", "adam.sidwa", "klukask", "petrarcad", "cj", "daniel", "logan", "wei"] },
     { "name": "GG-Service-Accounts", "description": "Service accounts. Gets PSO-Service.",
-      "members": ["service", "svc-lnx-join", "svc-dhcp-dns", "svc-pve-ldap", "svc-ansible"] },
+      "members": ["svc-service", "svc-lnx-join", "svc-dhcp-dns", "svc-pve-ldap", "svc-ansible"] },
     { "name": "GG-Domain-Admins-Tier0", "description": "Tier 0 admin accounts. Member of Domain Admins. Gets PSO-Tier0.", "members": ["adm_mayonej"] }
   ],
 

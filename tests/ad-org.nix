@@ -43,8 +43,29 @@ let
       && p.lockoutObservationWindowMinutes > p.lockoutDurationMinutes
     ) "${name}: lockoutObservationWindowMinutes is longer than lockoutDurationMinutes";
 
+  # Names that resolve to well-known security principals. AD refuses them as
+  # sAMAccountNames ("The specified account already exists").
+  reservedSams = [
+    "service"
+    "system"
+    "network"
+    "interactive"
+    "batch"
+    "anonymous"
+    "everyone"
+    "administrator"
+    "administrators"
+    "users"
+    "guests"
+    "guest"
+    "krbtgt"
+  ];
+
   errors =
     lib.optional (dupes sams != [ ]) "duplicate users: ${toString (dupes sams)}"
+    ++ map (s: "${s}: the sAMAccountName is a reserved Windows name") (
+      builtins.filter (s: lib.elem (lib.toLower s) reservedSams) sams
+    )
     ++ lib.optional (dupes roleNames != [ ]) "duplicate groups: ${toString (dupes roleNames)}"
     ++ lib.optional (dupes upns != [ ]) "duplicate UPNs: ${toString (dupes upns)}"
     ++ map (u: "${u.sam}: upn is the part before the @, without the @") (

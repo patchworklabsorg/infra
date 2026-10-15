@@ -82,8 +82,20 @@ variable "vms" {
   }
 }
 
+variable "create_spool" {
+  description = "Create the spool VM. When true, Terraform also downloads the Windows Server 2025 evaluation ISO, unless windows_iso_file_id is set."
+  type        = bool
+  default     = false
+}
+
+variable "windows_iso_url" {
+  description = "URL of the Windows Server 2025 evaluation ISO (English, x64). The Microsoft fwlink redirects to the file SERVER_EVAL_x64FRE_en-us.iso, about 5.6 GiB."
+  type        = string
+  default     = "https://go.microsoft.com/fwlink/?linkid=2293312&clcid=0x409&culture=en-us&country=us"
+}
+
 variable "windows_iso_file_id" {
-  description = "Proxmox file ID of the Windows Server 2025 ISO, for example local:iso/WindowsServer2025.iso. Upload it to the node first. While it is null, the spool VM is not created."
+  description = "Proxmox file ID of an existing Windows Server 2025 ISO, for example local:iso/WindowsServer2025.iso. It overrides the downloaded ISO. While it is null and create_spool is false, the spool VM is not created."
   type        = string
   default     = null
 }

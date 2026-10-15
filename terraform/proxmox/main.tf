@@ -43,6 +43,21 @@ removed {
   }
 }
 
+# The Windows Server 2025 evaluation ISO for spool. Proxmox downloads it.
+# It is created only when var.create_spool is true.
+resource "proxmox_virtual_environment_download_file" "windows_installer" {
+  count = var.create_spool ? 1 : 0
+
+  content_type   = "iso"
+  datastore_id   = "local"
+  node_name      = var.node_name
+  url            = var.windows_iso_url
+  file_name      = "windows-server-2025-eval.iso"
+  overwrite      = false
+  verify         = true
+  upload_timeout = 7200
+}
+
 # Shape matches hosts/proxmox-vm.nix: SeaBIOS, one virtio-scsi disk at
 # /dev/sda, cpu host, QEMU guest agent on.
 resource "proxmox_virtual_environment_vm" "nixos" {

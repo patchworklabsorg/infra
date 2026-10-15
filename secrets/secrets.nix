@@ -11,8 +11,10 @@ let
 
   # Hosts (/etc/ssh/ssh_host_ed25519_key.pub)
   alastor = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIFwkC1CiWpLB10NNVaJwu4LSyiL0wM7ExI1VoKqIsgeG root@alastor-vnic";
-  # warp, skein, seam, hem: add each key after its install, then add the host
-  # to the files it needs and run `agenix -r`.
+  skein = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIMyAEZuxPllSL4clx7Si8tvMfdSLv+v4/z19nz75oHtl";
+  seam = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIIpDr8Ilx3Nh4VOgDK4y54OTbt/ax2bExU+fv+aWSAB6";
+  # warp, hem: add each key after its install, then add the host to the
+  # files it needs and run `agenix -r`.
   #
   # Central DB passwords, one file per app and environment, password only:
   #   central-prod-<app>.age        recipients: jsp, skein
@@ -66,11 +68,18 @@ in
   ];
 
   # Quilt's role password in patchwork_central_restricted (seam). Password
-  # only. Add seam after its install, then `agenix -r`. alastor does not get
-  # this file: the same password is in quilt-env.age.
-  "restricted-prod-quilt.age".publicKeys = [ jsp ];
+  # only. alastor does not get this file: the same password is in
+  # quilt-env.age.
+  "restricted-prod-quilt.age".publicKeys = [
+    jsp
+    seam
+  ];
 
   # svc-lnx-join password only (modules/ad-join, ansible/sync-join-password.yml).
   # Add each lab host key after its install, then `agenix -r`.
-  "ad-join.age".publicKeys = [ jsp ];
+  "ad-join.age".publicKeys = [
+    jsp
+    skein
+    seam
+  ];
 }

@@ -21,12 +21,16 @@
     { "path": "Users/Members", "description": "Community members. Weave creates and changes these; converge.ps1 does not.", "managed": false },
     { "path": "Service-Accounts", "description": "Non-human accounts for integrations" },
     { "path": "Disabled", "description": "Suspended users, all access off (Workspace: Purgatory)" },
-    { "path": "Admin-Accounts", "description": "Tier 0. Separate from daily accounts." },
+    { "path": "Admin-Accounts", "description": "Admin accounts, separate from daily accounts. Only Domain Admins has rights here." },
+    { "path": "Admin-Accounts/Tier0", "description": "Tier 0 admin accounts (forest, DCs, CA)" },
+    { "path": "Admin-Accounts/Tier1", "description": "Tier 1 admin accounts (servers). None yet." },
+    { "path": "Admin-Accounts/Tier2", "description": "Tier 2 admin accounts (helpdesk, workstations). None yet." },
     { "path": "Groups", "description": "Security groups (AGDLP)" },
     { "path": "Groups/Roles", "description": "Global groups. People go here." },
     { "path": "Groups/Resources", "description": "Domain local groups. Only these get permissions." },
     { "path": "Computers", "description": "Staff workstations" },
-    { "path": "Servers", "description": "Member servers and lab hosts" }
+    { "path": "Servers", "description": "Member servers and lab hosts" },
+    { "path": "Servers/Tier0", "description": "Tier 0 member servers (bobbin, shuttle, spool). No Tier 1 rights." }
   ],
 
   "users": [
@@ -53,9 +57,9 @@
     { "sam": "svc-dhcp-dns", "kind": "service", "ou": "Service-Accounts", "create": false },
     { "sam": "svc-pve-ldap", "kind": "service", "ou": "Service-Accounts", "create": false },
 
-    { "sam": "adm_mayonej", "kind": "admin", "ou": "Admin-Accounts", "givenName": "Jasper", "surname": "Mayone",
+    { "sam": "adm_mayonej", "kind": "admin", "ou": "Admin-Accounts/Tier0", "givenName": "Jasper", "surname": "Mayone",
       "displayName": "Jasper Mayone (Admin)", "title": "Tier 0 administrator", "manager": null },
-    { "sam": "svc-ansible", "kind": "admin", "ou": "Admin-Accounts", "create": false },
+    { "sam": "svc-ansible", "kind": "admin", "ou": "Admin-Accounts/Tier0", "create": false },
 
     { "sam": "vi", "kind": "disabled", "ou": "Disabled" },
     { "sam": "yc", "kind": "disabled", "ou": "Disabled" }
@@ -77,7 +81,11 @@
       "members": ["svc-service", "svc-lnx-join", "svc-dhcp-dns", "svc-pve-ldap", "svc-ansible"] },
     { "name": "GG-Domain-Admins-Tier0", "description": "Tier 0 admin accounts. Member of Domain Admins. Gets PSO-Tier0.", "members": ["adm_mayonej"] },
     { "name": "GG-T0-Eligible", "description": "Tier 0 accounts that can request a JIT Domain Admins grant (PatchworkT0 JEA endpoint). Gets PSO-Tier0.",
-      "members": ["adm_mayonej"] }
+      "members": ["adm_mayonej"] },
+    { "name": "GG-T1-Admins", "description": "Tier 1 server admins. Computer objects in Servers and Computers, and the helpdesk rights. Tier 1 admin accounts only.",
+      "members": [] },
+    { "name": "GG-T2-Helpdesk", "description": "Tier 2 helpdesk. Reset, unlock and force a password change for people in Users/Staff, Board-Only, Sponsored-Projects.",
+      "members": [] }
   ],
 
   "linuxHosts": ["hem", "seam", "skein", "warp"],
@@ -86,7 +94,12 @@
     { "name": "lnx-{host}-users", "description": "Linux logon on {host}", "members": ["GG-Infra"] },
     { "name": "lnx-{host}-admins", "description": "Linux sudo on {host}", "members": ["GG-Infra"] }
   ],
-  "resourceGroups": [],
+  "resourceGroups": [
+    { "name": "DL-Users-PasswordReset", "description": "Reset password, unlock, change at next logon: Users/Staff, Board-Only, Sponsored-Projects",
+      "members": ["GG-T2-Helpdesk", "GG-T1-Admins"] },
+    { "name": "DL-Servers-ComputerAdmin", "description": "Full control of computer objects: Servers and Computers, not Servers/Tier0 or Domain Controllers",
+      "members": ["GG-T1-Admins"] }
+  ],
 
   "passwordPolicy": {
     "default": {
@@ -131,8 +144,28 @@
       "tgtMinutes": 60, "deviceInSilo": false, "inSilo": false, "enforce": false },
     "users": ["adm_mayonej"],
     "computers": ["LOOM", "SPINDLE", "BOBBIN", "SHUTTLE", "SPOOL"],
+    "serverOU": "Servers/Tier0",
     "jit": { "enabled": false, "removeStanding": false, "group": "GG-Domain-Admins-Tier0", "eligible": "GG-T0-Eligible",
       "defaultHours": 1, "maxHours": 4, "standingGroups": ["DnsAdmins", "DHCP Administrators"] }
+  },
+
+  "delegation": {
+    "description": "Rights below Domain Admins. See ad/README.md, Delegation.",
+    "grants": [
+      { "group": "DL-Users-PasswordReset", "rights": "user-helpdesk",
+        "ous": ["Users/Staff", "Users/Board-Only", "Users/Sponsored-Projects"] },
+      { "group": "DL-Servers-ComputerAdmin", "rights": "computer-admin", "ous": ["Servers", "Computers"] }
+    ],
+    "deny": [
+      { "ous": ["Admin-Accounts", "Service-Accounts"], "principals": ["DL-Users-PasswordReset", "DL-Servers-ComputerAdmin"] },
+      { "ous": ["Servers/Tier0"], "principals": ["DL-Users-PasswordReset", "DL-Servers-ComputerAdmin", "svc-lnx-join"] }
+    ],
+    "noDelegation": ["Admin-Accounts", "Admin-Accounts/Tier0", "Admin-Accounts/Tier1", "Admin-Accounts/Tier2",
+      "Service-Accounts", "Servers/Tier0", "Users/Members", "Disabled"],
+    "knownAces": [
+      { "principal": "svc-lnx-join", "ous": ["Servers", "Computers"], "why": "ansible/ad.yml -t join-delegation" }
+    ],
+    "expectAdminCount": ["adm_mayonej", "svc-ansible"]
   },
 
   "migration": {

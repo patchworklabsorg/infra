@@ -9,6 +9,13 @@
 # time to live needs the PAM optional feature, and the RID 500 account
 # cannot be a silo member in a way that matters (the test checks the
 # script never tries).
+#
+# ACLs: Get-Acl and Set-Acl on "AD:\<dn>" paths. An object keeps only its
+# explicit ACEs. A fake security object has the methods converge.ps1 uses
+# (GetAccessRules, AccessRuleFactory, AddAccessRule), because the real
+# System.DirectoryServices ACL types do not work outside Windows. A new OU
+# gets the default ACEs of the schema (SYSTEM, Domain Admins, Account
+# Operators, Authenticated Users read).
 
 $script:domainDN = 'DC=patchwork,DC=internal'
 $script:domainSid = 'S-1-5-21-1111111111-2222222222-3333333333'
@@ -17,6 +24,7 @@ $script:upnSuffixes = [System.Collections.Generic.List[string]]::new()
 $script:psos = [System.Collections.Generic.List[object]]::new()
 $script:defaultPolicy = $null
 $script:pamEnabled = $false
+$script:nextRid = 1100
 $script:configDN = "CN=Configuration,$script:domainDN"
 $script:policyBase = "CN=AuthN Policies,CN=AuthN Policy Configuration,CN=Services,$script:configDN"
 $script:siloBase = "CN=AuthN Silos,CN=AuthN Policy Configuration,CN=Services,$script:configDN"
@@ -42,6 +50,7 @@ function Reset-FakeAD {
     $script:psos.Clear()
     $script:defaultPolicy = New-PolicyDefaults
     $script:pamEnabled = $false
+    $script:nextRid = 1100
 }
 
 # An operator running Enable-ADOptionalFeature for PAM.
@@ -57,7 +66,7 @@ function Get-FakeADState {
         '{0}|{1}|{2}|{3}|{4}|{5}|{6}' -f $o.DN, $o.Class, $o.Enabled, $o.Scope, $o.Protected,
             (($o.Attrs.GetEnumerator() | Sort-Object Key | ForEach-Object { "$($_.Key)=$($_.Value)" }) -join ';'),
             (($o.Members | Sort-Object | ForEach-Object { if ($o.Ttl.ContainsKey($_)) { "$_<TTL>" } else { "$_" } }) -join ';')
-    }) + ($script:upnSuffixes -join ';') + (Format-FakePolicy $script:defaultPolicy) + ($script:psos | ForEach-Object {
+    }) + ($script:objects | Where-Object { $_.Acl.Count } | ForEach-Object { "ACL $($_.DN)|$(($_.Acl | ForEach-Object { Format-FakeAce $_ }) -join ';')" }) + ($script:upnSuffixes -join ';') + (Format-FakePolicy $script:defaultPolicy) + ($script:psos | ForEach-Object {
         "PSO $($_.Name)|$($_.Precedence)|$($_.Description)|$(Format-FakePolicy $_.Policy)|$(($_.Subjects | Sort-Object) -join ';')"
     }) -join "`n"
 }
@@ -71,8 +80,10 @@ function Add-FakeObject([string]$DN, [string]$Class, [hashtable]$Extra = @{}) {
         Id = [guid]::NewGuid(); DN = $DN; Class = $Class; Sam = $null; Sid = $null; Enabled = $true
         Scope = $null; Protected = $false; Description = $null; Attrs = @{}
         Members = [System.Collections.Generic.List[guid]]::new(); Ttl = @{}
+        Acl = [System.Collections.Generic.List[object]]::new()
     }
     foreach ($k in $Extra.Keys) { $o.$k = $Extra[$k] }
+    if (-not $o.Sid -and $Class -in 'user', 'group', 'computer') { $o.Sid = "$script:domainSid-$($script:nextRid)"; $script:nextRid++ }
     $script:objects.Add($o)
     $o
 }
@@ -97,7 +108,7 @@ function Find-Fake($Identity) {
 function ConvertTo-Fake($o) {
     $h = [ordered]@{
         ObjectGUID = $o.Id; DistinguishedName = $o.DN; ObjectClass = $o.Class; Name = (Get-RdnValue $o.DN)
-        SamAccountName = $o.Sam; SID = $o.Sid; Enabled = $o.Enabled
+        SamAccountName = $o.Sam; SID = $o.Sid; objectSid = $o.Sid; Enabled = $o.Enabled
         GroupScope = $o.Scope; Description = $o.Description; ProtectedFromAccidentalDeletion = $o.Protected
     }
     foreach ($a in $userAttrs) { $h[$a] = $o.Attrs[$a] }
@@ -109,7 +120,7 @@ function Select-Fake([string]$Filter, [string]$SearchBase, [string[]]$Classes) {
     $set = $script:objects | Where-Object { -not $Classes -or $Classes -contains $_.Class }
     if ($SearchBase) { $set = $set | Where-Object { $_.DN -eq $SearchBase -or $_.DN -like "*,$SearchBase" } }
     if ($Filter -eq '*') { return $set }
-    if ($Filter -notmatch "^(\w+) -(eq|ne) '(.*)'$") { throw "Fake AD does not support filter: $Filter" }
+    if ($Filter -notmatch "^(\w+) -(eq|ne) '(.*)'$" -and $Filter -notmatch '^(\w+) -(eq|ne) (\d+)$') { throw "Fake AD does not support filter: $Filter" }
     $attr, $op, $value = $Matches[1], $Matches[2], $Matches[3]
     $get = switch ($attr) {
         'SamAccountName' { { param($o) $o.Sam } }
@@ -117,6 +128,8 @@ function Select-Fake([string]$Filter, [string]$SearchBase, [string[]]$Classes) {
         'UserPrincipalName' { { param($o) $o.Attrs['userPrincipalName'] } }
         'objectClass' { { param($o) $o.Class } }
         'Name' { { param($o) Get-RdnValue $o.DN } }
+        'objectSid' { { param($o) $o.Sid } }
+        'adminCount' { { param($o) "$($o.Attrs['adminCount'])" } }
         default { throw "Fake AD does not support attribute: $attr" }
     }
     if ($op -eq 'eq') { $set | Where-Object { (& $get $_) -eq $value } }
@@ -176,7 +189,8 @@ function New-ADOrganizationalUnit { param([string]$Name, [string]$Path, $Descrip
     Assert-Parent $Path
     $dn = "OU=$Name,$Path"
     if ($script:objects | Where-Object { $_.DN -eq $dn }) { throw "Already exists: $dn" }
-    Add-FakeObject $dn 'organizationalUnit' @{ Description = $Description; Protected = [bool]$ProtectedFromAccidentalDeletion } | Out-Null
+    $o = Add-FakeObject $dn 'organizationalUnit' @{ Description = $Description; Protected = [bool]$ProtectedFromAccidentalDeletion }
+    Add-FakeDefaultOUAces $o
 }
 function Set-ADOrganizationalUnit { param($Identity, $Description, $Server)
     (Find-Fake $Identity).Description = $Description
@@ -476,6 +490,64 @@ function Set-ADAccountAuthenticationPolicySilo { param($Identity, $Authenticatio
     $silo = Find-FakeAuthN $AuthenticationPolicySilo 'msDS-AuthNPolicySilo'
     if (@($silo.Attrs['msDS-AuthNPolicySiloMembers']) -notcontains $a.DN) { throw "Grant access to the silo first: $($a.DN)" }
     $a.Attrs['msDS-AssignedAuthNPolicySilo'] = $silo.DN
+}
+
+# --- ACLs ----------------------------------------------------------------------
+function New-FakeAce([string]$Sid, [int]$Rights, [string]$Type = 'Allow', [guid]$ObjectType = [guid]::Empty,
+    [string]$InheritanceFlags = 'None', [string]$PropagationFlags = 'None', [guid]$InheritedObjectType = [guid]::Empty) {
+    [pscustomobject]@{
+        IdentityReference = [pscustomobject]@{ Value = $Sid }; ActiveDirectoryRights = $Rights; AccessControlType = $Type
+        ObjectType = $ObjectType; InheritedObjectType = $InheritedObjectType
+        InheritanceFlags = $InheritanceFlags; PropagationFlags = $PropagationFlags; IsInherited = $false
+    }
+}
+
+function Format-FakeAce($a) {
+    '{0},{1},{2},{3},{4},{5},{6}' -f $a.IdentityReference.Value, $a.ActiveDirectoryRights, $a.AccessControlType, $a.ObjectType,
+        $a.InheritedObjectType, $a.InheritanceFlags, $a.PropagationFlags
+}
+
+# A part of the defaultSecurityDescriptor of organizationalUnit.
+function Add-FakeDefaultOUAces($o) {
+    $d = $script:domainSid
+    $o.Acl.Add((New-FakeAce 'S-1-5-18' 983551))
+    $o.Acl.Add((New-FakeAce "$d-512" 983551))
+    $o.Acl.Add((New-FakeAce 'S-1-5-11' 131220))
+    $o.Acl.Add((New-FakeAce 'S-1-5-32-548' 3 'Allow' ([guid]'bf967aba-0de6-11d0-a285-00aa003049e2')))
+    $o.Acl.Add((New-FakeAce 'S-1-5-32-548' 3 'Allow' ([guid]'bf967a86-0de6-11d0-a285-00aa003049e2')))
+}
+
+# A test adds an ACE by hand, as a person would in ADUC.
+function Add-FakeAce([string]$DN, $Ace) { (Find-Fake $DN).Acl.Add($Ace) }
+function Remove-FakeAces([string]$DN, [scriptblock]$Where) {
+    $o = Find-Fake $DN
+    foreach ($a in @($o.Acl | Where-Object $Where)) { $o.Acl.Remove($a) | Out-Null }
+}
+function Get-FakeAces([string]$DN) { @((Find-Fake $DN).Acl) }
+
+function Get-Acl { param([string]$Path)
+    if ($Path -notmatch '^AD:\\(.+)$') { throw "Fake AD supports only AD:\<dn> paths: $Path" }
+    $o = Find-Fake $Matches[1]
+    $sd = [pscustomobject]@{ Path = $Path; Rules = [System.Collections.Generic.List[object]]::new() }
+    foreach ($a in $o.Acl) { $sd.Rules.Add($a) }
+    $sd | Add-Member -MemberType ScriptMethod -Name GetAccessRules -Value {
+        param($IncludeExplicit, $IncludeInherited, $TargetType)
+        if ($TargetType -ne [System.Security.Principal.SecurityIdentifier]) { throw 'Test: ask for SIDs, not names' }
+        if ($IncludeExplicit) { @($this.Rules) } else { @() }
+    }
+    $sd | Add-Member -MemberType ScriptMethod -Name AccessRuleFactory -Value {
+        param($Identity, $Mask, $IsInherited, $InheritanceFlags, $PropagationFlags, $Type, $ObjectType, $InheritedObjectType)
+        if ($null -eq $Identity -or "$Identity" -notmatch '^S-1-') { throw "Test: AccessRuleFactory needs a SID, got '$Identity'" }
+        New-FakeAce "$Identity" ([int]$Mask) "$Type" ([guid]$ObjectType) "$InheritanceFlags" "$PropagationFlags" ([guid]$InheritedObjectType)
+    }
+    $sd | Add-Member -MemberType ScriptMethod -Name AddAccessRule -Value { param($Rule) $this.Rules.Add($Rule) }
+    $sd
+}
+function Set-Acl { param([string]$Path, $AclObject)
+    if ($Path -ne $AclObject.Path) { throw "Test: Set-Acl on $Path with the ACL of $($AclObject.Path)" }
+    $o = Find-Fake ($Path -replace '^AD:\\', '')
+    $o.Acl.Clear()
+    foreach ($a in $AclObject.Rules) { $o.Acl.Add($a) }
 }
 
 Export-ModuleMember -Function *

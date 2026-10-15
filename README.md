@@ -18,11 +18,13 @@ Declarative infrastructure for Patchwork Labs: every Patchwork host, the NixOS m
 | `tests/` | NixOS VM tests. |
 | `secrets/` | agenix secrets. `secrets.nix` lists the recipients of each file. |
 | `ansible/` | Ansible for the Windows hosts and AD: `windows.yml`, `ad.yml`. See `ansible/README.md`. |
+| `terraform/workspace/` | Terraform for Google Workspace: org units, groups, group settings. See `terraform/workspace/README.md`. |
 | `ansible/vault/` | Git submodule `patchworklabsorg/infra-vault` (private): the Ansible vault. |
 | `ad/` | The AD structure: `org.json` and `converge.ps1`. See `ad/README.md`. |
 | `terraform/` | Terraform roots for resources that an API manages. See `terraform/README.md`. |
 | `workspace/` | GAM script that sets up Google Workspace. |
 | `terraform/github/` | Terraform for the `patchworklabsorg` GitHub org: repos, teams, members, rulesets. See `terraform/github/README.md`. |
+| `terraform/proxmox/` | Terraform root for the Patchwork NixOS VMs on pve01. See `terraform/proxmox/README.md`. |
 
 ## Hosts
 

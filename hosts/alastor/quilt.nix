@@ -38,6 +38,8 @@
     enable = true;
     # Pin to ghcr.io/patchworklabsorg/quilt:<sha> once a build is known good.
     image = "ghcr.io/patchworklabsorg/quilt:main";
+    # The pwlbot PAT in quilt-ghcr-token.age.
+    registryUsername = "pwlbot";
     # 3003 and 3004 are Weave prod and staging.
     port = 3005;
     environmentFile = config.age.secrets.quilt-env.path;

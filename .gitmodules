@@ -1,0 +1,3 @@
+[submodule "ansible/vault"]
+	path = ansible/vault
+	url = https://github.com/patchworklabsorg/infra-vault.git

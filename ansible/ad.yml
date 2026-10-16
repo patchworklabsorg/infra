@@ -1,0 +1,1524 @@
+---
+# ============================================================================
+# ad.yml: directory maintenance for patchwork.internal.
+# ---------------------------------------------------------------------------
+# Runs against domain_controllers over WinRM (group_vars/windows.yml). Every
+# tag is opt-in (`never`), so a run without -t does nothing. Jobs that change
+# the directory run ONCE, on the PDC emulator (ad_dcs[0]); AD replicates the
+# rest. The DNS Analytical log is per DC and runs on every DC.
+#
+#   -t dhcp             DHCP static-range exclusions from dhcp_scopes
+#   -t audit            join delegation, Protected Users and service-account
+#                       posture. REPORT ONLY, changes nothing
+#   -t join-delegation  give ad_join_account the computer-join rights on
+#                       both computer OUs (what -t audit checks)
+#   -t host-groups      lnx-<host>-users / lnx-<host>-admins for every NixOS
+#                       host in ../flake.nix (nixosConfigurations)
+#   -t svc-posture      service accounts: AES only, not delegatable
+#   -t ldap-binds       read-only LDAP bind accounts from
+#                       ad_ldap_bind_accounts (empty today)
+#   -t user-mail        fill in the mail attribute from ad_user_mail
+#   -t ca-check         list the CAs in AD and on loom, and check
+#                       ad_ca_subject_match against them. REPORT ONLY
+#   -t ca-chain         export the forest CA chain to files/pki/
+#   -t dns-log          Microsoft-Windows-DNSServer/Analytical enabled
+#
+# Tier 0 (ad/TIERING.md). Run them in the order in ansible/README.md.
+#   -t authn-log            Microsoft-Windows-Authentication/* logs and
+#                           Kerberos / credential validation audit, success
+#                           and failure, on every DC
+#   -t armoring             KDC and client Kerberos armoring GPOs
+#   -t default-domain-gpo   Default Domain Policy password and lockout =
+#                           ad/org.json passwordPolicy.default
+#   -t breakglass-alert     event 1000 (Patchwork-Alert) when the built-in
+#                           Administrator is used or a privileged group
+#                           changes. Mail only if ad_alert_mail_enabled
+#   -t administrator-random discarded random password on the built-in
+#                           Administrator. Only while it is disabled
+#   -t krbtgt-reset         one krbtgt reset. Refuses before 10 h since the
+#                           last one, or while replication fails
+#   -t jit-endpoint         PatchworkT0 JEA endpoint for JIT Domain Admins.
+#                           Fails while the AD PAM feature is off
+#   -t admin-disabled-gpo   GPO T0-Builtin-Administrator-Disabled: "Accounts:
+#                           Administrator account status" = Disabled, on the
+#                           DCs only (domain root link, security filter)
+# ============================================================================
+- name: AD maintenance
+  hosts: domain_controllers
+  gather_facts: false
+  vars:
+    # ansible_host is the address in hosts.yml; ad_dcs[0] carries both name and ip.
+    ad_is_primary_dc: >-
+      {{ ansible_host in [ad_dcs[0].ip, ad_dcs[0].name]
+         or inventory_hostname == ad_dcs[0].name.split('.')[0] }}
+    # Accounts that must stay OUT of Protected Users for WinRM/NTLM and adcli
+    # to work, and that must carry AccountNotDelegated + AES-only (24).
+    ad_audit_service_accounts:
+      - svc-ansible
+      - svc-lnx-join
+    # -t ldap-binds rotates a bind password only with
+    # -e ad_ldap_bind_rotate=true. The accounts are in group_vars/patchwork.yml.
+    ad_ldap_bind_rotate: false
+    # The repo root: the directory that holds flake.nix.
+    ad_flake_dir: "{{ (playbook_dir ~ '/..') | realpath }}"
+    # ad/org.json, the source of truth for the directory. Read only by the
+    # tasks that use it.
+    ad_org: "{{ lookup('ansible.builtin.file', ad_flake_dir ~ '/ad/org.json') | from_json }}"
+    ad_tiering_files: "{{ playbook_dir }}/files/tiering"
+    ad_alert_dir: 'C:\ProgramData\Patchwork\alerts'
+    ad_jea_dir: 'C:\ProgramData\Patchwork\jea'
+    ad_ps_modules: 'C:\Program Files\WindowsPowerShell\Modules'
+    # -t breakglass-alert: -e ad_alert_test=true writes one test event
+    # (mails only if ad_alert_mail_enabled).
+    ad_alert_test: false
+    # -t administrator-random: -e ad_admin_random_force=true sets a new
+    # password even when the last one is younger than the minimum age.
+    ad_admin_random_force: false
+  tasks:
+
+    # ------------------------------------------------------------------ dhcp
+    - name: DHCP | The scopes are declared
+      ansible.builtin.assert:
+        that: dhcp_scopes is defined and dhcp_scopes | length > 0
+        fail_msg: >-
+          dhcp_scopes is empty for {{ domain_name }}. Fill it in
+          group_vars/patchwork.yml from Get-DhcpServerv4Scope on loom.
+      when: ad_is_primary_dc
+      tags: [dhcp, never]
+
+    - name: DHCP | Ensure the static-range exclusions exist
+      ansible.windows.win_powershell:
+        script: |
+          $Ansible.Changed = $false
+          $scope = "{{ item.0.scope_id }}"
+          $start = "{{ item.1.start }}"; $end = "{{ item.1.end }}"
+          $have = Get-DhcpServerv4ExclusionRange -ScopeId $scope -ErrorAction Stop |
+                  Where-Object { $_.StartRange.ToString() -eq $start -and $_.EndRange.ToString() -eq $end }
+          if (-not $have) {
+            Add-DhcpServerv4ExclusionRange -ScopeId $scope -StartRange $start -EndRange $end
+            $Ansible.Changed = $true
+          }
+          [PSCustomObject]@{ scope = $scope; range = "$start-$end"; created = [bool](-not $have) }
+      loop: "{{ dhcp_scopes | subelements('exclusions') }}"
+      loop_control:
+        label: "{{ item.0.scope_id }} {{ item.1.start }}-{{ item.1.end }}"
+      when: ad_is_primary_dc
+      tags: [dhcp, never]
+
+    # ----------------------------------------------------------------- audit
+    - name: Audit | Join delegation, Protected Users, service-account posture
+      ansible.windows.win_powershell:
+        script: |
+          $Ansible.Changed = $false
+          Import-Module ActiveDirectory
+          $findings = @()
+
+          # 1. Join delegation: can the join account create/delete computers
+          #    in both computer OUs?
+          $joinAcct = "{{ ad_join_account }}"
+          $computerGuid = [Guid]"bf967a86-0de6-11d0-a285-00aa003049e2"
+          foreach ($ou in @("{{ ad_computer_ou_client }}", "{{ ad_computer_ou_server }}")) {
+            if (-not $ou) { $findings += "computer OU not set in group_vars/patchwork.yml"; continue }
+            $acl = Get-Acl -Path "AD:\$ou"
+            $ok = $acl.Access | Where-Object {
+              $_.IdentityReference -like "*\$joinAcct" -and
+              $_.AccessControlType -eq 'Allow' -and
+              $_.ObjectType -eq $computerGuid -and
+              ($_.ActiveDirectoryRights -band [System.DirectoryServices.ActiveDirectoryRights]::CreateChild)
+            }
+            if (-not $ok) { $findings += "$joinAcct cannot create computer objects in $ou" }
+          }
+
+          # 2. Protected Users: list members, flag any service account.
+          $pu = @()
+          try { $pu = Get-ADGroupMember -Identity 'Protected Users' | Select-Object -ExpandProperty SamAccountName } catch {}
+          foreach ($svc in @({{ ad_audit_service_accounts | map('tojson') | join(', ') }})) {
+            if ($pu -contains $svc) { $findings += "$svc is in Protected Users (breaks NTLM/WinRM and adcli)" }
+          }
+
+          # 3. Service-account posture: AES-only, not delegatable, not expired.
+          $posture = @()
+          foreach ($svc in @({{ ad_audit_service_accounts | map('tojson') | join(', ') }})) {
+            $u = Get-ADUser -Filter "SamAccountName -eq '$svc'" -Properties msDS-SupportedEncryptionTypes, AccountNotDelegated, PasswordNeverExpires, Enabled
+            if (-not $u) { $findings += "$svc does not exist in {{ domain_name }}"; continue }
+            $enc = $u.'msDS-SupportedEncryptionTypes'
+            if ($enc -ne 24) { $findings += "$svc msDS-SupportedEncryptionTypes is $enc, standard is 24 (AES only)" }
+            if (-not $u.AccountNotDelegated) { $findings += "$svc is delegatable (AccountNotDelegated is false)" }
+            if (-not $u.Enabled) { $findings += "$svc is disabled" }
+            $posture += [PSCustomObject]@{ account = $svc; enc = $enc; notDelegated = $u.AccountNotDelegated; enabled = $u.Enabled }
+          }
+
+          [PSCustomObject]@{
+            protectedUsers = $pu
+            posture        = $posture
+            findings       = $findings
+          }
+      register: ad_audit
+      when: ad_is_primary_dc
+      tags: [audit, never]
+
+    - name: Audit | Report
+      ansible.builtin.debug:
+        msg:
+          domain: "{{ domain_name }}"
+          protected_users: "{{ ad_audit.output[0].protectedUsers }}"
+          service_accounts: "{{ ad_audit.output[0].posture }}"
+          findings: "{{ ad_audit.output[0].findings }}"
+      when: ad_is_primary_dc
+      tags: [audit, never]
+
+    - name: Audit | Fail on findings when asked (-e ad_audit_strict=true)
+      ansible.builtin.assert:
+        that: ad_audit.output[0].findings | length == 0
+        fail_msg: "{{ ad_audit.output[0].findings }}"
+      when:
+        - ad_is_primary_dc
+        - ad_audit_strict | default(false) | bool
+      tags: [audit, never]
+
+    # ------------------------------------------------------- join-delegation
+    # Enforce what -t audit checks: ad_join_account can create and delete
+    # computer objects in both computer OUs, and can manage the attributes a
+    # join writes on the computer objects below them (reset password,
+    # validated DNS host name, validated SPN, account restrictions). ACEs are
+    # added one by one and only when missing, so a rerun changes nothing and
+    # hand-made extra rights survive.
+    - name: Join delegation | ad_join_account can join computers
+      ansible.windows.win_powershell:
+        script: |
+          $Ansible.Changed = $false
+          Import-Module ActiveDirectory
+          $acct = Get-ADUser -Identity "{{ ad_join_account }}"
+          $sid  = [System.Security.Principal.SecurityIdentifier]$acct.SID
+          $nt   = $sid.Translate([System.Security.Principal.NTAccount])
+          $computer  = [Guid]"bf967a86-0de6-11d0-a285-00aa003049e2"  # computer class
+          $resetPwd  = [Guid]"00299570-246d-11d0-a768-00aa006e0529"  # Reset Password
+          $dnsHost   = [Guid]"72e39547-7b18-11d1-adef-00c04fd8d5cd"  # Validated DNS host name
+          $spn       = [Guid]"f3a64788-5306-11d1-a9c5-0000f80367c1"  # Validated SPN
+          $acctRestr = [Guid]"4c164200-20c0-11d0-a768-00aa006e0529"  # Account Restrictions set
+          $desc = [System.DirectoryServices.ActiveDirectorySecurityInheritance]::Descendents
+          $none = [System.DirectoryServices.ActiveDirectorySecurityInheritance]::None
+          $added = @()
+          foreach ($ou in @("{{ ad_computer_ou_client }}", "{{ ad_computer_ou_server }}")) {
+              $acl = Get-Acl -Path "AD:\$ou"
+              $want = @(
+                  (New-Object System.DirectoryServices.ActiveDirectoryAccessRule($sid, 'CreateChild, DeleteChild', 'Allow', $computer, $none)),
+                  (New-Object System.DirectoryServices.ActiveDirectoryAccessRule($sid, 'ExtendedRight', 'Allow', $resetPwd, $desc, $computer)),
+                  (New-Object System.DirectoryServices.ActiveDirectoryAccessRule($sid, 'Self', 'Allow', $dnsHost, $desc, $computer)),
+                  (New-Object System.DirectoryServices.ActiveDirectoryAccessRule($sid, 'Self', 'Allow', $spn, $desc, $computer)),
+                  (New-Object System.DirectoryServices.ActiveDirectoryAccessRule($sid, 'ReadProperty, WriteProperty', 'Allow', $acctRestr, $desc, $computer))
+              )
+              $dirty = $false
+              foreach ($w in $want) {
+                  $have = $acl.Access | Where-Object {
+                      $_.IdentityReference -eq $nt -and
+                      $_.AccessControlType -eq 'Allow' -and
+                      $_.ObjectType -eq $w.ObjectType -and
+                      $_.InheritanceType -eq $w.InheritanceType -and
+                      (($_.ActiveDirectoryRights -band $w.ActiveDirectoryRights) -eq $w.ActiveDirectoryRights)
+                  }
+                  if (-not $have) {
+                      $acl.AddAccessRule($w)
+                      $added += "$ou :: $($w.ActiveDirectoryRights) $($w.ObjectType)"
+                      $dirty = $true
+                  }
+              }
+              if ($dirty) {
+                  Set-Acl -Path "AD:\$ou" -AclObject $acl
+                  $Ansible.Changed = $true
+              }
+          }
+          $Ansible.Result = $added
+      register: ad_join_delegation
+      when: ad_is_primary_dc
+      tags: [join-delegation, never]
+
+    - name: Join delegation | Report
+      ansible.builtin.debug:
+        msg:
+          domain: "{{ domain_name }}"
+          aces_added: "{{ ad_join_delegation.result }}"
+      when: ad_is_primary_dc
+      tags: [join-delegation, never]
+
+    # ----------------------------------------------------------- host-groups
+    # One lnx-<host>-users and one lnx-<host>-admins group per NixOS host, in
+    # the Box-Users / Box-Admins OUs. modules/ad-join points sssd and sudo at
+    # these names. The groups are created empty; the operator sets membership.
+    #
+    # The host list comes from the flake, not from a hand-kept list:
+    #   nix eval --json <repo>#nixosConfigurations --apply builtins.attrNames
+    # So a host added to `hosts` in flake.nix gets its groups on the next run.
+    # Nix reads a git flake from the git index: flake.nix must be tracked
+    # (staged is enough), and an uncommitted change to it counts. Override the
+    # list with -e '{"ad_linux_hosts": ["name"]}'.
+    - name: Host groups | Read the NixOS host names from the flake
+      ansible.builtin.set_fact:
+        ad_linux_hosts: >-
+          {{ lookup('ansible.builtin.pipe',
+                    'nix --extra-experimental-features "nix-command flakes" eval --json '
+                    ~ (ad_flake_dir ~ '#nixosConfigurations') | quote
+                    ~ ' --apply builtins.attrNames')
+             | from_json | sort }}
+      run_once: true
+      tags: [host-groups, never]
+
+    - name: Host groups | The flake names at least one host
+      ansible.builtin.assert:
+        that: ad_linux_hosts | length > 0
+        fail_msg: "nix eval returned no nixosConfigurations in {{ ad_flake_dir }}."
+      run_once: true
+      tags: [host-groups, never]
+
+    - name: Host groups | lnx-<host>-users and lnx-<host>-admins exist
+      ansible.windows.win_powershell:
+        parameters:
+          hosts_json: "{{ ad_linux_hosts | to_json }}"
+        script: |
+          param([string]$hosts_json)
+          $Ansible.Changed = $false
+          Import-Module ActiveDirectory
+          $created = @()
+          foreach ($h in ($hosts_json | ConvertFrom-Json)) {
+              foreach ($kind in @('users', 'admins')) {
+                  $name = "lnx-$($h.ToLower())-$kind"
+                  $ou = if ($kind -eq 'users') { "{{ ad_group_ou_users }}" } else { "{{ ad_group_ou_admins }}" }
+                  $g = Get-ADGroup -Filter "SamAccountName -eq '$name'"
+                  if (-not $g) {
+                      New-ADGroup -Name $name -SamAccountName $name `
+                          -GroupCategory Security -GroupScope Global -Path $ou `
+                          -Description $(if ($kind -eq 'users') { "Linux logon on $h" } else { "Linux sudo on $h" })
+                      $created += $name
+                      $Ansible.Changed = $true
+                  }
+              }
+          }
+          $Ansible.Result = $created
+      register: ad_host_groups
+      when: ad_is_primary_dc
+      tags: [host-groups, never]
+
+    - name: Host groups | Report
+      ansible.builtin.debug:
+        msg:
+          domain: "{{ domain_name }}"
+          hosts: "{{ ad_linux_hosts }}"
+          groups_created: "{{ ad_host_groups.result }}"
+      when: ad_is_primary_dc
+      tags: [host-groups, never]
+
+    # ------------------------------------------------------------ svc-posture
+    # Enforce what -t audit checks on the service accounts: AES-only Kerberos
+    # keys (msDS-SupportedEncryptionTypes 24) and AccountNotDelegated. Neither
+    # touches NTLM, so WinRM for svc-ansible keeps working, and adcli joins
+    # with svc-lnx-join use AES already. Idempotent; safe to rerun.
+    - name: Service posture | AES-only and not delegatable
+      ansible.windows.win_powershell:
+        script: |
+          $Ansible.Changed = $false
+          Import-Module ActiveDirectory
+          $changed = @()
+          foreach ($name in @({{ ad_audit_service_accounts | map('tojson') | join(', ') }})) {
+            $u = Get-ADUser -Filter "SamAccountName -eq '$name'" -Properties msDS-SupportedEncryptionTypes, AccountNotDelegated
+            if (-not $u) { continue }
+            if ($u.'msDS-SupportedEncryptionTypes' -ne 24) {
+              Set-ADUser -Identity $name -Replace @{ 'msDS-SupportedEncryptionTypes' = 24 }
+              $changed += "$name enc->24"
+            }
+            if (-not $u.AccountNotDelegated) {
+              Set-ADUser -Identity $name -AccountNotDelegated $true
+              $changed += "$name notDelegated->true"
+            }
+          }
+          if ($changed.Count -gt 0) { $Ansible.Changed = $true }
+          $Ansible.Result = $changed
+      register: ad_svc_posture
+      when: ad_is_primary_dc
+      tags: [svc-posture, never]
+
+    - name: Service posture | Report
+      ansible.builtin.debug:
+        var: ad_svc_posture.result
+      when: ad_is_primary_dc
+      tags: [svc-posture, never]
+
+    # ------------------------------------------------------------ user-mail
+    # Every consumer that reads a user out of AD reads the address from the
+    # mail attribute. The accounts themselves are made by hand in the
+    # console; this only fills in the one attribute, and only for the
+    # accounts that ad_user_mail names.
+    - name: User mail | Fill in the mail attribute
+      ansible.windows.win_powershell:
+        script: |
+          $Ansible.Changed = $false
+          Import-Module ActiveDirectory
+          $changed = @()
+          $wanted = @{
+          {% for name, address in (ad_user_mail | default({})) | dictsort %}
+            {{ name | tojson }} = {{ address | tojson }}
+          {% endfor %}
+          }
+          foreach ($name in $wanted.Keys) {
+            $u = Get-ADUser -Filter "SamAccountName -eq '$name'" -Properties mail
+            # A name with no account is reported, not created. This play does
+            # not make people; it only fills in an attribute.
+            if (-not $u) { $changed += "$name absent"; continue }
+            if ($u.mail -ne $wanted[$name]) {
+              Set-ADUser -Identity $name -EmailAddress $wanted[$name]
+              $changed += "$name mail->$($wanted[$name])"
+              $Ansible.Changed = $true
+            }
+          }
+          $Ansible.Result = $changed
+      register: ad_user_mail_result
+      when:
+        - ad_is_primary_dc
+        - (ad_user_mail | default({})) | length > 0
+      tags: [user-mail, never]
+
+    - name: User mail | Report
+      ansible.builtin.debug:
+        var: ad_user_mail_result.result
+      when:
+        - ad_is_primary_dc
+        - (ad_user_mail | default({})) | length > 0
+      tags: [user-mail, never]
+
+    # ------------------------------------------------------------ ldap-binds
+    - name: LDAP binds | Report that no account is declared
+      ansible.builtin.debug:
+        msg: ad_ldap_bind_accounts is empty. Nothing to do.
+      when:
+        - ad_is_primary_dc
+        - ad_ldap_bind_accounts | length == 0
+      tags: [ldap-binds, never]
+
+    - name: LDAP binds | The service-account OU and the passwords are set
+      ansible.builtin.assert:
+        that:
+          - ad_service_account_ou is defined and ad_service_account_ou | length > 0
+          - ad_ldap_bind_accounts | map(attribute='password') | select('eq', '') | list | length == 0
+        fail_msg: >-
+          Set ad_service_account_ou in group_vars/patchwork.yml and put the
+          password of every account in ad_ldap_bind_accounts in the vault
+          before creating the accounts.
+      when:
+        - ad_is_primary_dc
+        - ad_ldap_bind_accounts | length > 0
+      tags: [ldap-binds, never]
+
+    - name: LDAP binds | Accounts exist
+      microsoft.ad.user:
+        name: "{{ item.name }}"
+        sam_account_name: "{{ item.name }}"
+        upn: "{{ item.name }}@{{ domain_name }}"
+        path: "{{ ad_service_account_ou }}"
+        description: "{{ item.description }}"
+        password: "{{ item.password }}"
+        update_password: "{{ 'always' if ad_ldap_bind_rotate | bool else 'on_create' }}"
+        password_never_expires: true
+        user_cannot_change_password: true
+        enabled: true
+        attributes:
+          set:
+            msDS-SupportedEncryptionTypes: 24
+        state: present
+      loop: "{{ ad_ldap_bind_accounts }}"
+      loop_control:
+        label: "{{ item.name }}"
+      no_log: true
+      when: ad_is_primary_dc
+      tags: [ldap-binds, never]
+
+    # microsoft.ad.user has no AccountNotDelegated option.
+    - name: LDAP binds | Accounts are not delegatable
+      ansible.windows.win_powershell:
+        script: |
+          $Ansible.Changed = $false
+          Import-Module ActiveDirectory
+          foreach ($name in @({{ ad_ldap_bind_accounts | map(attribute='name') | map('tojson') | join(', ') }})) {
+            $u = Get-ADUser -Identity $name -Properties AccountNotDelegated
+            if (-not $u.AccountNotDelegated) {
+              Set-ADUser -Identity $name -AccountNotDelegated $true
+              $Ansible.Changed = $true
+            }
+          }
+      when:
+        - ad_is_primary_dc
+        - ad_ldap_bind_accounts | length > 0
+      tags: [ldap-binds, never]
+
+    # -------------------------------------------------------------- ca-check
+    # Read only. The enterprise CAs that AD publishes, and every CA
+    # certificate in loom's Root and CA stores, with a mark on the ones that
+    # ad_ca_subject_match selects. Run it before the first -t ca-chain.
+    - name: CA check | Read the CA names
+      ansible.windows.win_powershell:
+        # The output nests three levels. The default depth (2) turns the
+        # inner objects into strings, and the assert below cannot read them.
+        depth: 4
+        script: |
+          $Ansible.Changed = $false
+          Import-Module ActiveDirectory
+          $match = {{ ad_ca_subject_match | tojson }}
+          $config = (Get-ADRootDSE).configurationNamingContext
+          $base = "CN=Enrollment Services,CN=Public Key Services,CN=Services,$config"
+          $enroll = Get-ADObject -SearchBase $base -Filter "objectClass -eq 'pKIEnrollmentService'" `
+            -Properties dNSHostName, cACertificateDN |
+            ForEach-Object {
+              [PSCustomObject]@{
+                name = $_.Name; host = $_.dNSHostName; subject = $_.cACertificateDN
+                matches = ($_.cACertificateDN -match $match)
+              }
+            }
+          $stores = foreach ($store in "CA", "Root") {
+            Get-ChildItem "Cert:\LocalMachine\$store" | Where-Object { $_.Subject -ne $_.Issuer -or $store -eq 'Root' } |
+              ForEach-Object {
+                [PSCustomObject]@{
+                  store = $store; subject = $_.Subject; notAfter = $_.NotAfter.ToString('s')
+                  matches = ($_.Subject -match $match)
+                }
+              }
+          }
+          [PSCustomObject]@{
+            pattern            = $match
+            enrollmentServices = @($enroll)
+            matchingStoreCerts = @($stores | Where-Object matches)
+            # Everything else that is not a well-known public root.
+            otherCaCerts       = @($stores | Where-Object {
+                -not $_.matches -and $_.subject -notmatch ('Microsoft|DigiCert|VeriSign|Thawte|GlobalSign|Entrust|' +
+                  'Starfield|Go Daddy|Baltimore|ISRG|USERTrust|Certum|AAA|COMODO|QuoVadis|Symantec|Sectigo|' +
+                  'SecureTrust|Hotspot|Federal|Class 3')
+              })
+          }
+      register: ad_ca_check
+      when: ad_is_primary_dc
+      tags: [ca-check, never]
+
+    - name: CA check | Report
+      ansible.builtin.debug:
+        var: ad_ca_check.output
+      when: ad_is_primary_dc
+      tags: [ca-check, never]
+
+    - name: CA check | The pattern selects the forest CAs
+      ansible.builtin.assert:
+        that:
+          - ad_ca_check.output[0].enrollmentServices | length > 0
+          - ad_ca_check.output[0].enrollmentServices | selectattr('matches') | list | length == ad_ca_check.output[0].enrollmentServices | length
+          - ad_ca_check.output[0].matchingStoreCerts | length > 0
+        fail_msg: >-
+          ad_ca_subject_match ({{ ad_ca_subject_match }}) does not select every
+          enterprise CA, or selects no certificate in loom's stores. Read the
+          report above and set ad_ca_subject_match in group_vars/all/main.yml
+          to match the issuing CA and the root CA.
+        success_msg: ad_ca_subject_match selects every enterprise CA.
+      when: ad_is_primary_dc
+      tags: [ca-check, never]
+
+    # -------------------------------------------------------------- ca-chain
+    # The forest PKI chain (issuing CA + root) as PEM, read from the PDC's
+    # machine stores. Public material, so it lives in the repo under
+    # files/pki/. LDAPS clients verify the DCs with it.
+    # Rerun after a CA renewal.
+    - name: CA chain | Read the forest CA certificates from the PDC
+      ansible.windows.win_powershell:
+        script: |
+          $Ansible.Changed = $false
+          $pem = ""
+          $certs = foreach ($store in "CA", "Root") {
+            Get-ChildItem "Cert:\LocalMachine\$store" |
+              Where-Object { $_.Subject -match {{ ad_ca_subject_match | tojson }} }
+          }
+          # Root last. Order does not matter for an LDAPS trust list, but a
+          # client that appends the bundle to a leaf certificate to serve a
+          # chain needs the intermediate first.
+          $ordered = $certs | Sort-Object Thumbprint -Unique |
+            Sort-Object { [int]($_.Subject -eq $_.Issuer) }
+          $ordered | ForEach-Object {
+            $pem += "# $($_.Subject)`n-----BEGIN CERTIFICATE-----`n"
+            $pem += [Convert]::ToBase64String($_.RawData, 'InsertLineBreaks') + "`n"
+            $pem += "-----END CERTIFICATE-----`n"
+          }
+          $Ansible.Result = ($pem -replace "`r", "")
+      register: ad_ca_chain
+      when: ad_is_primary_dc
+      tags: [ca-chain, never]
+
+    - name: CA chain | Refuse an empty export
+      ansible.builtin.assert:
+        that: ad_ca_chain.result is search('BEGIN CERTIFICATE')
+        fail_msg: >-
+          No certificate on {{ inventory_hostname }} matched
+          ad_ca_subject_match ({{ ad_ca_subject_match }}). Check
+          group_vars/patchwork.yml against the CA names in the PDC's Root and CA stores.
+      when: ad_is_primary_dc
+      tags: [ca-chain, never]
+
+    - name: CA chain | The output directory exists on the control node
+      ansible.builtin.file:
+        path: "{{ ad_ca_chain_file | dirname }}"
+        state: directory
+        mode: "0755"
+      delegate_to: localhost
+      become: false
+      vars:
+        ansible_python_interpreter: "{{ ansible_playbook_python }}"
+      when: ad_is_primary_dc
+      tags: [ca-chain, never]
+
+    - name: CA chain | Write {{ ad_ca_chain_file }} on the control node
+      ansible.builtin.copy:
+        content: "{{ ad_ca_chain.result }}"
+        dest: "{{ ad_ca_chain_file }}"
+        mode: "0644"
+      delegate_to: localhost
+      become: false
+      vars:
+        ansible_python_interpreter: "{{ ansible_playbook_python }}"
+      when: ad_is_primary_dc
+      tags: [ca-chain, never]
+
+    # --------------------------------------------------------------- dns-log
+    # wevtutil, not Set-DnsServerDiagnostics: the Analytical channel is an ETW
+    # log and the DNS diagnostics cmdlet does not enable it. Nothing ships
+    # this log off the DCs yet; it is for troubleshooting on the DC.
+    - name: DNS log | Microsoft-Windows-DNSServer/Analytical is enabled
+      ansible.windows.win_powershell:
+        script: |
+          $Ansible.Changed = $false
+          $log = 'Microsoft-Windows-DNSServer/Analytical'
+          $state = (wevtutil gl $log | Select-String '^enabled:').ToString().Split(':')[1].Trim()
+          if ($state -ne 'true') {
+            wevtutil sl $log /e:true /q:true
+            $Ansible.Changed = $true
+          }
+          [PSCustomObject]@{ log = $log; wasEnabled = ($state -eq 'true') }
+      tags: [dns-log, never]
+
+    # ============================================================== TIER 0
+    # ad/TIERING.md. Run order: ansible/README.md, "Tier 0 run order".
+
+    # ------------------------------------------------------------- authn-log
+    # The silo and Protected Users log their refusals (101, 105, 305, ...) to
+    # the Microsoft-Windows-Authentication/* channels. They are off by
+    # default. The audit subcategories add 4768/4769/4776 failures to the
+    # Security log. auditpol sets the local policy on each DC. A GPO with
+    # advanced audit settings would replace it; none exists today.
+    - name: Authn log | Authentication logs and Kerberos audit on every DC
+      ansible.windows.win_powershell:
+        script: |
+          [CmdletBinding(SupportsShouldProcess)]
+          param()
+          $Ansible.Changed = $false
+          $done = @()
+          $logs = @(wevtutil el | Where-Object { $_ -like 'Microsoft-Windows-Authentication/*' })
+          if (-not $logs.Count) { throw 'No Microsoft-Windows-Authentication/* channel exists on this DC.' }
+          foreach ($log in $logs) {
+            $state = (wevtutil gl $log | Select-String '^enabled:').ToString().Split(':')[1].Trim()
+            if ($state -ne 'true') {
+              if ($PSCmdlet.ShouldProcess($log, 'Enable log')) { wevtutil sl $log /e:true /q:true }
+              $done += "log $log"
+              $Ansible.Changed = $true
+            }
+          }
+          # Names, not GUIDs: the DCs are en-US.
+          foreach ($sub in 'Credential Validation', 'Kerberos Authentication Service',
+                           'Kerberos Service Ticket Operations', 'User Account Management',
+                           'Security Group Management') {
+            $row = auditpol /get /subcategory:"$sub" /r | Where-Object { $_ } | ConvertFrom-Csv
+            if (-not $row) { throw "auditpol does not know the subcategory '$sub'." }
+            if ($row.'Inclusion Setting' -ne 'Success and Failure') {
+              if ($PSCmdlet.ShouldProcess($sub, 'Audit success and failure')) {
+                auditpol /set /subcategory:"$sub" /success:enable /failure:enable | Out-Null
+                if ($LASTEXITCODE -ne 0) { throw "auditpol /set failed for '$sub'." }
+              }
+              $done += "audit $sub ($($row.'Inclusion Setting') -> Success and Failure)"
+              $Ansible.Changed = $true
+            }
+          }
+          $Ansible.Result = $done
+      register: ad_authn_log
+      tags: [authn-log, never]
+
+    - name: Authn log | Report
+      ansible.builtin.debug:
+        var: ad_authn_log.result
+      tags: [authn-log, never]
+
+    # -------------------------------------------------------------- armoring
+    # TIERING.md phase 1. "Supported" on the KDC requires armoring from
+    # nobody, so it breaks nothing. The values are the ones that kdc.admx and
+    # Kerberos.admx write. Check in GPMC that each GPO shows the policy by
+    # name (not under "Extra Registry Settings") after the first run.
+    - name: Armoring | KDC and client armoring GPOs exist, are set and are linked
+      ansible.windows.win_powershell:
+        parameters:
+          spec_json: "{{ ad_armoring_gpos | to_json }}"
+          domain: "{{ domain_name }}"
+          server: "{{ ad_dcs[0].name }}"
+        script: |
+          [CmdletBinding(SupportsShouldProcess)]
+          param([string]$spec_json, [string]$domain, [string]$server)
+          $Ansible.Changed = $false
+          if (-not (Get-Module -ListAvailable GroupPolicy)) { throw 'The GroupPolicy module (GPMC) is missing on this DC.' }
+          Import-Module GroupPolicy
+          $gp = @{ Domain = $domain; Server = $server }
+          $done = @()
+          foreach ($spec in ($spec_json | ConvertFrom-Json)) {
+            $gpo = Get-GPO -Name $spec.name @gp -ErrorAction SilentlyContinue
+            if (-not $gpo) {
+              $done += "create GPO $($spec.name)"
+              $Ansible.Changed = $true
+              if (-not $PSCmdlet.ShouldProcess($spec.name, 'Create GPO')) {
+                $done += "then set $($spec.values.Count) values and link to $($spec.target)"
+                continue
+              }
+              $gpo = New-GPO -Name $spec.name -Comment $spec.comment @gp
+            }
+            # Computer settings only.
+            if ("$($gpo.GpoStatus)" -ne 'UserSettingsDisabled') {
+              if ($PSCmdlet.ShouldProcess($spec.name, 'Disable user settings')) { $gpo.GpoStatus = 'UserSettingsDisabled' }
+              $done += "$($spec.name): user settings off"
+              $Ansible.Changed = $true
+            }
+            foreach ($v in $spec.values) {
+              $have = Get-GPRegistryValue -Guid $gpo.Id -Key $v.key -ValueName $v.name @gp -ErrorAction SilentlyContinue
+              if (-not $have -or "$($have.Type)" -ne 'DWord' -or [int]$have.Value -ne [int]$v.value) {
+                if ($PSCmdlet.ShouldProcess("$($spec.name): $($v.key)\$($v.name)", "Set DWord $($v.value)")) {
+                  Set-GPRegistryValue -Guid $gpo.Id -Key $v.key -ValueName $v.name -Type DWord -Value ([int]$v.value) @gp | Out-Null
+                }
+                $done += "$($spec.name): $($v.name) = $($v.value)"
+                $Ansible.Changed = $true
+              }
+            }
+            $links = @((Get-GPInheritance -Target $spec.target @gp).GpoLinks | ForEach-Object { "$($_.GpoId)" })
+            if ($links -notcontains "$($gpo.Id)") {
+              if ($PSCmdlet.ShouldProcess($spec.target, "Link $($spec.name)")) {
+                New-GPLink -Guid $gpo.Id -Target $spec.target -LinkEnabled Yes @gp | Out-Null
+              }
+              $done += "$($spec.name): linked to $($spec.target)"
+              $Ansible.Changed = $true
+            }
+          }
+          $Ansible.Result = $done
+      vars:
+        ad_armoring_gpos:
+          - name: "{{ ad_armoring_kdc_gpo }}"
+            comment: >-
+              TIERING.md phase 1. KDC support for claims, compound authentication and
+              Kerberos armoring = Supported. Managed by ansible/ad.yml -t armoring.
+            target: "{{ ad_armoring_kdc_target }}"
+            values:
+              - { key: 'HKLM\Software\Microsoft\Windows\CurrentVersion\Policies\System\KDC\Parameters', name: EnableCbacAndArmor, value: 1 }
+              # 0 not supported, 1 supported, 2 always provide claims,
+              # 3 fail unarmored requests.
+              - { key: 'HKLM\Software\Microsoft\Windows\CurrentVersion\Policies\System\KDC\Parameters', name: CbacAndArmorLevel, value: 1 }
+          - name: "{{ ad_armoring_client_gpo }}"
+            comment: >-
+              TIERING.md phase 1. Kerberos client support for claims, compound
+              authentication and Kerberos armoring = Enabled. Managed by ansible/ad.yml -t armoring.
+            target: "{{ ad_armoring_client_target }}"
+            values:
+              - { key: 'HKLM\Software\Microsoft\Windows\CurrentVersion\Policies\System\Kerberos\Parameters', name: EnableCbacAndArmor, value: 1 }
+      register: ad_armoring
+      when: ad_is_primary_dc
+      tags: [armoring, never]
+
+    - name: Armoring | Report
+      ansible.builtin.debug:
+        var: ad_armoring.result
+      when: ad_is_primary_dc
+      tags: [armoring, never]
+
+    # ---------------------------------------------------- default-domain-gpo
+    # The Default Domain Policy GPO holds the domain password and lockout
+    # policy too. The PDC applies the GPO again every 5 minutes, and the GPO
+    # values replace what converge.ps1 sets. This makes the GPO match
+    # ad/org.json passwordPolicy.default. It edits GptTmpl.inf in the local
+    # SYSVOL copy (no UNC path: a WinRM NTLM session cannot reach a share),
+    # then raises the computer version in GPT.INI and in AD, so every DC
+    # applies it. DFSR replicates SYSVOL to the other DC.
+    - name: Default domain GPO | Password and lockout match ad/org.json
+      ansible.windows.win_powershell:
+        parameters:
+          policy_json: "{{ ad_org.passwordPolicy.default | to_json }}"
+        script: |
+          [CmdletBinding(SupportsShouldProcess)]
+          param([string]$policy_json)
+          $Ansible.Changed = $false
+          Import-Module ActiveDirectory
+          $spec = $policy_json | ConvertFrom-Json
+
+          # org.json key -> [System Access] key. A time of 0 means never in
+          # org.json; the security template writes never as -1.
+          $map = [ordered]@{
+            minPasswordLength               = @('MinimumPasswordLength', 'int')
+            minPasswordAgeDays              = @('MinimumPasswordAge', 'int')
+            maxPasswordAgeDays              = @('MaximumPasswordAge', 'never')
+            passwordHistoryCount            = @('PasswordHistorySize', 'int')
+            complexityEnabled               = @('PasswordComplexity', 'bool')
+            reversibleEncryptionEnabled     = @('ClearTextPassword', 'bool')
+            lockoutThreshold                = @('LockoutBadCount', 'int')
+            lockoutObservationWindowMinutes = @('ResetLockoutCount', 'int')
+            lockoutDurationMinutes          = @('LockoutDuration', 'never')
+          }
+          $want = [ordered]@{}
+          foreach ($k in $map.Keys) {
+            if (-not $spec.PSObject.Properties[$k]) { continue }
+            $key, $kind = $map[$k]
+            $v = $spec.$k
+            $want[$key] = switch ($kind) {
+              'int'   { [int]$v }
+              'bool'  { [int][bool]$v }
+              'never' { if ([int]$v -eq 0) { -1 } else { [int]$v } }
+            }
+          }
+
+          $guid = '{31B2F340-016D-11D2-945F-00C04FB984F9}'
+          $domain = Get-ADDomain
+          $sysvol = (Get-ItemProperty 'HKLM:\SYSTEM\CurrentControlSet\Services\Netlogon\Parameters').SysVol
+          $root = Join-Path $sysvol "$($domain.DNSRoot)\Policies\$guid"
+          $inf = Join-Path $root 'MACHINE\Microsoft\Windows NT\SecEdit\GptTmpl.inf'
+          $ini = Join-Path $root 'GPT.INI'
+          if (-not (Test-Path $inf)) { throw "Not found: $inf" }
+
+          # Keep the file encoding (UTF-16 LE with BOM for GptTmpl.inf).
+          $reader = New-Object System.IO.StreamReader($inf, $true)
+          $text = $reader.ReadToEnd(); $enc = $reader.CurrentEncoding; $reader.Close()
+          $lines = [System.Collections.Generic.List[string]]($text -split "`r`n")
+          $start = $lines.FindIndex([Predicate[string]]{ param($l) $l.Trim() -eq '[System Access]' })
+          if ($start -lt 0) { throw "$inf has no [System Access] section." }
+          $end = $start + 1
+          while ($end -lt $lines.Count -and -not $lines[$end].TrimStart().StartsWith('[')) { $end++ }
+
+          $diff = @()
+          foreach ($key in $want.Keys) {
+            $line = "$key = $($want[$key])"
+            $at = -1
+            for ($i = $start + 1; $i -lt $end; $i++) {
+              if ($lines[$i] -match "^\s*$([regex]::Escape($key))\s*=") { $at = $i; break }
+            }
+            if ($at -ge 0) {
+              $have = ($lines[$at] -split '=', 2)[1].Trim()
+              if ($have -ne "$($want[$key])") { $diff += "$key $have -> $($want[$key])"; $lines[$at] = $line }
+            } else {
+              $diff += "$key (none) -> $($want[$key])"
+              $lines.Insert($end, $line); $end++
+            }
+          }
+
+          $gpoDN = "CN=$guid,CN=Policies,CN=System,$($domain.DistinguishedName)"
+          $ad = Get-ADObject -Identity $gpoDN -Properties versionNumber, gPCMachineExtensionNames
+          $cse = '{827D319E-6EAC-11D2-A4EA-00C04F79F83A}'
+          $warn = @()
+          if ("$($ad.gPCMachineExtensionNames)" -notmatch [regex]::Escape($cse)) {
+            $warn += "gPCMachineExtensionNames has no Security CSE $cse. The DCs may not apply GptTmpl.inf."
+          }
+
+          $version = $null
+          if ($diff.Count) {
+            $Ansible.Changed = $true
+            $iniText = Get-Content -Raw -Path $ini
+            $iniVersion = if ($iniText -match '(?m)^Version=(\d+)') { [int64]$Matches[1] } else { 0 }
+            $base = [math]::Max($iniVersion, [int64]$ad.versionNumber)
+            # User version in the high 16 bits, computer version in the low 16.
+            if (($base -band 0xFFFF) -eq 0xFFFF) { throw "The computer version of the GPO is at its maximum ($base)." }
+            $version = $base + 1
+            if ($PSCmdlet.ShouldProcess($inf, "Set $($diff -join ', ')")) {
+              [System.IO.File]::WriteAllText($inf, ($lines -join "`r`n"), $enc)
+              $newIni = if ($iniText -match '(?m)^Version=\d+') { $iniText -replace '(?m)^Version=\d+', "Version=$version" }
+                        else { $iniText.TrimEnd() + "`r`nVersion=$version`r`n" }
+              Set-Content -Path $ini -Value $newIni -NoNewline -Encoding ASCII
+              Set-ADObject -Identity $gpoDN -Replace @{ versionNumber = [int]$version }
+            }
+          }
+          $Ansible.Result = @{ changes = $diff; newVersion = $version; warnings = $warn; file = $inf }
+      register: ad_default_gpo
+      when: ad_is_primary_dc
+      tags: [default-domain-gpo, never]
+
+    - name: Default domain GPO | Report
+      ansible.builtin.debug:
+        var: ad_default_gpo.result
+      when: ad_is_primary_dc
+      tags: [default-domain-gpo, never]
+
+    # ------------------------------------------- alert and JEA shared files
+    # PatchworkAlert writes the alert event and, if ad_alert_mail_enabled,
+    # sends the mail. Both -t breakglass-alert and
+    # -t jit-endpoint use it.
+    - name: Alerts | Directories exist
+      ansible.windows.win_file:
+        path: "{{ item }}"
+        state: directory
+      loop:
+        - "{{ ad_alert_dir }}"
+        - "{{ ad_ps_modules }}\\PatchworkAlert"
+      tags: [breakglass-alert, jit-endpoint, never]
+
+    - name: Alerts | PatchworkAlert module is installed
+      ansible.windows.win_copy:
+        src: "{{ ad_tiering_files }}/PatchworkAlert/{{ item }}"
+        dest: "{{ ad_ps_modules }}\\PatchworkAlert\\{{ item }}"
+      loop: [PatchworkAlert.psm1, PatchworkAlert.psd1]
+      tags: [breakglass-alert, jit-endpoint, never]
+
+    - name: Alerts | Mail settings (no secret)
+      ansible.windows.win_copy:
+        content: "{{ ad_alert_mail | to_nice_json }}"
+        dest: "{{ ad_alert_dir }}\\mail.json"
+      vars:
+        ad_alert_mail:
+          enabled: "{{ ad_alert_mail_enabled | default(false) | bool }}"
+          host: "{{ ad_alert_smtp_host }}"
+          port: "{{ ad_alert_smtp_port | int }}"
+          from: "{{ ad_alert_from }}"
+          to: "{{ ad_alert_to }}"
+          subjectPrefix: "{{ ad_alert_subject_prefix }}"
+      tags: [breakglass-alert, jit-endpoint, never]
+
+    - name: Alerts | Application log sources exist
+      ansible.windows.win_powershell:
+        script: |
+          [CmdletBinding(SupportsShouldProcess)]
+          param()
+          $Ansible.Changed = $false
+          foreach ($s in 'Patchwork-Alert', 'Patchwork-JIT') {
+            if (-not [System.Diagnostics.EventLog]::SourceExists($s)) {
+              if ($PSCmdlet.ShouldProcess($s, 'Create Application log source')) { New-EventLog -LogName Application -Source $s }
+              $Ansible.Changed = $true
+            }
+          }
+      tags: [breakglass-alert, jit-endpoint, never]
+
+    # ------------------------------------------------------ breakglass-alert
+    # An event-triggered scheduled task on each DC. It runs as SYSTEM, once
+    # for each matching Security event, and writes event 1000 to the
+    # Application log (source Patchwork-Alert). It mails security@ only when
+    # ad_alert_mail_enabled is true. TIERING.md section 4. Test it every quarter: enable the account, log on once,
+    # then run -t administrator-random -e ad_admin_random_force=true.
+    - name: Break-glass | Handler script is installed
+      ansible.windows.win_copy:
+        src: "{{ ad_tiering_files }}/Invoke-BreakGlassAlert.ps1"
+        dest: "{{ ad_alert_dir }}\\Invoke-BreakGlassAlert.ps1"
+      tags: [breakglass-alert, never]
+
+    - name: Break-glass | Event-triggered task \Patchwork\BreakGlassAlert
+      ansible.windows.win_powershell:
+        parameters:
+          handler: "{{ ad_alert_dir }}\\Invoke-BreakGlassAlert.ps1"
+          tier0_group: "{{ ad_org.privileged.tier0Group }}"
+        script: |
+          [CmdletBinding(SupportsShouldProcess)]
+          param([string]$handler, [string]$tier0_group)
+          $Ansible.Changed = $false
+          Import-Module ActiveDirectory
+          $domainSid = "$((Get-ADDomain).DomainSID)"
+          $adminSid = "$domainSid-500"
+          $adminSam = (Get-ADUser -Identity $adminSid).SamAccountName
+          # Groups whose changes are reported. 4728 global, 4732 local,
+          # 4756 universal.
+          $groupSids = @("$domainSid-512", "$domainSid-519", "$domainSid-518", 'S-1-5-32-544')
+          $t0 = Get-ADGroup -Filter "SamAccountName -eq '$tier0_group'"
+          if ($t0) { $groupSids += "$($t0.SID)" }
+          $groupFilter = ($groupSids | ForEach-Object { "Data[@Name='TargetSid']='$_'" }) -join ' or '
+
+          $selects = @(
+            "*[System[(EventID=4624)]] and *[EventData[Data[@Name='TargetUserSid']='$adminSid']]",
+            "*[System[(EventID=4768 or EventID=4722 or EventID=4724)]] and *[EventData[Data[@Name='TargetSid']='$adminSid']]",
+            "*[System[(EventID=4776)]] and *[EventData[Data[@Name='TargetUserName']='$adminSam']]",
+            "*[System[(EventID=4728 or EventID=4732 or EventID=4756)]] and *[EventData[$groupFilter]]"
+          )
+          $query = '<QueryList><Query Id="0" Path="Security">' + (($selects | ForEach-Object {
+                '<Select Path="Security">' + [System.Security.SecurityElement]::Escape($_) + '</Select>' }) -join '') + '</Query></QueryList>'
+          $taskArgs = '-NoProfile -NonInteractive -ExecutionPolicy Bypass -File "' + $handler + '" -Channel "$(Channel)" -RecordId $(RecordId)'
+
+          $body = @"
+            <Triggers>
+              <EventTrigger>
+                <Enabled>true</Enabled>
+                <Subscription>$([System.Security.SecurityElement]::Escape($query))</Subscription>
+                <ValueQueries>
+                  <Value name="Channel">Event/System/Channel</Value>
+                  <Value name="RecordId">Event/System/EventRecordID</Value>
+                </ValueQueries>
+              </EventTrigger>
+            </Triggers>
+            <Principals>
+              <Principal id="Author"><UserId>S-1-5-18</UserId><RunLevel>HighestAvailable</RunLevel></Principal>
+            </Principals>
+            <Settings>
+              <MultipleInstancesPolicy>Parallel</MultipleInstancesPolicy>
+              <DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries>
+              <StopIfGoingOnBatteries>false</StopIfGoingOnBatteries>
+              <StartWhenAvailable>true</StartWhenAvailable>
+              <ExecutionTimeLimit>PT5M</ExecutionTimeLimit>
+              <Enabled>true</Enabled>
+            </Settings>
+            <Actions Context="Author">
+              <Exec>
+                <Command>powershell.exe</Command>
+                <Arguments>$([System.Security.SecurityElement]::Escape($taskArgs))</Arguments>
+              </Exec>
+            </Actions>
+          "@
+          # The hash of the definition goes in the description, so a rerun
+          # changes nothing when the definition is the same.
+          $sha = [System.Security.Cryptography.SHA256]::Create()
+          $hash = -join ($sha.ComputeHash([Text.Encoding]::UTF8.GetBytes($body)) | ForEach-Object { $_.ToString('x2') })
+          $mc = Get-Content -Raw "$env:ProgramData\Patchwork\alerts\mail.json" | ConvertFrom-Json
+          $mailNote = if ($mc.enabled) { "Mails $($mc.to) and writes" } else { 'Writes' }
+          $desc = "$mailNote an event (Patchwork-Alert) on use of the built-in Administrator and on privileged group changes. " +
+                  "ansible/ad.yml -t breakglass-alert. sha256=$hash"
+          $xml = @"
+          <?xml version="1.0" encoding="UTF-16"?>
+          <Task version="1.4" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
+            <RegistrationInfo><Description>$([System.Security.SecurityElement]::Escape($desc))</Description></RegistrationInfo>
+          $body
+          </Task>
+          "@
+          $have = Get-ScheduledTask -TaskPath '\Patchwork\' -TaskName 'BreakGlassAlert' -ErrorAction SilentlyContinue
+          if (-not $have -or "$($have.Description)" -notlike "*sha256=$hash") {
+            if ($PSCmdlet.ShouldProcess('\Patchwork\BreakGlassAlert', 'Register task')) {
+              Register-ScheduledTask -TaskPath '\Patchwork\' -TaskName 'BreakGlassAlert' -Xml $xml -Force | Out-Null
+            }
+            $Ansible.Changed = $true
+          }
+          $Ansible.Result = @{ administrator = $adminSam; sid = $adminSid; groups = $groupSids; registered = $Ansible.Changed }
+      register: ad_breakglass
+      tags: [breakglass-alert, never]
+
+    - name: Break-glass | Report
+      ansible.builtin.debug:
+        var: ad_breakglass.result
+      tags: [breakglass-alert, never]
+
+    - name: Break-glass | Write one test event (-e ad_alert_test=true)
+      ansible.windows.win_powershell:
+        script: |
+          Import-Module PatchworkAlert
+          $enabled = [bool](Get-Content -Raw "$env:ProgramData\Patchwork\alerts\mail.json" | ConvertFrom-Json).enabled
+          $body = 'ad.yml -t breakglass-alert -e ad_alert_test=true. No action needed.'
+          $ok = Send-PatchworkAlert -Subject "Test alert from $env:COMPUTERNAME" -Body $body -EventId 1001
+          if ($enabled -and -not $ok) { throw 'The test mail failed. Read event 1900 (source Patchwork-Alert) in the Application log of this DC.' }
+          $Ansible.Changed = $false
+          $Ansible.Result = @{ eventWritten = 'Patchwork-Alert 1001'; mailEnabled = $enabled; mailed = $ok }
+      when: ad_alert_test | bool
+      tags: [breakglass-alert, never]
+
+    # -------------------------------------------------- administrator-random
+    # TIERING.md section 4: nobody stores or knows the built-in
+    # Administrator password. The DC makes a random password and sets it
+    # straight from a SecureString. It is never a plain string, never
+    # returned, never logged. Refuses while the account is enabled.
+    - name: Administrator | Refuse while the built-in Administrator is enabled
+      ansible.windows.win_powershell:
+        script: |
+          [CmdletBinding(SupportsShouldProcess)]
+          param()
+          $Ansible.Changed = $false
+          Import-Module ActiveDirectory
+          $u = Get-ADUser -Identity "$((Get-ADDomain).DomainSID)-500"
+          if ($u.Enabled) {
+            throw ("The built-in Administrator ($($u.SamAccountName)) is enabled. This tag runs only on a disabled account. " +
+                   'Disable it first (converge.ps1 Build), then run again.')
+          }
+      when: ad_is_primary_dc
+      tags: [administrator-random, never]
+
+    - name: Administrator | Discarded random password, sensitive, still disabled
+      ansible.windows.win_powershell:
+        parameters:
+          length: "{{ ad_admin_random_length | int }}"
+          min_age_hours: "{{ ad_admin_random_min_age_hours | int }}"
+          force: "{{ ad_admin_random_force | bool }}"
+        script: |
+          [CmdletBinding(SupportsShouldProcess)]
+          param([int]$length, [int]$min_age_hours, [bool]$force)
+          $Ansible.Changed = $false
+          Import-Module ActiveDirectory
+          if ($length -lt 64) { throw 'ad_admin_random_length must be 64 or more.' }
+          $sid = "$((Get-ADDomain).DomainSID)-500"
+          $u = Get-ADUser -Identity $sid -Properties pwdLastSet, AccountNotDelegated
+          if ($u.Enabled) {
+            throw "The built-in Administrator ($($u.SamAccountName)) is enabled. Refused."
+          }
+          $age = ((Get-Date).ToUniversalTime() - [DateTime]::FromFileTimeUtc([int64]$u.pwdLastSet)).TotalHours
+          $actions = @()
+          if (-not $u.AccountNotDelegated) {
+            if ($PSCmdlet.ShouldProcess($u.SamAccountName, 'Set "sensitive and cannot be delegated"')) {
+              Set-ADUser -Identity $u -AccountNotDelegated $true
+            }
+            $actions += 'set sensitive and cannot be delegated'
+            $Ansible.Changed = $true
+          }
+          if ($force -or $age -ge $min_age_hours) {
+            if ($PSCmdlet.ShouldProcess($u.SamAccountName, "Set a random $length-character password")) {
+              $sets = 'ABCDEFGHJKLMNPQRSTUVWXYZ', 'abcdefghijkmnopqrstuvwxyz', '23456789', '!#%+-=?@^_~'
+              $all = [char[]](-join $sets)
+              $rng = [System.Security.Cryptography.RandomNumberGenerator]::Create()
+              $buf = New-Object byte[] 1
+              $limit = 256 - (256 % $all.Length)
+              do {
+                $pw = New-Object System.Security.SecureString
+                $seen = @($false, $false, $false, $false)
+                while ($pw.Length -lt $length) {
+                  $rng.GetBytes($buf)
+                  if ($buf[0] -ge $limit) { continue }
+                  $c = $all[$buf[0] % $all.Length]
+                  for ($s = 0; $s -lt 4; $s++) { if ($sets[$s].IndexOf($c) -ge 0) { $seen[$s] = $true } }
+                  $pw.AppendChar($c)
+                }
+                $c = $null
+                $complete = -not ($seen -contains $false)
+                if (-not $complete) { $pw.Dispose() }
+              } until ($complete)
+              $pw.MakeReadOnly()
+              Set-ADAccountPassword -Identity $u -Reset -NewPassword $pw
+              $pw.Dispose(); $rng.Dispose()
+            }
+            $actions += "set a new discarded random password (old one $([int]$age) h old)"
+            $Ansible.Changed = $true
+          } else {
+            $actions += "password is $([int]$age) h old, younger than $min_age_hours h: not changed (use -e ad_admin_random_force=true)"
+          }
+          $Ansible.Result = @{ account = $u.SamAccountName; enabled = $u.Enabled; actions = $actions }
+      register: ad_admin_random
+      no_log: true
+      when: ad_is_primary_dc
+      tags: [administrator-random, never]
+
+    - name: Administrator | Report (no password in it)
+      ansible.builtin.debug:
+        var: ad_admin_random.result
+      when: ad_is_primary_dc
+      tags: [administrator-random, never]
+
+    # ---------------------------------------------------------- krbtgt-reset
+    # TIERING.md phase 6: two resets, 10 hours or more apart. Each run
+    # resets once at most. It refuses while the password is younger than
+    # ad_krbtgt_min_age_hours or while any DC shows a replication failure.
+    # Each DC checks itself and pulls the change itself: a WinRM NTLM session
+    # cannot use its credentials on a second DC.
+    - name: Krbtgt | Replication is healthy on this DC
+      ansible.windows.win_powershell:
+        script: |
+          [CmdletBinding(SupportsShouldProcess)]
+          param()
+          $Ansible.Changed = $false
+          Import-Module ActiveDirectory
+          $problems = @()
+          try {
+            $meta = @(Get-ADReplicationPartnerMetadata -Target $env:COMPUTERNAME -Partition * -ErrorAction Stop)
+            if (-not $meta.Count) { $problems += "$env:COMPUTERNAME has no inbound replication partner" }
+            foreach ($m in $meta) {
+              if ($m.LastReplicationResult -ne 0) {
+                $problems += "$env:COMPUTERNAME <- $($m.Partner) ($($m.Partition)): last result $($m.LastReplicationResult)"
+              }
+            }
+            foreach ($f in @(Get-ADReplicationFailure -Target $env:COMPUTERNAME -ErrorAction Stop | Where-Object { $_.FailureCount -gt 0 })) {
+              $problems += "$env:COMPUTERNAME : $($f.FailureCount) failures from $($f.Partner), last error $($f.LastError)"
+            }
+          } catch {
+            $problems += "$env:COMPUTERNAME : cannot read the replication state: $($_.Exception.Message)"
+          }
+          $Ansible.Result = @{ dc = $env:COMPUTERNAME; problems = $problems }
+      register: ad_krbtgt_repl
+      tags: [krbtgt-reset, never]
+
+    - name: Krbtgt | Reset the password once
+      ansible.windows.win_powershell:
+        parameters:
+          min_age_hours: "{{ ad_krbtgt_min_age_hours | int }}"
+          problems_json: >-
+            {{ ansible_play_hosts | map('extract', hostvars, ['ad_krbtgt_repl', 'result', 'problems'])
+               | flatten | to_json }}
+        script: |
+          [CmdletBinding(SupportsShouldProcess)]
+          param([int]$min_age_hours, [string]$problems_json)
+          $Ansible.Changed = $false
+          Import-Module ActiveDirectory
+          # Windows PowerShell 5.1 returns "[]" as ONE empty array object, so
+          # @(...) alone would count 1 problem. ForEach-Object unrolls it.
+          $problems = @(($problems_json | ConvertFrom-Json) | ForEach-Object { $_ })
+          $k = Get-ADUser -Identity krbtgt -Properties pwdLastSet
+          $age = ((Get-Date).ToUniversalTime() - [DateTime]::FromFileTimeUtc([int64]$k.pwdLastSet)).TotalHours
+          if ($age -lt $min_age_hours) {
+            $problems += ("the krbtgt password is $([math]::Round($age, 1)) h old. " +
+                          "Wait until it is $min_age_hours h old, so tickets from before the first reset expire.")
+          }
+          if ($problems.Count) { throw ("krbtgt reset refused:`n - " + ($problems -join "`n - ")) }
+          if ($PSCmdlet.ShouldProcess('krbtgt', 'Reset the password')) {
+            $rng = [System.Security.Cryptography.RandomNumberGenerator]::Create()
+            $all = [char[]]'ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789!#%+-=?@^_~'
+            $buf = New-Object byte[] 1
+            $limit = 256 - (256 % $all.Length)
+            $pw = New-Object System.Security.SecureString
+            # A fixed start makes each class appear once; the rest is random.
+            foreach ($c in [char[]]'Aa2!') { $pw.AppendChar($c) }
+            while ($pw.Length -lt 64) {
+              $rng.GetBytes($buf)
+              if ($buf[0] -lt $limit) { $pw.AppendChar($all[$buf[0] % $all.Length]) }
+            }
+            $pw.MakeReadOnly()
+            Set-ADAccountPassword -Identity krbtgt -Reset -NewPassword $pw
+            $pw.Dispose(); $rng.Dispose()
+          }
+          $Ansible.Changed = $true
+          $after = (Get-ADUser -Identity krbtgt -Properties pwdLastSet).pwdLastSet
+          $Ansible.Result = @{ previousAgeHours = [math]::Round($age, 1); pwdLastSet = [int64]$after }
+      register: ad_krbtgt_reset
+      when: ad_is_primary_dc
+      tags: [krbtgt-reset, never]
+
+    # No repadmin /syncall here: over WinRM the session has no credentials
+    # for the outbound RPC (double hop), so repadmin gets "Access is denied"
+    # even against the local DC. Intra-site change notification replicates
+    # the reset in seconds; the next task waits for it on each DC.
+    - name: Krbtgt | Each DC has the new password
+      ansible.windows.win_powershell:
+        parameters:
+          want: "{{ hostvars[ad_dcs[0].name.split('.')[0]].ad_krbtgt_reset.result.pwdLastSet | int }}"
+        script: |
+          param([int64]$want)
+          $Ansible.Changed = $false
+          Import-Module ActiveDirectory
+          $deadline = (Get-Date).AddMinutes(3)
+          do {
+            $have = [int64](Get-ADUser -Identity krbtgt -Server $env:COMPUTERNAME -Properties pwdLastSet).pwdLastSet
+            if ($have -ge $want) { break }
+            Start-Sleep -Seconds 10
+          } while ((Get-Date) -lt $deadline)
+          if ($have -lt $want) { throw "$env:COMPUTERNAME still has the old krbtgt password after 3 minutes. Check replication." }
+          $Ansible.Result = @{ dc = $env:COMPUTERNAME; pwdLastSet = $have }
+      when:
+        - not ansible_check_mode
+        - hostvars[ad_dcs[0].name.split('.')[0]].ad_krbtgt_reset is changed
+      tags: [krbtgt-reset, never]
+
+    - name: Krbtgt | Report
+      ansible.builtin.debug:
+        msg:
+          replication: "{{ ad_krbtgt_repl.result }}"
+          reset: "{{ ad_krbtgt_reset.result | default('not on this DC') }}"
+          next: >-
+            Run -t krbtgt-reset again 10 hours or more after this reset. Two
+            resets in total (TIERING.md decision 10).
+      tags: [krbtgt-reset, never]
+
+    # ---------------------------------------------------------- jit-endpoint
+    # TIERING.md section 3. The PatchworkT0 JEA endpoint on each DC. Only
+    # GG-T0-Eligible can connect, and it can run Request-T0Admin and
+    # Get-T0AdminGrant only. This tag does NOT enable the AD Privileged
+    # Access Management feature, which cannot be undone. It fails while the
+    # feature is off. Enable it by hand, once, after approval:
+    #   Enable-ADOptionalFeature 'Privileged Access Management Feature' `
+    #     -Scope ForestOrConfigurationSet -Target patchwork.internal
+    - name: JIT | The PAM feature is on and the groups exist
+      ansible.windows.win_powershell:
+        parameters:
+          groups_json: "{{ [ad_org.tiering.jit.group, ad_org.tiering.jit.eligible] | to_json }}"
+        script: |
+          [CmdletBinding(SupportsShouldProcess)]
+          param([string]$groups_json)
+          $Ansible.Changed = $false
+          Import-Module ActiveDirectory
+          $f = Get-ADOptionalFeature -Identity 'Privileged Access Management Feature'
+          if (-not @($f.EnabledScopes).Count) {
+            throw ("The AD 'Privileged Access Management Feature' is OFF. A JIT grant needs it. " +
+                   "This play never enables it, because it cannot be undone. After approval, run once on loom: " +
+                   "Enable-ADOptionalFeature 'Privileged Access Management Feature' -Scope ForestOrConfigurationSet -Target patchwork.internal")
+          }
+          foreach ($g in ($groups_json | ConvertFrom-Json)) {
+            if (-not (Get-ADGroup -Filter "SamAccountName -eq '$g'")) { throw "$g does not exist. Run ad/converge.ps1 (Build) first." }
+          }
+      tags: [jit-endpoint, never]
+
+    - name: JIT | Directories exist
+      ansible.windows.win_file:
+        path: "{{ item }}"
+        state: directory
+      loop:
+        - "{{ ad_jea_dir }}"
+        - "{{ ad_jea_dir }}\\transcripts"
+        - "{{ ad_ps_modules }}\\PatchworkT0\\RoleCapabilities"
+      tags: [jit-endpoint, never]
+
+    - name: JIT | PatchworkT0 module and role capability are installed
+      ansible.windows.win_copy:
+        src: "{{ ad_tiering_files }}/PatchworkT0/{{ item.src }}"
+        dest: "{{ ad_ps_modules }}\\PatchworkT0\\{{ item.dest }}"
+      loop:
+        - { src: PatchworkT0.psm1, dest: PatchworkT0.psm1 }
+        - { src: PatchworkT0.psd1, dest: PatchworkT0.psd1 }
+        - { src: RoleCapabilities/PatchworkT0.psrc, dest: 'RoleCapabilities\PatchworkT0.psrc' }
+      loop_control:
+        label: "{{ item.src }}"
+      tags: [jit-endpoint, never]
+
+    - name: JIT | Limits from ad/org.json tiering.jit
+      ansible.windows.win_copy:
+        content: "{{ ad_org.tiering.jit | to_nice_json }}"
+        dest: "{{ ad_jea_dir }}\\jit.json"
+      tags: [jit-endpoint, never]
+
+    - name: JIT | Session configuration file
+      ansible.windows.win_copy:
+        content: |
+          @{
+              SchemaVersion       = '2.0.0.0'
+              GUID                = 'ed9a8ffc-abb3-4e94-b81a-c4b7677a9841'
+              Author              = 'Patchwork Labs'
+              Description         = 'Tier 0 JIT requests. ansible/ad.yml -t jit-endpoint.'
+              SessionType         = 'RestrictedRemoteServer'
+              TranscriptDirectory = '{{ ad_jea_dir }}\transcripts'
+              RunAsVirtualAccount = $true
+              RoleDefinitions     = @{
+                  '{{ domain_netbios }}\{{ ad_org.tiering.jit.eligible }}' = @{ RoleCapabilities = 'PatchworkT0' }
+              }
+          }
+        dest: "{{ ad_jea_dir }}\\PatchworkT0.pssc"
+      tags: [jit-endpoint, never]
+
+    # Registering changes the WinRM plugin config. It needs a WinRM restart,
+    # which would cut this Ansible connection, so the restart runs from a
+    # one-shot task after this step returns.
+    - name: JIT | Endpoint PatchworkT0 is registered
+      ansible.windows.win_powershell:
+        parameters:
+          pssc: "{{ ad_jea_dir }}\\PatchworkT0.pssc"
+        script: |
+          [CmdletBinding(SupportsShouldProcess)]
+          param([string]$pssc)
+          $Ansible.Changed = $false
+          if (-not (Test-PSSessionConfigurationFile -Path $pssc)) { throw "$pssc is not a valid session configuration file." }
+          $hash = (Get-FileHash -Path $pssc -Algorithm SHA256).Hash
+          $marker = "$pssc.registered"
+          $have = Get-PSSessionConfiguration -Name PatchworkT0 -ErrorAction SilentlyContinue
+          $old = if (Test-Path $marker) { (Get-Content -Raw $marker).Trim() } else { '' }
+          if (-not $have -or $old -ne $hash) {
+            if ($PSCmdlet.ShouldProcess('PatchworkT0', 'Register JEA endpoint')) {
+              if ($have) { Unregister-PSSessionConfiguration -Name PatchworkT0 -NoServiceRestart -Force }
+              Register-PSSessionConfiguration -Name PatchworkT0 -Path $pssc -NoServiceRestart -Force | Out-Null
+              Set-Content -Path $marker -Value $hash -Encoding ASCII
+            }
+            $Ansible.Changed = $true
+          }
+      register: ad_jea_register
+      tags: [jit-endpoint, never]
+
+    - name: JIT | Restart WinRM after the registration
+      ansible.windows.win_powershell:
+        script: |
+          $a = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument '-NoProfile -Command "Start-Sleep -Seconds 3; Restart-Service WinRM -Force"'
+          Register-ScheduledTask -TaskPath '\Patchwork\' -TaskName 'RestartWinRM' -Action $a -User 'NT AUTHORITY\SYSTEM' -RunLevel Highest -Force | Out-Null
+          Start-ScheduledTask -TaskPath '\Patchwork\' -TaskName 'RestartWinRM'
+      when: ad_jea_register is changed and not ansible_check_mode
+      tags: [jit-endpoint, never]
+
+    - name: JIT | Wait for WinRM
+      ansible.builtin.wait_for_connection:
+        delay: 15
+        timeout: 180
+      when: ad_jea_register is changed and not ansible_check_mode
+      tags: [jit-endpoint, never]
+
+    - name: JIT | The endpoint allows only the eligible group
+      ansible.windows.win_powershell:
+        parameters:
+          eligible: "{{ domain_netbios }}\\{{ ad_org.tiering.jit.eligible }}"
+        script: |
+          [CmdletBinding(SupportsShouldProcess)]
+          param([string]$eligible)
+          $Ansible.Changed = $false
+          Unregister-ScheduledTask -TaskPath '\Patchwork\' -TaskName 'RestartWinRM' -Confirm:$false -ErrorAction SilentlyContinue
+          $c = Get-PSSessionConfiguration -Name PatchworkT0 -ErrorAction SilentlyContinue
+          if (-not $c) {
+            if ($Ansible.CheckMode) { $Ansible.Result = 'not registered yet (check mode)'; return }
+            throw 'The PatchworkT0 endpoint is not registered.'
+          }
+          $perm = "$($c.Permission)"
+          if ($perm -notlike "*$eligible AccessAllowed*") { throw "PatchworkT0 permission is '$perm', expected $eligible AccessAllowed." }
+          if (($perm -split ',').Count -ne 1) { throw "PatchworkT0 allows more than one principal: $perm" }
+          $Ansible.Result = @{ permission = $perm; runAsVirtualAccount = $c.RunAsVirtualAccount }
+      register: ad_jea_check
+      tags: [jit-endpoint, never]
+
+    - name: JIT | Report
+      ansible.builtin.debug:
+        var: ad_jea_check.result
+      tags: [jit-endpoint, never]
+
+    # ---------------------------------------------------- admin-disabled-gpo
+    # TIERING.md section 4. GPO T0-Builtin-Administrator-Disabled sets
+    # Computer Configuration > Windows Settings > Security Settings > Local
+    # Policies > Security Options > "Accounts: Administrator account status"
+    # = Disabled ([System Access] EnableAdminAccount = 0 in GptTmpl.inf).
+    #
+    # A DC reads this setting ONLY from a GPO linked to the domain root, not
+    # from the Domain Controllers OU (Microsoft KB 259576, "Group Policy
+    # application rules for domain controllers"). So the GPO is linked to
+    # the domain root, and a security filter applies it to the "Domain
+    # Controllers" group only. Authenticated Users keeps Read (MS16-072) but
+    # not Apply, so member servers and workstations do not apply it. LAPS
+    # manages the local Administrator there.
+    #
+    # Same file handling as -t default-domain-gpo: the local SYSVOL copy
+    # (UTF-16 LE with BOM), then the computer version in GPT.INI and in AD.
+    # The filter is set before the link, so no member server ever applies it.
+    - name: Admin disabled GPO | Exists, sets EnableAdminAccount = 0, applies to DCs only, linked
+      ansible.windows.win_powershell:
+        parameters:
+          name: "{{ ad_admin_disabled_gpo }}"
+          domain: "{{ domain_name }}"
+          server: "{{ ad_dcs[0].name }}"
+          apply_group: "{{ ad_admin_disabled_gpo_apply_group }}"
+        script: |
+          [CmdletBinding(SupportsShouldProcess)]
+          param([string]$name, [string]$domain, [string]$server, [string]$apply_group)
+          $Ansible.Changed = $false
+          if (-not (Get-Module -ListAvailable GroupPolicy)) { throw 'The GroupPolicy module (GPMC) is missing on this DC.' }
+          Import-Module GroupPolicy, ActiveDirectory
+          $gp = @{ Domain = $domain; Server = $server }
+          $ad = Get-ADDomain -Server $server
+          $target = $ad.DistinguishedName
+          # Security CSE + Security Settings snap-in, as GPMC writes them.
+          $ext = '[{827D319E-6EAC-11D2-A4EA-00C04F79F83A}{803E14A0-B4FB-11D0-A0D0-00A0C90F574B}]'
+          $done = @(); $warn = @()
+
+          $gpo = Get-GPO -Name $name @gp -ErrorAction SilentlyContinue
+          if (-not $gpo) {
+            $Ansible.Changed = $true
+            if (-not $PSCmdlet.ShouldProcess($name, 'Create GPO')) {
+              $Ansible.Result = @{ changes = @("create GPO $name", 'user settings off', "apply only to $apply_group, Authenticated Users read only",
+                'EnableAdminAccount = 0', 'raise the version', "link to $target"); warnings = $warn }
+              return
+            }
+            $gpo = New-GPO -Name $name @gp -Comment ('TIERING.md section 4. Accounts: Administrator account status = Disabled, on the DCs only. ' +
+              'Unlink it before you enable Administrator for break-glass. Managed by ansible/ad.yml -t admin-disabled-gpo.')
+            $done += "create GPO $name"
+          }
+          if ("$($gpo.GpoStatus)" -ne 'UserSettingsDisabled') {
+            if ($PSCmdlet.ShouldProcess($name, 'Disable user settings')) { $gpo.GpoStatus = 'UserSettingsDisabled' }
+            $done += 'user settings off'
+          }
+
+          # Security filter: only the DCs apply it.
+          $au = Get-GPPermission -Guid $gpo.Id -TargetName 'Authenticated Users' -TargetType Group @gp -ErrorAction SilentlyContinue
+          if (-not $au -or "$($au.Permission)" -ne 'GpoRead') {
+            if ($PSCmdlet.ShouldProcess($name, 'Authenticated Users: read only')) {
+              Set-GPPermission -Guid $gpo.Id -TargetName 'Authenticated Users' -TargetType Group -PermissionLevel GpoRead -Replace @gp | Out-Null
+            }
+            $done += "Authenticated Users: $(if ($au) { $au.Permission } else { 'none' }) -> GpoRead"
+          }
+          $dc = Get-GPPermission -Guid $gpo.Id -TargetName $apply_group -TargetType Group @gp -ErrorAction SilentlyContinue
+          if (-not $dc -or "$($dc.Permission)" -ne 'GpoApply') {
+            if ($PSCmdlet.ShouldProcess($name, "$apply_group : apply")) {
+              Set-GPPermission -Guid $gpo.Id -TargetName $apply_group -TargetType Group -PermissionLevel GpoApply -Replace @gp | Out-Null
+            }
+            $done += "${apply_group}: $(if ($dc) { $dc.Permission } else { 'none' }) -> GpoApply"
+          }
+
+          # GptTmpl.inf: [System Access] EnableAdminAccount = 0.
+          $guid = "{$($gpo.Id.ToString().ToUpper())}"
+          $sysvol = (Get-ItemProperty 'HKLM:\SYSTEM\CurrentControlSet\Services\Netlogon\Parameters').SysVol
+          $root = Join-Path $sysvol "$($ad.DNSRoot)\Policies\$guid"
+          $inf = Join-Path $root 'MACHINE\Microsoft\Windows NT\SecEdit\GptTmpl.inf'
+          $ini = Join-Path $root 'GPT.INI'
+          if (-not (Test-Path $root)) { throw "Not found: $root. Wait for SYSVOL, then run again." }
+          $fileChange = $null
+          if (Test-Path $inf) {
+            $reader = New-Object System.IO.StreamReader($inf, $true)
+            $text = $reader.ReadToEnd(); $enc = $reader.CurrentEncoding; $reader.Close()
+          } else {
+            $text = "[Unicode]`r`nUnicode=yes`r`n[Version]`r`nsignature=`"`$CHICAGO`$`"`r`nRevision=1`r`n"
+            $enc = [System.Text.Encoding]::Unicode
+            $fileChange = 'create GptTmpl.inf'
+          }
+          $lines = [System.Collections.Generic.List[string]]($text -split "`r`n")
+          $start = $lines.FindIndex([Predicate[string]]{ param($l) $l.Trim() -eq '[System Access]' })
+          if ($start -lt 0) {
+            $at = $lines.FindIndex([Predicate[string]]{ param($l) $l.Trim() -eq '[Version]' })
+            if ($at -lt 0) { $at = $lines.Count }
+            $lines.Insert($at, '[System Access]'); $start = $at
+          }
+          $end = $start + 1
+          while ($end -lt $lines.Count -and -not $lines[$end].TrimStart().StartsWith('[')) { $end++ }
+          $have = $null
+          for ($i = $start + 1; $i -lt $end; $i++) {
+            if ($lines[$i] -match '^\s*EnableAdminAccount\s*=\s*(\S*)') { $have = $Matches[1]; $lines[$i] = 'EnableAdminAccount = 0'; break }
+          }
+          if ($null -eq $have) { $lines.Insert($end, 'EnableAdminAccount = 0') }
+          if ("$have" -ne '0') { $fileChange = "EnableAdminAccount $(if ($null -eq $have) { '(none)' } else { $have }) -> 0" }
+
+          $gpoDN = "CN=$guid,CN=Policies,CN=System,$target"
+          $obj = Get-ADObject -Identity $gpoDN -Properties versionNumber, gPCMachineExtensionNames -Server $server
+          $haveExt = "$($obj.gPCMachineExtensionNames)"
+          $newExt = $null
+          # The security CSE must head one entry. Its tool GUIDs may differ.
+          if ($haveExt -notmatch '\[\{827D319E-6EAC-11D2-A4EA-00C04F79F83A\}') {
+            # Keep the list sorted by CSE GUID, as GPMC does.
+            $entries = @([regex]::Matches($haveExt, '\[[^\]]*\]') | ForEach-Object { $_.Value }) + $ext
+            $newExt = ($entries | Sort-Object -Unique) -join ''
+          }
+
+          $version = $null
+          if ($fileChange -or $newExt) {
+            $iniText = if (Test-Path $ini) { Get-Content -Raw -Path $ini } else { "[General]`r`n" }
+            $iniVersion = if ($iniText -match '(?m)^Version=(\d+)') { [int64]$Matches[1] } else { 0 }
+            $base = [math]::Max($iniVersion, [int64]$obj.versionNumber)
+            # User version in the high 16 bits, computer version in the low 16.
+            if (($base -band 0xFFFF) -eq 0xFFFF) { throw "The computer version of the GPO is at its maximum ($base)." }
+            $version = $base + 1
+            if ($fileChange) { $done += $fileChange }
+            if ($newExt) { $done += "gPCMachineExtensionNames += security CSE" }
+            $done += "version $base -> $version"
+            if ($PSCmdlet.ShouldProcess($inf, "EnableAdminAccount = 0, version $version")) {
+              New-Item -ItemType Directory -Force -Path (Split-Path $inf) | Out-Null
+              [System.IO.File]::WriteAllText($inf, ($lines -join "`r`n"), $enc)
+              $newIni = if ($iniText -match '(?m)^Version=\d+') { $iniText -replace '(?m)^Version=\d+', "Version=$version" }
+                        else { $iniText.TrimEnd() + "`r`nVersion=$version`r`n" }
+              Set-Content -Path $ini -Value $newIni -NoNewline -Encoding ASCII
+              $replace = @{ versionNumber = [int]$version }
+              if ($newExt) { $replace.gPCMachineExtensionNames = $newExt }
+              Set-ADObject -Identity $gpoDN -Replace $replace -Server $server
+            }
+          }
+
+          # Link last: the filter and the setting are in place first.
+          $links = @((Get-GPInheritance -Target $target @gp).GpoLinks)
+          if (@($links | ForEach-Object { "$($_.GpoId)" }) -notcontains "$($gpo.Id)") {
+            if ($PSCmdlet.ShouldProcess($target, "Link $name")) { New-GPLink -Guid $gpo.Id -Target $target -LinkEnabled Yes @gp | Out-Null }
+            $done += "link to $target"
+          } elseif (-not ($links | Where-Object { "$($_.GpoId)" -eq "$($gpo.Id)" }).Enabled) {
+            $warn += "The link on $target is disabled. Somebody unlinked it for break-glass? Enable it again in GPMC when the work is done."
+          }
+
+          # A GPO with a higher link precedence on the domain root that sets
+          # EnableAdminAccount = 1 wins over this one.
+          foreach ($l in $links | Where-Object { "$($_.GpoId)" -ne "$($gpo.Id)" }) {
+            $other = Join-Path $sysvol "$($ad.DNSRoot)\Policies\{$("$($l.GpoId)".ToUpper())}\MACHINE\Microsoft\Windows NT\SecEdit\GptTmpl.inf"
+            if ((Test-Path $other) -and ((Get-Content $other) -match '^\s*EnableAdminAccount\s*=\s*1')) {
+              $warn += "$($l.DisplayName) (link order $($l.Order)) sets EnableAdminAccount = 1."
+            }
+          }
+          $builtin = Get-ADUser -Identity "$($ad.DomainSID)-500" -Server $server
+          if ($builtin.Enabled) {
+            $warn += "The built-in Administrator ($($builtin.SamAccountName)) is enabled now. The DCs disable it at the next security policy refresh."
+          }
+          if ($done.Count) { $Ansible.Changed = $true }
+          $Ansible.Result = @{ gpo = $name; id = "$($gpo.Id)"; changes = $done; warnings = $warn }
+      vars:
+        ad_admin_disabled_gpo: T0-Builtin-Administrator-Disabled
+        # The group that applies the GPO. Domain controllers only.
+        ad_admin_disabled_gpo_apply_group: Domain Controllers
+      register: ad_admin_disabled
+      when: ad_is_primary_dc
+      tags: [admin-disabled-gpo, never]
+
+    - name: Admin disabled GPO | Report
+      ansible.builtin.debug:
+        var: ad_admin_disabled.result
+      when: ad_is_primary_dc
+      tags: [admin-disabled-gpo, never]

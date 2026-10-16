@@ -1,0 +1,118 @@
+---
+# ============================================================================
+# patchwork.internal: the Patchwork Labs forest. VLANs 90-92.
+# ---------------------------------------------------------------------------
+# The directory values below (NetBIOS name, OU DNs, DHCP scopes) were read
+# from loom on 2026-08-23. svc-ansible and svc-lnx-join were created in this
+# forest the same day.
+# ============================================================================
+
+domain_name:    patchwork.internal
+domain_realm:   PATCHWORK.INTERNAL
+# From Get-ADDomain on loom.
+domain_netbios: "PATCHWORK"
+
+# Both DCs, in preference order. The PDC emulator is first, because ad.yml
+# runs its directory changes once, on ad_dcs[0], and AD replicates them.
+#
+# Confirmed by SRV lookup against the DCs:
+#   dig @10.100.90.10 _ldap._tcp.dc._msdcs.patchwork.internal SRV
+#     -> loom.patchwork.internal, spindle.patchwork.internal
+#   dig @10.100.90.10 _ldap._tcp.pdc._msdcs.patchwork.internal SRV
+#     -> loom (PDC emulator)
+# AD site: PW-HQ. It is never pinned on a client; the DC gives site affinity.
+ad_dcs:
+  - { name: loom.patchwork.internal,    ip: 10.100.90.10 }   # PDC emulator
+  - { name: spindle.patchwork.internal, ip: 10.100.90.11 }
+
+# --- Linux join ---------------------------------------------------------------
+# The account that joins Linux hosts (modules/ad-join on the NixOS hosts).
+# ad.yml -t join-delegation gives it the join rights on both computer OUs, and
+# -t audit checks them. Its password is not in the Ansible vault: the NixOS
+# hosts read it from secrets/ad-join.age (agenix).
+ad_join_account: svc-lnx-join
+
+# OU root: OU=Patchwork,DC=patchwork,DC=internal (ad/org.json).
+ad_computer_ou_client: "OU=Computers,OU=Patchwork,DC=patchwork,DC=internal"
+ad_computer_ou_server: "OU=Servers,OU=Patchwork,DC=patchwork,DC=internal"
+# ad.yml -t host-groups creates lnx-<host>-users here ...
+ad_group_ou_users:     "OU=Resources,OU=Groups,OU=Patchwork,DC=patchwork,DC=internal"
+# ... and lnx-<host>-admins here.
+ad_group_ou_admins:    "OU=Resources,OU=Groups,OU=Patchwork,DC=patchwork,DC=internal"
+# svc-lnx-join lives here. svc-ansible is in OU=Admin-Accounts (Tier 0).
+ad_service_account_ou: "OU=Service-Accounts,OU=Patchwork,DC=patchwork,DC=internal"
+
+# --- LDAP bind accounts (ad.yml -t ldap-binds) ---------------------------------
+# Read-only accounts for apps that check logins against AD over LDAP. Each is
+# created in ad_service_account_ou: AES only, not delegatable, password never
+# expires, no group membership. The password is set on create only. Empty
+# until an app needs one. To add one, add an entry, put its password in the
+# vault (pbpaste | bin/vault-set vault_<app>_ldap_bind_password), and run
+# ansible-playbook ad.yml -t ldap-binds. For example:
+#
+#   ad_ldap_bind_accounts:
+#     - name: svc-<app>-ldap
+#       description: "<App> LDAP login, read-only bind"
+#       password: "{{ vault_<app>_ldap_bind_password | default('') }}"
+ad_ldap_bind_accounts: []
+
+# --- Windows ------------------------------------------------------------------
+# svc-ansible: Domain Admins, AES only, not delegatable. group_vars/windows.yml
+# logs in with it.
+ad_svc_ansible_account: "{{ domain_netbios }}\\svc-ansible"
+ad_svc_ansible_password: "{{ vault_ad_svc_ansible_password }}"
+
+# --- DHCP scopes (ad.yml -t dhcp) ---------------------------------------------
+# From Get-DhcpServerv4Scope on loom: three scopes, each with the pool
+# .50-.240. The static infrastructure addresses sit inside the VLAN 90 pool,
+# so the .1-.99 exclusion protects them.
+dhcp_scopes:
+  - scope_id: 10.100.90.0
+    exclusions:
+      - { start: 10.100.90.1, end: 10.100.90.99 }
+  - scope_id: 10.100.91.0
+    exclusions: []
+  - scope_id: 10.100.92.0
+    exclusions: []
+
+# --- User mail (ad.yml -t user-mail) ------------------------------------------
+# SamAccountName -> mail address. The play fills in the mail attribute only.
+# It does not create accounts. Empty: the tag does nothing.
+ad_user_mail: {}
+
+# --- Tier 0 (ad.yml tiering tags, ad/TIERING.md) --------------------------------
+# Alerts for -t breakglass-alert and -t jit-endpoint. The DCs always write an
+# event to the Application log (sources Patchwork-Alert and Patchwork-JIT).
+# They send mail only when ad_alert_mail_enabled is true.
+ad_alert_mail_enabled: false
+
+# The values below are used only when mail is enabled. The DCs then send
+# through the Google Workspace SMTP relay: STARTTLS on 587, no login. The
+# relay accepts the lab WAN address. Add it in the Google Admin console:
+# Apps > Google Workspace > Gmail > Routing > SMTP relay service, "Only
+# accept mail from the specified IP addresses", require TLS.
+ad_alert_smtp_host: smtp-relay.gmail.com
+ad_alert_smtp_port: 587
+ad_alert_wan_ip: 69.54.28.49
+ad_alert_from: ad-alerts@patchworklabs.org
+ad_alert_to: security@patchworklabs.org
+ad_alert_subject_prefix: patchwork.internal
+
+# -t armoring: GPO names and where they are linked. The KDC GPO goes on the
+# Domain Controllers OU. The client GPO goes on the domain root, so the DCs,
+# bobbin, shuttle and spool armor their requests. A client that supports
+# armoring changes nothing while no account needs it.
+ad_armoring_kdc_gpo: T0-Kerberos-Armoring-KDC
+ad_armoring_kdc_target: "OU=Domain Controllers,DC=patchwork,DC=internal"
+ad_armoring_client_gpo: T0-Kerberos-Armoring-Client
+ad_armoring_client_target: "DC=patchwork,DC=internal"
+
+# -t krbtgt-reset refuses while the krbtgt password is younger than this
+# (the maximum TGT lifetime), so the two resets are 10 hours or more apart.
+ad_krbtgt_min_age_hours: 10
+
+# -t administrator-random: length of the discarded password. It sets a new
+# one only when the old one is older than ad_admin_random_min_age_hours, or
+# with -e ad_admin_random_force=true (after a break-glass use).
+ad_admin_random_length: 96
+ad_admin_random_min_age_hours: 24

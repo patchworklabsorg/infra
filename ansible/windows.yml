@@ -1,0 +1,7 @@
+---
+- name: Windows baseline + agents
+  hosts: windows
+  roles:
+    - windows_base
+    - role: tailscale_windows
+      when: tailscale_enabled | default(true) | bool

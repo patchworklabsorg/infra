@@ -1,0 +1,13 @@
+#!/bin/sh
+# vault-set KEY [--json FIELD | --object] [--file VAULT] [--no-clobber]
+# Reads a value from stdin and sets KEY in the whole-file Ansible vault
+# (default vault/vault.yml, the infra-vault submodule). Never prints the value.
+#
+#   pbpaste | bin/vault-set vault_ad_svc_ansible_password
+#
+# Uses the Python that ships with the Homebrew ansible so VaultLib is importable.
+# After a change, commit vault/vault.yml in the submodule, then commit the new
+# submodule pointer here.
+set -eu
+PY="$(dirname "$(readlink -f "$(command -v ansible)")")/python"
+exec "$PY" "$(dirname "$0")/_vault_set.py" "$@"

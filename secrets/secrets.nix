@@ -46,7 +46,9 @@ in
   ];
 
   # Krater (Project Ganymede portal) runtime env. The keys it must contain are
-  # listed at the top of ../modules/krater/default.nix.
+  # listed at the top of ../modules/krater/default.nix. KRATER_DATABASE_URL
+  # holds the password in central-prod-krater.age. bin/new-krater-secrets
+  # writes both files.
   "krater-env.age".publicKeys = [
     jsp
     alastor
@@ -65,6 +67,13 @@ in
   "quilt-env.age".publicKeys = [
     jsp
     alastor
+  ];
+
+  # Krater's role password in patchwork_central (skein). Password only. The
+  # Krater host does not get this file: the same password is in krater-env.age.
+  "central-prod-krater.age".publicKeys = [
+    jsp
+    skein
   ];
 
   # The Vast.ai API key Krater rents with: the bare key, nothing else in the

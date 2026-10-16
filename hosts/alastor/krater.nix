@@ -14,7 +14,10 @@
 # Before the first deploy:
 #   - DNS for the two hostnames below (patchworklabsorg/dns)
 #   - Krater's Weave app and roles; fill in the client id below
-#   - secrets/krater-env.age
+#   - secrets/krater-env.age and secrets/central-prod-krater.age
+#     (bin/new-krater-secrets), and skein deployed with Krater's role
+#   - this host can reach skein:5432 (tailnet ACL), and the database host in
+#     KRATER_DATABASE_URL resolves from inside a Docker container here
 # The full checklist is in Krater's docs/dev/production.md.
 #
 # This release of Krater launches no machines (KRATER_COMPUTE_MODE=off).

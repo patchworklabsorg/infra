@@ -5,11 +5,15 @@
 # sets the instance options below.
 #
 # Containers (network `krater`, state under /var/lib/krater):
-#   krater-db          Postgres 16
 #   krater-storage     SeaweedFS S3 gateway for gallery screenshots (temporary; see Krater's SPEC)
 #   krater-web         the portal; runs migrations first        127.0.0.1:<port>
 #   krater-worker      procrastinate worker (Slack, pricing, events to Quilt)
-# plus krater-build (builds the image) and krater-backup (nightly pg_dump).
+# plus krater-build (builds the image).
+#
+# Database: Krater's schema `krater` in patchwork_central (modules/central-db, listed in
+# hosts/central-db-schema.nix). The cluster's host dumps it nightly; this module runs no Postgres of its
+# own. The role's search_path is `krater`, so Krater's tables, its job queue and alembic_version all live
+# in that schema.
 #
 # This release of Krater launches no machines (KRATER_COMPUTE_MODE=off). Krater Compute, its own Vast
 # layer, adds the options for renting in its own release.
@@ -25,7 +29,8 @@
 #
 # Secrets: one env file (`environmentFile`, an agenix secret), split per container at start into
 # /run/krater/*.env so each container gets only its own keys. The file must contain:
-#   POSTGRES_PASSWORD=...                     # URL-safe (token_urlsafe/hex): it goes into a database URL
+#   KRATER_DATABASE_URL=postgresql+psycopg://krater:<password>@<central db host>:5432/patchwork_central?sslmode=disable
+#                                             # <password> = the value in central-prod-krater.age
 #   KRATER_SECRET_KEY=...                     # >= 32 chars
 #   KRATER_WEAVE_CLIENT_SECRET=...
 #   KRATER_SLACK_BOT_TOKEN=...
@@ -93,21 +98,16 @@ let
       to = k;
     }) keys;
 
-  # The portal and worker get every KRATER_ key of the env file, plus the database URL (built from
-  # POSTGRES_PASSWORD so the two can't drift).
+  # The portal and worker get every KRATER_ key of the env file, the database URL among them.
   writeAppEnv = pkgs.writeShellScript "krater-app-env" ''
     set -euo pipefail
     install -d -m 0700 ${envDir}
     umask 077
-    password=$(sed -n 's/^POSTGRES_PASSWORD=//p' ${cfg.environmentFile})
-    if [ -z "$password" ]; then
-      echo "krater: POSTGRES_PASSWORD is missing from ${cfg.environmentFile}" >&2
+    if ! grep -q '^KRATER_DATABASE_URL=.' ${cfg.environmentFile}; then
+      echo "krater: KRATER_DATABASE_URL is missing from ${cfg.environmentFile}" >&2
       exit 1
     fi
-    {
-      grep -E '^KRATER_' ${cfg.environmentFile} || true
-      echo "KRATER_DATABASE_URL=postgresql+psycopg://krater:$password@krater-db:5432/krater"
-    } > ${envDir}/app.env
+    grep -E '^KRATER_' ${cfg.environmentFile} > ${envDir}/app.env
   '';
 
   # Sets $rev and $image from source-rev (or the `rev` fallback). Only a full SHA is accepted: a
@@ -131,6 +131,7 @@ let
       name,
       description,
       after ? [ ],
+      wants ? [ ],
       requires ? [ ],
       partOf ? [ ],
       preStart ? [ ],
@@ -138,7 +139,7 @@ let
       timeoutStart ? null,
     }:
     {
-      inherit description partOf;
+      inherit description partOf wants;
       after = [
         "docker.service"
         "krater-network.service"
@@ -241,12 +242,6 @@ in
       };
     };
 
-    postgresImage = lib.mkOption {
-      type = lib.types.str;
-      default = "postgres:16";
-      description = "Postgres image. A major version change needs a dump and restore.";
-    };
-
     extraEnv = lib.mkOption {
       type = lib.types.attrsOf lib.types.str;
       default = { };
@@ -254,19 +249,6 @@ in
         KRATER_BUDGET_WARN_PERCENT = "80";
       };
       description = "Extra non-secret settings for the portal, worker and migrations.";
-    };
-
-    backup = {
-      onCalendar = lib.mkOption {
-        type = lib.types.str;
-        default = "*-*-* 03:30:00";
-        description = "When krater-backup dumps the database (systemd OnCalendar).";
-      };
-      keepDays = lib.mkOption {
-        type = lib.types.ints.positive;
-        default = 14;
-        description = "Dumps in /var/lib/krater/backups older than this are deleted.";
-      };
     };
 
     deployAuthorizedKeys = lib.mkOption {
@@ -314,10 +296,9 @@ in
 
         # ── State ───────────────────────────────────────────────────────────────
         # /var/lib/krater itself stays 0755 (as in the Weave module) so krater-deploy can reach
-        # source-rev. Backups hold the whole database and secrets hold tokens: root only.
+        # source-rev. Secrets hold tokens: root only.
         systemd.tmpfiles.rules = [
           "d ${secretsDir} 0700 root root -"
-          "d ${stateDir}/backups 0700 root root -"
         ]
         ++ lib.optionals (cfg.deployAuthorizedKeys != [ ]) [
           "f ${revFile} 0644 krater-deploy users -"
@@ -333,9 +314,9 @@ in
           serviceConfig = {
             Type = "oneshot";
             RemainAfterExit = true;
-            # Not backups/ or secrets/: StateDirectoryMode is reapplied on every start, and those
-            # two stay 0700 (tmpfiles rules above).
-            StateDirectory = "krater krater/db krater/storage";
+            # Not secrets/: StateDirectoryMode is reapplied on every start, and it stays 0700 (tmpfiles
+            # rule above).
+            StateDirectory = "krater krater/storage";
             StateDirectoryMode = "0755";
             ExecStart = pkgs.writeShellScript "krater-network-create" ''
               ${dockerBin} network inspect krater >/dev/null 2>&1 || \
@@ -392,27 +373,6 @@ in
           '';
         };
 
-        # ── Postgres ────────────────────────────────────────────────────────────
-        systemd.services.krater-db = mkContainer {
-          name = "db";
-          description = "Krater PostgreSQL";
-          preStart = [
-            (pull cfg.postgresImage)
-            (writeEnvScript "db" (same [ "POSTGRES_PASSWORD" ]))
-          ];
-          start = ''
-            exec ${dockerBin} run \
-              --name krater-db \
-              --network krater \
-              --env-file ${envDir}/db.env \
-              --env POSTGRES_USER=krater \
-              --env POSTGRES_DB=krater \
-              --volume ${stateDir}/db:/var/lib/postgresql/data \
-              --restart no \
-              ${cfg.postgresImage}
-          '';
-        };
-
         # ── Screenshot storage (SeaweedFS) ──────────────────────────────────────
         systemd.services.krater-storage = mkContainer {
           name = "storage";
@@ -450,15 +410,15 @@ in
           description = "Krater web";
           after = [
             "krater-build.service"
-            "krater-db.service"
             "krater-storage.service"
+            "network-online.target"
           ];
+          wants = [ "network-online.target" ];
           requires = [
             "krater-build.service"
-            "krater-db.service"
             "krater-storage.service"
           ];
-          # Waiting for Postgres and running migrations can outlast the default 90s.
+          # Waiting for the database and running migrations can outlast the default 90s.
           timeoutStart = "10min";
           preStart = [
             (pkgs.writeShellScript "krater-web-prepare" ''
@@ -471,9 +431,11 @@ in
               ${writeAppEnv}
               echo "$image" > ${envDir}/image
 
-              echo "Waiting for postgres..."
-              until ${dockerBin} exec krater-db pg_isready -U krater -q; do
-                sleep 2
+              # The database is on another host (patchwork_central): wait until a connection works,
+              # from a container like the portal's, so DNS and routing are tested the same way.
+              echo "Waiting for the database..."
+              until ${dockerBin} run --rm                 --network krater                 --env-file ${envDir}/app.env                 ${envArgs appEnv}                 "$image"                 python -c 'from krater.db import get_engine; get_engine().connect().close()'; do
+                sleep 5
               done
               # Migrations, then the screenshot bucket and its CORS rule. Both are idempotent.
               ${dockerBin} run --rm \
@@ -515,37 +477,6 @@ in
               "$(cat ${envDir}/image)" \
               procrastinate --app=krater.worker.app.app worker
           '';
-        };
-
-        # ── Backups ─────────────────────────────────────────────────────────────
-        # The budget ledger and audit log live only in this database. Copy /var/lib/krater/backups
-        # off the host; screenshots (/var/lib/krater/storage) aren't in these dumps.
-        systemd.services.krater-backup = {
-          description = "Dump the Krater database";
-          after = [ "krater-db.service" ];
-          requires = [ "krater-db.service" ];
-          serviceConfig = {
-            Type = "oneshot";
-            SyslogIdentifier = "krater-backup";
-          };
-          script = ''
-            set -euo pipefail
-            umask 077
-            dir=${stateDir}/backups
-            name="krater-$(date -u +%Y%m%dT%H%M%SZ).dump"
-            trap 'rm -f "$dir/$name.partial"' EXIT
-            ${dockerBin} exec krater-db pg_dump --format=custom -U krater krater > "$dir/$name.partial"
-            mv "$dir/$name.partial" "$dir/$name"
-            echo "backup written: $name"
-            find "$dir" -name 'krater-*.dump' -mtime +${toString cfg.backup.keepDays} -delete
-          '';
-        };
-        systemd.timers.krater-backup = {
-          wantedBy = [ "timers.target" ];
-          timerConfig = {
-            OnCalendar = cfg.backup.onCalendar;
-            Persistent = true;
-          };
         };
       }
 

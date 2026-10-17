@@ -1,0 +1,15 @@
+---
+# ============================================================================
+# Variables for every host.
+# ---------------------------------------------------------------------------
+# Forest values (realm, DCs, OU DNs, accounts) live in group_vars/patchwork.yml.
+# Secrets live in the vault: group_vars/all/vault.yml is a symlink to
+# ../../../vault/vault.yml, the infra-vault submodule. See README.md.
+# ============================================================================
+
+# The forest PKI chain (PEM, public) that `ad.yml -t ca-chain` exports from
+# the PDC into this repo. LDAPS clients copy it and trust it.
+ad_ca_chain_file: "{{ inventory_dir }}/../files/pki/{{ domain_name }}-ca-chain.pem"
+# Regex on the certificate Subject that selects the forest CA certificates in
+# the PDC's Root and CA stores. Set in group_vars/patchwork.yml.
+ad_ca_subject_match: "CN={{ domain_netbios | default('') | capitalize }}-"

@@ -1,0 +1,9 @@
+#!/bin/sh
+# vault-import: one-time copy of the Patchwork values out of the personal
+# jaspermayone/infra vault. See bin/_vault_import.py. Never prints a value.
+#
+#   bin/vault-import --dry-run   # names only: what would be copied
+#   bin/vault-import
+set -eu
+PY="$(dirname "$(readlink -f "$(command -v ansible)")")/python"
+exec "$PY" "$(dirname "$0")/_vault_import.py" "$@"

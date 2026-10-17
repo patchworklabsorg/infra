@@ -14,7 +14,10 @@
 # Before the first deploy:
 #   - DNS for the two hostnames below (patchworklabsorg/dns)
 #   - Krater's Weave app and roles; fill in the client id below
-#   - secrets/krater-env.age
+#   - secrets/krater-env.age and secrets/central-prod-krater.age
+#     (bin/new-krater-secrets), and skein deployed with Krater's role
+#   - this host can reach skein:5432 (tailnet ACL), and the database host in
+#     KRATER_DATABASE_URL resolves from inside a Docker container here
 # The full checklist is in Krater's docs/dev/production.md.
 #
 # Krater Compute stays off (KRATER_COMPUTE_MODE=off) until Krater's paid checks
@@ -53,7 +56,7 @@
     environmentFile = config.age.secrets.krater-env.path;
 
     # Fallback build; deploys write /var/lib/krater/source-rev instead.
-    rev = "4f130ca51137aa8d7f65e408e04ab8f589fe9eae";
+    rev = "16de89ada091eb27bf137f5f557a4ca59ac4ae30";
 
     # Proposed names. One level under patchworklabs.org: the records are
     # proxied through Cloudflare, whose edge certificate covers only one

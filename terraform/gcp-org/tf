@@ -1,0 +1,66 @@
+#!/usr/bin/env bash
+# Terraform wrapper that elevates through PAM before anything that writes.
+#   ./tf plan                 runs as-is (standing read-only roles are enough)
+#   ./tf apply                requests org-admin if you don't already have an active grant
+#   PAM_ENTITLEMENT=infra-admin ./tf apply   use a narrower entitlement
+#   PAM_REASON="why" ./tf apply              skip the justification prompt
+set -euo pipefail
+
+# Run from this directory, whatever the caller's working directory is.
+cd "$(dirname "${BASH_SOURCE[0]}")"
+
+ORG="839523354890"
+ENT="${PAM_ENTITLEMENT:-org-admin}"
+DURATION="${PAM_DURATION:-3600s}"
+ME="$(gcloud config get-value account 2>/dev/null)"
+
+needs_elevation() {
+  case "${1:-}" in
+    apply|destroy|import|state|taint|untaint|force-unlock) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+grant_state() {
+  gcloud beta pam grants describe "$1" --entitlement="$ENT" --location=global \
+    --organization="$ORG" --format="value(state)" 2>/dev/null
+}
+
+if needs_elevation "${1:-}"; then
+  # Reuse any open grant (active or still activating) instead of requesting a new one.
+  open_grant="$(gcloud beta pam grants list --entitlement="$ENT" --location=global \
+    --organization="$ORG" --format="value(name.basename(),state,requester)" 2>/dev/null \
+    | awk -v me="$ME" '$3 == me && ($2 == "ACTIVE" || $2 == "ACTIVATING" || $2 == "SCHEDULED") { print $1; exit }')"
+
+  if [[ -n "$open_grant" ]]; then
+    echo "Reusing open $ENT grant $open_grant"
+    grant="$open_grant"
+  else
+    reason="${PAM_REASON:-}"
+    if [[ -z "$reason" ]]; then
+      read -r -p "Justification for $ENT: " reason
+    fi
+    grant="$(gcloud beta pam grants create --entitlement="$ENT" --location=global \
+      --organization="$ORG" --requested-duration="$DURATION" \
+      --justification="terraform $*: $reason" --format="value(name.basename())" 2>/dev/null)"
+    echo "Requested $ENT grant $grant"
+  fi
+
+  if [[ "$(grant_state "$grant")" != "ACTIVE" ]]; then
+    echo "Waiting for $grant to activate..."
+    for _ in $(seq 1 60); do
+      state="$(grant_state "$grant")"
+      case "$state" in
+        ACTIVE) break ;;
+        DENIED|ACTIVATION_FAILED|EXPIRED|REVOKED|WITHDRAWN)
+          echo "Grant ended in state $state" >&2; exit 1 ;;
+      esac
+      sleep 5
+    done
+    [[ "$(grant_state "$grant")" == "ACTIVE" ]] || { echo "Timed out waiting for grant" >&2; exit 1; }
+    echo "Active. Giving IAM 30 seconds to propagate..."
+    sleep 30
+  fi
+fi
+
+exec terraform "$@"

@@ -1,0 +1,23 @@
+---
+profile: moderate
+
+exclude_paths:
+  - inventory/group_vars/all/vault.yml
+  - vault/
+  - .worktrees/
+  - .ansible/
+  - .git/
+
+skip_list:
+  # Role variables carry a product prefix (tailscale_, windows_exporter_),
+  # not the full role name.
+  - var-naming[no-role-prefix]
+  # run_once is used on purpose on DC-side tasks; the strategy is always
+  # linear here.
+  - run-once[task]
+  # Task names with a variable in the middle read better.
+  - name[template]
+
+warn_list:
+  - no-handler
+  - experimental

@@ -11,6 +11,9 @@
       # Weave is the IDP, so it owns people.* and runs its migrations.
       weave = { };
       selvage.read = [ "people" ];
+      # Krater (Project Ganymede portal): proposals, budget ledger, audit log. It stores no personal
+      # data, only Patchwork IDs, and reads people through Weave's directory API, so no shared schemas.
+      krater = { };
     };
     sharedSchemas = {
       people.owner = "weave";

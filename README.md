@@ -12,6 +12,7 @@ Declarative infrastructure for Patchwork Labs: every Patchwork host, the NixOS m
 | `hosts/installer.nix` | The installer ISO: NixOS minimal with the admin SSH keys on root. |
 | `bin/install-host` | Plans and applies the VM, reads its address, runs nixos-anywhere. |
 | `bin/new-quilt-staging-secrets` | Writes the two Quilt staging secrets with a new random password and `SECRET_KEY_BASE`. Prints no value. |
+| `bin/new-krater-secrets` | Writes Krater's two production secrets with a new random database password and keys. Prints no value. |
 | `hosts/central-db-schema.nix` | Apps and shared schemas of the central databases. |
 | `hosts/alastor/` | Modules that `jaspermayone/infra` imports for alastor. |
 | `modules/common/` | Accounts, SSH, sudo, Tailscale, Nix. Every host imports it. `keys.nix` holds the SSH keys. |
@@ -19,6 +20,8 @@ Declarative infrastructure for Patchwork Labs: every Patchwork host, the NixOS m
 | `modules/central-db/` | One central PostgreSQL cluster and its access model. |
 | `modules/weave/` | The Weave service module. |
 | `modules/quilt/` | The Quilt service module. |
+| `modules/krater/` | The Krater service module (portal, worker, screenshot storage; Krater Compute off by default). Exported as `nixosModules.krater`. |
+| `hosts/alastor/krater.nix` | Krater as it would run on alastor. Exported as `nixosModules.krater-alastor`; not imported by alastor yet. |
 | `tests/` | NixOS VM tests. |
 | `secrets/` | agenix secrets. `secrets.nix` lists the recipients of each file. |
 | `ansible/` | Ansible for the Windows hosts and AD: `windows.yml`, `ad.yml`. See `ansible/README.md`. |
@@ -134,6 +137,14 @@ To change Weave on alastor:
 3. Deploy alastor from `jaspermayone/infra` (`deploy .#alastor`).
 
 alastor also rebuilds itself at 04:00 from `jaspermayone/infra` `main`. It uses the revision in that repo's `flake.lock`, so a merge here does nothing on alastor until step 2.
+
+## Krater on alastor
+
+Krater has no registry image. `krater-build` fetches one commit of `patchworklabsorg/krater` and builds it on the host with the repo's own Dockerfile. A deploy writes the commit to `/var/lib/krater/source-rev`, then runs `systemctl start krater-build` (the running site keeps serving) and `systemctl restart krater-web`. So Krater releases don't need a change here; only the module and its settings do.
+
+Krater's database is its schema `krater` in `patchwork_central` (skein), like Weave's and Quilt's central databases; the module runs no Postgres of its own, and skein's nightly dump covers it.
+
+Before alastor imports `nixosModules.krater-alastor`: DNS for its two hostnames (`krater`, `krater-storage`), the Weave client id in `hosts/alastor/krater.nix`, the secrets `krater-env.age` and `central-prod-krater.age` (`bin/new-krater-secrets` writes both), and skein deployed with Krater's role. Krater's compute stays off at first, so `krater-vast-key.age` isn't needed yet. Krater's `docs/dev/production.md` has the full checklist.
 
 ## Quilt on alastor
 

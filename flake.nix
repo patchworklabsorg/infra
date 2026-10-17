@@ -70,6 +70,11 @@
         # Quilt on alastor: instance settings, Traefik route and agenix
         # secrets. Needs alastor's Tailscale to reach seam.
         quilt-alastor = ./hosts/alastor/quilt.nix;
+        # The Krater service module alone, with no instance settings.
+        krater = ./modules/krater;
+        # Krater as it runs on alastor: instance settings, Traefik routes and
+        # agenix secrets. Not imported by alastor yet.
+        krater-alastor = ./hosts/alastor/krater.nix;
       };
 
       nixosConfigurations = nixpkgs.lib.genAttrs hosts mkHost;

@@ -18,6 +18,10 @@ in
 
   networking.hostName = "skein";
   patchwork.lanAddress = "10.100.90.55";
+  patchwork.banner = {
+    enable = true;
+    role = "central db";
+  };
 
   patchwork.centralDb = {
     enable = true;

@@ -51,6 +51,9 @@
           modules = [
             agenix.nixosModules.default
             disko.nixosModules.disko
+            # Opt in with patchwork.banner.enable. Not in nixosModules, so
+            # alastor does not get it.
+            ./modules/banner
             ./hosts/${name}/configuration.nix
           ];
         };
@@ -129,6 +132,11 @@
               }
               // nixpkgs.lib.optionalAttrs pkgs.stdenv.isLinux {
                 central-db = import ./tests/central-db.nix { inherit pkgs; };
+                banner = import ./tests/banner.nix {
+                  inherit pkgs;
+                  inherit (nixpkgs.lib) nixosSystem;
+                  hosts = self.nixosConfigurations;
+                };
                 quilt-alastor = import ./tests/quilt-alastor.nix {
                   inherit pkgs;
                   inherit (nixpkgs.lib) nixosSystem;

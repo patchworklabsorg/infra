@@ -111,6 +111,10 @@ in
 
   networking.hostName = "hem";
   patchwork.lanAddress = "10.100.90.58";
+  patchwork.banner = {
+    enable = true;
+    role = "staging db";
+  };
 
   containers = lib.mapAttrs (_: container) clusters;
 

@@ -52,7 +52,21 @@ Set-Service -Name Spooler -StartupType Disabled
 # 5. RSAT AD DS tools (with the AD PowerShell module) and GPMC.
 Install-WindowsFeature -Name RSAT-AD-Tools, GPMC -IncludeAllSubFeature
 
-# 6. Turn off the automatic logon and remove the cached answer files.
+# 6. QEMU guest agent, from the virtio-win guest tools. Proxmox then shows
+#    the address and can shut spool down cleanly. A failed download only
+#    logs a warning. Install it later by hand (README.md, "After the install").
+$GuestTools = 'https://fedorapeople.org/groups/virt/virtio-win/direct-downloads/stable-virtio/virtio-win-guest-tools.exe'
+$exe = 'C:\Windows\Temp\virtio-win-guest-tools.exe'
+try {
+  Invoke-WebRequest -Uri $GuestTools -OutFile $exe -UseBasicParsing
+  Start-Process -FilePath $exe -ArgumentList '/install', '/quiet', '/norestart' -Wait
+  Get-Service -Name QEMU-GA | Set-Service -StartupType Automatic
+  Start-Service -Name QEMU-GA
+} catch {
+  Write-Warning "Guest agent not installed: $_"
+}
+
+# 7. Turn off the automatic logon and remove the cached answer files.
 $wl = 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon'
 Set-ItemProperty -Path $wl -Name AutoAdminLogon -Value '0'
 Remove-ItemProperty -Path $wl -Name DefaultPassword -ErrorAction SilentlyContinue
@@ -62,5 +76,5 @@ Remove-Item -Path 'C:\Windows\Panther\unattend.xml', 'C:\Windows\Panther\Unatten
 New-Item -Path 'C:\Windows\Temp\spool-setup.done' -ItemType File -Force | Out-Null
 Stop-Transcript
 
-# 7. Restart, so that spool comes up at the logon screen.
+# 8. Restart, so that spool comes up at the logon screen.
 Restart-Computer -Force

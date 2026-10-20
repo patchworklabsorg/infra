@@ -58,10 +58,13 @@ resource "proxmox_virtual_environment_vm" "spool" {
     floating  = 0
   }
 
-  # Turn this on after the QEMU guest agent is installed in Windows.
-  # Before that, the provider waits for an agent that does not answer.
+  # spool-setup.ps1 installs the QEMU guest agent at the first logon. Wait
+  # 2 minutes for it, not the 15 minute default, so an apply during the
+  # install does not stall. A change here needs a stop and start of the VM,
+  # not a restart in Windows.
   agent {
-    enabled = false
+    enabled = true
+    timeout = "2m"
   }
 
   efi_disk {
@@ -107,7 +110,6 @@ resource "proxmox_virtual_environment_vm" "spool" {
       started,
       description,
       tags,
-      agent,
     ]
   }
 }

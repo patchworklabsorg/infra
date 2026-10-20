@@ -137,6 +137,7 @@
                   inherit (nixpkgs.lib) nixosSystem;
                   hosts = self.nixosConfigurations;
                   inherit (self) nixosModules;
+                  agenixModule = agenix.nixosModules.default;
                 };
                 quilt-alastor = import ./tests/quilt-alastor.nix {
                   inherit pkgs;

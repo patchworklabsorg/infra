@@ -1,12 +1,14 @@
 # Checks modules/banner on the real lab hosts and on a host with no banner
-# settings. The banner is on by default. alastor must not get it, so the module
-# must not be in nixosModules.
+# settings. The banner is on by default. alastor must not get it, so no module
+# in nixosModules may bring in the patchwork.banner option, not even through
+# an import.
 #   nix build .#checks.<system>.banner
 {
   pkgs,
   nixosSystem,
   hosts,
   nixosModules,
+  agenixModule,
 }:
 let
   inherit (pkgs) lib;
@@ -30,6 +32,24 @@ let
       ];
     }).config;
 
+  # True if the module, with its imports, declares patchwork.banner. Only the
+  # options are read, so the module needs no secrets or host settings.
+  bringsBanner =
+    m:
+    let
+      inherit
+        (nixosSystem {
+          system = "x86_64-linux";
+          modules = [
+            agenixModule
+            m
+          ];
+        })
+        options
+        ;
+    in
+    options ? patchwork && options.patchwork ? banner;
+
   checks = {
     "seam motd has the spaced name" = lib.hasInfix "S E A M" seam.users.motd;
     "seam motd has its role" = lib.hasInfix "patchwork . restricted central db" seam.users.motd;
@@ -41,8 +61,8 @@ let
     "default motd has the spaced name" = lib.hasInfix "P L A I N" plain.users.motd;
     "default motd has no role" = lib.hasInfix "    patchwork\n" plain.users.motd;
     "default sets the SSH banner" = plain.services.openssh.settings.Banner != null;
-    "module is not exported, so alastor does not get it" =
-      !(lib.elem ../modules/banner (builtins.attrValues nixosModules));
+    "no exported module brings in the banner, so alastor does not get it" =
+      !(lib.any bringsBanner (builtins.attrValues nixosModules));
   };
   failed = lib.attrNames (lib.filterAttrs (_: ok: !ok) checks);
 in

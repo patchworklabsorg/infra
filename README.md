@@ -83,16 +83,15 @@ loom and spindle must run. They are the DNS servers, the KDCs and the time sourc
 
 The lab hosts show a sewing-theme banner, in the style of thimble's. One banner shows before the SSH login. One shows after it. `modules/banner` makes both.
 
-The banner is off by default. `flake.nix` adds the module to every host in `hosts`, but the host must turn it on. alastor does not get it. It does not import `modules/banner`.
+The banner is on by default. `flake.nix` adds the module to every host in `hosts`, so a new host gets it with no change. alastor does not get it, because `modules/banner` is not in `nixosModules`.
 
-To turn it on for a new host, add this to `hosts/<host>/configuration.nix`:
+Give a new host its role in `hosts/<host>/configuration.nix`. Without a role, the banners show only the host name.
 
 ```nix
-patchwork.banner = {
-  enable = true;
-  role = "app host"; # short, lower case
-};
+patchwork.banner.role = "app host"; # short, lower case
 ```
+
+To turn the banner off for a host, set `patchwork.banner.enable = false;`.
 
 The host name comes from `networking.hostName`. The option `patchwork.banner.art` replaces the art after login. Check the result with `nix eval --raw .#nixosConfigurations.<host>.config.users.motd`. The check `banner` tests the seam banner and the default.
 

@@ -14,6 +14,7 @@
     # run at the same time, and warp is not yet a recipient of the Weave
     # secrets. See the header of ./weave.nix.
     # ./weave.nix
+    ./redirects-nginx.nix
   ];
 
   networking.hostName = "warp";

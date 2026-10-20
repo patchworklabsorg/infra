@@ -22,6 +22,11 @@ let
       backend = "warp";
       hosts = [ "weave-staging.patchworklabs.org" ];
     };
+    # Every host in ../warp/redirects.nix.
+    redirects = {
+      backend = "warp";
+      hosts = builtins.attrNames (import ../warp/redirects.nix);
+    };
   };
 in
 {

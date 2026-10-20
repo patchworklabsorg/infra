@@ -1,8 +1,8 @@
 # Sewing-theme login banners, in the style of thimble's: a small box before
 # the SSH login (services.openssh.settings.Banner) and a needle and patch
-# after it (users.motd). Off by default. Only the Patchwork lab hosts turn it
-# on, in their hosts/<host>/configuration.nix. This module is not in
-# nixosModules and modules/common does not import it, so alastor never gets it.
+# after it (users.motd). On by default: flake.nix adds this module only to the
+# Patchwork lab hosts. It is not in nixosModules and modules/common does not
+# import it, so alastor never gets it.
 {
   config,
   lib,
@@ -18,13 +18,16 @@ let
 
   lines = ls: lib.concatStringsSep "\n" ls + "\n";
 
+  # "central db" -> " central db", so a host without a role has no stray text.
+  role = lib.optionalString (cfg.role != null) " ${cfg.role}";
+
   preLogin =
     lines [
       "   .-------."
       "   |=======|"
       "   |  | |  |"
       "   `-------`"
-      "   ${host} . patchwork ${cfg.role}"
+      "   ${host} . patchwork${role}"
     ]
     + "\n";
 
@@ -33,17 +36,20 @@ let
       cfg.art
       ++ [
         "    ${spacedName}"
-        "    patchwork . ${cfg.role}"
+        "    patchwork${lib.optionalString (cfg.role != null) " . ${cfg.role}"}"
       ]
     )
     + "\n";
 in
 {
   options.patchwork.banner = {
-    enable = lib.mkEnableOption "the sewing-theme login banners";
+    enable = lib.mkEnableOption "the sewing-theme login banners" // {
+      default = true;
+    };
 
     role = lib.mkOption {
-      type = lib.types.str;
+      type = lib.types.nullOr lib.types.str;
+      default = null;
       example = "central db";
       description = "What the host does. Short and lower case. It goes in both banners.";
     };

@@ -1,10 +1,12 @@
-# Checks modules/banner on the real lab hosts and on a host that does not
-# turn it on. The banner is off by default, because alastor must not get it.
+# Checks modules/banner on the real lab hosts and on a host with no banner
+# settings. The banner is on by default. alastor must not get it, so the module
+# must not be in nixosModules.
 #   nix build .#checks.<system>.banner
 {
   pkgs,
   nixosSystem,
   hosts,
+  nixosModules,
 }:
 let
   inherit (pkgs) lib;
@@ -35,9 +37,12 @@ let
     "every lab host has a motd" = lib.all (h: hosts.${h}.config.users.motd != null) (
       builtins.attrNames hosts
     );
-    "banner is off by default" = !plain.patchwork.banner.enable;
-    "default has no motd" = plain.users.motd == null || plain.users.motd == "";
-    "default has no SSH banner" = plain.services.openssh.settings.Banner == null;
+    "banner is on by default" = plain.patchwork.banner.enable;
+    "default motd has the spaced name" = lib.hasInfix "P L A I N" plain.users.motd;
+    "default motd has no role" = lib.hasInfix "    patchwork\n" plain.users.motd;
+    "default sets the SSH banner" = plain.services.openssh.settings.Banner != null;
+    "module is not exported, so alastor does not get it" =
+      !(lib.elem ../modules/banner (builtins.attrValues nixosModules));
   };
   failed = lib.attrNames (lib.filterAttrs (_: ok: !ok) checks);
 in

@@ -16,6 +16,10 @@
 
   networking.hostName = "warp";
   patchwork.lanAddress = "10.100.90.56";
+  patchwork.banner = {
+    enable = true;
+    role = "app host";
+  };
   patchwork.members = [ "dom" ];
 
   virtualisation.docker.enable = true;

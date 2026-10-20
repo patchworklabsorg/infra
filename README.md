@@ -79,6 +79,23 @@ Before a host is installed:
 
 loom and spindle must run. They are the DNS servers, the KDCs and the time source of every host.
 
+## Login banners
+
+The lab hosts show a sewing-theme banner, in the style of thimble's. One banner shows before the SSH login. One shows after it. `modules/banner` makes both.
+
+The banner is off by default. `flake.nix` adds the module to every host in `hosts`, but the host must turn it on. alastor does not get it. It does not import `modules/banner`.
+
+To turn it on for a new host, add this to `hosts/<host>/configuration.nix`:
+
+```nix
+patchwork.banner = {
+  enable = true;
+  role = "app host"; # short, lower case
+};
+```
+
+The host name comes from `networking.hostName`. The option `patchwork.banner.art` replaces the art after login. Check the result with `nix eval --raw .#nixosConfigurations.<host>.config.users.motd`. The check `banner` tests the seam banner and the default.
+
 ## Install a host
 
 The installer ISO has the admin SSH keys on root. Nobody types in the Proxmox console. The keys come from `modules/common/keys.nix`, the same file the host accounts use.

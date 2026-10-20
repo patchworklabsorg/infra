@@ -73,6 +73,9 @@
         # Quilt on alastor: instance settings, Traefik route and agenix
         # secrets. Needs alastor's Tailscale to reach seam.
         quilt-alastor = ./hosts/alastor/quilt.nix;
+        # forms.patchworklabs.org/<name> redirects to external forms, on
+        # alastor's Traefik.
+        forms-alastor = ./hosts/alastor/forms.nix;
       };
 
       nixosConfigurations = nixpkgs.lib.genAttrs hosts mkHost;

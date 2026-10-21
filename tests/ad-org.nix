@@ -479,9 +479,19 @@ let
     ++ lib.concatMap (
       g:
       map (m: "${g.name}: member ${m} is not a role group") (
-        builtins.filter (m: !lib.elem m roleNames) g.members
+        builtins.filter (m: !lib.elem m roleNames && !((g.allowUserMembers or false) && lib.elem m sams)) g.members
       )
     ) (org.hostGroups ++ org.resourceGroups)
+    # "allowUserMembers": a resource group that also holds people directly
+    # (vpn-users, until a role group fits). Only enabled person accounts: an
+    # admin account in Protected Users cannot use MS-CHAPv2, and a disabled
+    # account must not be in a group.
+    ++ lib.concatMap (
+      g:
+      map (m: "${g.name}: member ${m} must be a role group or a person account") (
+        builtins.filter (m: lib.elem m sams && !lib.elem m (map (u: u.sam) people)) g.members
+      )
+    ) (builtins.filter (g: g.allowUserMembers or false) org.resourceGroups)
     ++ map (h: "${h} is in both linuxHosts and retiredHosts") (
       builtins.filter (h: lib.elem h org.linuxHosts) org.retiredHosts
     )

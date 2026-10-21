@@ -69,7 +69,7 @@ Every host joins the `patchwork.internal` AD forest (`modules/ad-join`), with th
 - Members of `lnx-<host>-admins` get sudo with their AD password.
 - The local accounts in `modules/common` are the break-glass way in.
 
-Staff reach the lab over the thimble VPN (WireGuard, one key per device) or over Tailscale. AD login for the VPN is planned (IKEv2 with NPS on shuttle).
+Staff reach the lab over the thimble VPN or over Tailscale. thimble has WireGuard (one key per device) and, after the rollout in `ansible/README.md` ("VPN"), IKEv2 with AD login: NPS on shuttle checks the password and the `vpn-users` group. Use the daily account. Admin accounts in Protected Users cannot log in to the VPN.
 
 Before a host is installed:
 

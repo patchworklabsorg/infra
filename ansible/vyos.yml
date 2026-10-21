@@ -78,6 +78,27 @@
           `ansible-playbook vyos.yml -t pull` first.
         quiet: true
 
+    # Stage 5 of the IKEv2 rollout (README.md, "VPN") sets the input default
+    # action to drop. Do it by hand with commit-confirm first. This play then
+    # only makes the repo match, and it refuses to be the first to drop.
+    - name: Apply | Read the input default action (IKEv2 stage 5)
+      vyos.vyos.vyos_command:
+        commands: show configuration commands | match "firewall ipv4 input filter default-action"
+      register: vyos_input_default
+      check_mode: false
+      when: vyos_ikev2_stage | default(0) | int >= 5
+
+    - name: Apply | Stage 5 only after the manual commit-confirm
+      ansible.builtin.assert:
+        that:
+          - "'drop' in vyos_input_default.stdout[0]"
+        fail_msg: >-
+          vyos_ikev2_stage is 5, but thimble does not drop on input yet. Do
+          stage 5 by hand with commit-confirm (README.md, "VPN", step 9), then
+          run this play again.
+        quiet: true
+      when: vyos_ikev2_stage | default(0) | int >= 5
+
     - name: Apply | Load the template and commit it
       vyos.vyos.vyos_config:
         src: "{{ vyos_template }}"

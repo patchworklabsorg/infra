@@ -97,6 +97,18 @@ in
     alastor
   ];
 
+  # App role passwords in patchwork_central (skein). Password only. Add the
+  # host that runs the app as a recipient when the app connects, and put the
+  # same password in that app's env file.
+  "central-prod-weave.age".publicKeys = [
+    jsp
+    skein
+  ];
+  "central-prod-selvage.age".publicKeys = [
+    jsp
+    skein
+  ];
+
   # Quilt's role password in patchwork_central_restricted (seam). Password
   # only. alastor does not get this file: the same password is in
   # quilt-env.age.

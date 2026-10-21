@@ -86,6 +86,25 @@
     - tailscale_advertise_tags | length == 0
     - not (tailscale_allow_untagged | bool)
 
+# With no key, the login below is skipped and the play ends green, but the
+# node stays off the tailnet. This happened twice: once with the wrong
+# variable name (tailscale_authkey), once with an empty $TSKEY.
+- name: Fail when the node needs a login and no auth key is set
+  ansible.builtin.fail:
+    msg: |
+      {{ inventory_hostname }} is not logged in to the tailnet ({{ (tailscale_status.stdout | from_json).BackendState }}),
+      and tailscale_auth_key is empty, so this run cannot log it in.
+
+      Give the key with the exact variable name, and check that it is set:
+
+        read -s TSKEY; [ -n "$TSKEY" ] && echo set
+        ansible-playbook windows.yml -l {{ inventory_hostname }} -e "tailscale_auth_key=$TSKEY"
+
+      To keep a host off the tailnet, set tailscale_enabled: false for it.
+  when:
+    - tailscale_auth_key | length == 0
+    - (tailscale_status.stdout | from_json).BackendState in ['NeedsLogin', 'NoState']
+
 # --unattended keeps the tunnel up with no user logged in (server mode).
 # --accept-dns=false: these boxes ARE the DNS / rely on AD DNS.
 # --accept-routes=false: no grant has a Patchwork tag as src, so a route

@@ -61,6 +61,7 @@ These jobs are done by hand and are not in Ansible: AD CS setup and the offline 
 - `--advertise-tags` applies only at the first login. After the login, and on each later run, the play reads the tags of the host. When they are not exactly `tailscale_advertise_tags`, the play fails and shows the command that tags it. The play does not log the host in again by itself.
 - A host with no tag matches `autogroup:member`, and the policy gives that group much more access. The role refuses a host with no `tailscale_advertise_tags`, unless `tailscale_allow_untagged` is `true`.
 - When `tailscale up` fails, the play shows the error with the key removed.
+- A host that is not logged in (`NeedsLogin` or `NoState`) needs `tailscale_auth_key` (from `vault_tailscale_auth_key`, or `-e "tailscale_auth_key=$TSKEY"`). Without it the play fails for that host. To keep a host off the tailnet, set `tailscale_enabled: false` for it, as `group_vars/jump_hosts.yml` does for spool.
 - The play logs in with `--accept-routes=false`, and turns off DNS registration on the Tailscale adapter. After a DC joins, check that AD DNS has no tailnet address for it: `Get-DnsServerResourceRecord -ZoneName patchwork.internal -RRType A | Where-Object { $_.RecordData.IPv4Address -like '100.*' }` must return nothing. If the DNS Server listens on the Tailscale address, set its listen addresses to the 10.100.90.x address by hand.
 
 ## Prerequisites

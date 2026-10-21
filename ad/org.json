@@ -37,11 +37,11 @@
   "users": [
     { "sam": "mayonej", "upn": "jasper", "kind": "person", "weaveId": "PWL7A1CE1F3CB", "ou": "Users/Staff", "givenName": "Jasper", "surname": "Mayone",
       "division": "Programs", "department": "Programs", "title": "Founder & Director of Programs", "manager": null },
-    { "sam": "adam.sidwa", "kind": "person", "ou": "Users/Staff", "givenName": "Adam", "surname": "Sidwa",
+    { "sam": "adam.sidwa", "kind": "person", "weaveId": "PWL8724F96B89", "ou": "Users/Staff", "givenName": "Adam", "surname": "Sidwa",
       "division": "Programs", "department": "Project Ganymede", "title": "Project Ganymede Administrator", "manager": "mayonej" },
     { "sam": "klukask", "upn": "kieran", "kind": "person", "weaveId": "PWL0667B785FD", "ou": "Users/Board-Only", "givenName": "Kieran", "surname": "Klukas",
       "division": "Operations", "department": "Governance", "title": "Treasurer & Secretary", "manager": null },
-    { "sam": "petrarcad", "upn": "dominic", "kind": "person", "ou": "Users/Board-Only", "givenName": "Dominic", "surname": "Petrarca",
+    { "sam": "petrarcad", "upn": "dominic", "kind": "person", "weaveId": "PWL908148D41E", "ou": "Users/Board-Only", "givenName": "Dominic", "surname": "Petrarca",
       "division": "Operations", "department": "Governance", "title": "Director", "manager": null },
     { "sam": "cj", "kind": "person", "ou": "Users/Sponsored-Projects/HackBoston",
       "division": "Sponsored Projects", "department": "HackBoston", "title": "Organizer", "manager": null },

@@ -1,0 +1,11 @@
+---
+# loom and spindle. Tier 0 (ad/TIERING.md).
+#
+# windows.yml joins them to the tailnet with this tag. The tailnet policy
+# (jaspermayone/infra, tailscale/policy.hujson) lets alastor (tag:ingress)
+# reach tag:patchwork-dc on tcp:636 only, for Weave's LDAPS binds
+# (ad/README.md, "Weave"). Nothing else reaches the DCs over the tailnet, and
+# the DCs reach nothing. Without the tag, a DC would be an untagged node, which
+# matches autogroup:member and gets far more access.
+tailscale_advertise_tags:
+  - tag:patchwork-dc

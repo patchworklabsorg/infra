@@ -2,6 +2,9 @@
 - name: Windows baseline + agents
   hosts: windows
   roles:
-    - windows_base
+    # Off on the jump host: its firewall allows only RDP from the VPN, and the
+    # exporter MSI would open TCP 9182 (group_vars/jump_hosts.yml).
+    - role: windows_base
+      when: windows_base_enabled | default(true) | bool
     - role: tailscale_windows
       when: tailscale_enabled | default(true) | bool

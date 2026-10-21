@@ -23,6 +23,17 @@
 
   virtualisation.docker.enable = true;
 
+  # The lab hosts do not use MagicDNS (modules/common, --accept-dns=false),
+  # so *.ts.net names do not resolve here. The Quilt env files connect to
+  # seam and hem by tailnet name. The containers use the host network, and
+  # Docker copies this /etc/hosts into each one at start. If seam or hem
+  # joins the tailnet again, its address changes: update it here (and the
+  # pw-seam / pw-hem aliases in jaspermayone/infra tailscale/policy.hujson).
+  networking.hosts = {
+    "100.87.183.57" = [ "seam.wildebeest-stargazer.ts.net" ];
+    "100.67.124.123" = [ "hem.wildebeest-stargazer.ts.net" ];
+  };
+
   # 4 GB and four Rails processes: zram gives room for a deploy or an image
   # pull without the OOM killer.
   zramSwap.enable = true;

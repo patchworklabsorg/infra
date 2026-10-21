@@ -40,7 +40,7 @@ The lab hosts below are NixOS VMs on pve01, VLAN 90 (`patchwork.internal`). alas
 | `skein` | 355 | 10.100.90.55 | 4 GB | `patchwork_central`, prod. Tailnet only. |
 | `seam` | 357 | 10.100.90.57 | 2 GB | `patchwork_central_restricted`, prod. Tailnet only. |
 | `hem` | 358 | 10.100.90.58 | 2 GB | Both staging clusters: central on 5432, restricted on 5433. Quilt staging uses the restricted one. |
-| `batting` | 360 | 10.100.90.60 | 2 GB | Quilt prod + staging (after the move from alastor). nginx on `tailscale0:80` for alastor. |
+| `batting` | 360 | 10.100.90.60 | 4 GB | Quilt prod + staging. nginx on `tailscale0:80` for alastor. |
 | `weft` | 361 | 10.100.90.61 | 2 GB | Krater prod + staging. nginx on `tailscale0:80` for alastor. |
 
 The Windows hosts are managed by Ansible (`ansible/`):
@@ -52,7 +52,7 @@ The Windows hosts are managed by Ansible (`ansible/`):
 | `bobbin` | 312 | 10.100.90.12 | Issuing CA |
 | `shuttle` | 314 | 10.100.90.14 | NPS / RADIUS |
 
-VMIDs 358, 360 and 361 and their addresses are proposed. Confirm that they are free before you create the VMs. On 2026-10-21 pve01 had about 25 GiB available. hem, batting and weft need 6 GiB together, with no ballooning.
+VMIDs 358, 360 and 361 and their addresses are proposed. Confirm that they are free before you create the VMs. On 2026-10-21 pve01 had about 25 GiB available. hem, batting and weft need 8 GiB together, with no ballooning.
 
 ```mermaid
 flowchart LR
@@ -131,7 +131,7 @@ This repo is public. Nothing here depends on `jaspermayone/infra`, which is priv
 flowchart LR
   pinfra["patchworklabsorg/infra (this repo)"]
   jinfra["jaspermayone/infra (private)"]
-  pinfra -- "nixosModules.weave-alastor, quilt-alastor" --> jinfra
+  pinfra -- "nixosModules.weave-alastor, edge-alastor" --> jinfra
   jinfra -- "deploy-rs" --> alastor
   pinfra -- "deploy-rs" --> lab["warp, skein, seam, hem"]
 ```
@@ -156,9 +156,9 @@ To change Weave on alastor:
 
 alastor also rebuilds itself at 04:00 from `jaspermayone/infra` `main`. It uses the revision in that repo's `flake.lock`, so a merge here does nothing on alastor until step 2.
 
-## Quilt on alastor
+## Quilt on batting
 
-[Quilt](https://github.com/patchworklabsorg/quilt) runs on alastor as two Docker containers, like Weave. `hosts/alastor/quilt.nix` is the instance, exported as `nixosModules.quilt-alastor`. `modules/quilt` is the service module. The contract with the app is `docs/deploy.md` in the quilt repo.
+[Quilt](https://github.com/patchworklabsorg/quilt) runs on batting as two Docker containers, like Weave. `hosts/batting/quilt.nix` is the instance. `modules/quilt` is the service module. nginx on batting fronts the ports, and alastor routes `quilt.patchworklabs.org` and `quilt-staging.patchworklabs.org` to batting (`nixosModules.edge-alastor`). The contract with the app is `docs/deploy.md` in the quilt repo.
 
 | Item | Value |
 |---|---|
@@ -166,26 +166,27 @@ alastor also rebuilds itself at 04:00 from `jaspermayone/infra` `main`. It uses 
 | Units | `quilt-web` (`./bin/rails server` on `127.0.0.1:3005`, migrates on start) and `quilt-worker` (`bundle exec good_job start`) |
 | Image | `ghcr.io/patchworklabsorg/quilt:main` (option `image`). Pin it to `:<sha>` for a known build. |
 | Database | `patchwork_central_restricted` on seam, role and schema `quilt`, over the tailnet |
-| Secrets | `quilt-env.age`, `quilt-ghcr-token.age` (alastor), `restricted-prod-quilt.age` (seam) |
+| Secrets | `quilt-env.age`, `quilt-ghcr-token.age` (batting), `restricted-prod-quilt.age` (seam) |
 
 ```mermaid
 flowchart LR
   internet((Internet)) --> traefik["alastor: Traefik"]
-  traefik -- "127.0.0.1:3005" --> web[quilt-web]
+  traefik -- "tailnet :80" --> nginx["batting: nginx"]
+  nginx -- "127.0.0.1:3005" --> web[quilt-web]
   worker[quilt-worker] -- "waits for /up" --> web
   web -- "tailnet :5432" --> seam["seam: patchwork_central_restricted, schema quilt"]
   worker -- "tailnet :5432" --> seam
 ```
 
-Both containers use the host network, so they reach `seam.wildebeest-stargazer.ts.net` through alastor's Tailscale. The worker waits until `GET /up` on the web server answers. The web server answers only after the migrations ran.
+Both containers use the host network, so they reach `seam.wildebeest-stargazer.ts.net` through batting's Tailscale (`tag:patchwork-quilt`). The worker waits until `GET /up` on the web server answers. The web server answers only after the migrations ran.
 
 `RESTRICTED_DATABASE_URL` in `quilt-env.age` holds the database password. It must be the same password as in `restricted-prod-quilt.age`, which seam sets on the role `quilt`.
 
-To deploy a new `main` image, run `sudo systemctl restart quilt-web` on alastor. That restarts the worker too. To change the module, follow the same steps as for Weave above.
+To deploy a new `main` image, run `sudo systemctl restart quilt-web` on batting. That restarts the worker too. To change the module, follow the same steps as for Weave above.
 
 ## Quilt staging
 
-Quilt staging is a second instance on alastor, next to production. It uses the Mercury sandbox, Weave staging and the restricted staging cluster on hem. It can never move real money: with `RAILS_ENV=staging`, Quilt refuses to boot unless `MERCURY_API_BASE` is the sandbox URL (patchworklabsorg/quilt#35). The option is `staging` in `modules/quilt`. `hosts/alastor/quilt.nix` turns it on.
+Quilt staging is a second instance on batting, next to production. It uses the Mercury sandbox, Weave staging and the restricted staging cluster on hem. It can never move real money: with `RAILS_ENV=staging`, Quilt refuses to boot unless `MERCURY_API_BASE` is the sandbox URL (patchworklabsorg/quilt#35). The option is `staging` in `modules/quilt`. `hosts/batting/quilt.nix` turns it on.
 
 | Item | Production | Staging |
 |---|---|---|
@@ -204,7 +205,8 @@ Quilt staging is a second instance on alastor, next to production. It uses the M
 ```mermaid
 flowchart LR
   internet((Internet)) --> traefik["alastor: Traefik"]
-  traefik -- "127.0.0.1:3006" --> web[quilt-staging-web]
+  traefik -- "tailnet :80" --> nginx["batting: nginx"]
+  nginx -- "127.0.0.1:3006" --> web[quilt-staging-web]
   worker[quilt-staging-worker] -- "waits for /up" --> web
   web -- "tailnet :5433" --> hem["hem: restricted-staging container, schema quilt"]
   worker -- "tailnet :5433" --> hem
@@ -222,7 +224,7 @@ RESTRICTED_DATABASE_URL=postgres://quilt:<password>@hem.wildebeest-stargazer.ts.
 
 `<password>` must be the value in `restricted-staging-quilt.age`. hem decrypts that file to `/run/central-db-passwords/patchwork_central_restricted/quilt` and binds the directory into the `restricted-staging` container, where `central-db-setup` sets the password on the role `quilt`. `hosts/hem/configuration.nix` explains why hem does not use `/run/agenix` for this. hem has no server TLS. Tailscale encrypts the path, so the URL uses `sslmode=disable`.
 
-To deploy a new `main` image to staging, run `sudo systemctl restart quilt-staging-web` on alastor. That restarts the staging worker too.
+To deploy a new `main` image to staging, run `sudo systemctl restart quilt-staging-web` on batting. That restarts the staging worker too.
 
 ### Go live
 
@@ -249,7 +251,7 @@ Do the steps in this order.
 16. In `jaspermayone/infra`, run `nix flake update patchwork-infra` and deploy alastor.
 17. On alastor, check `systemctl status quilt-staging-web quilt-staging-worker` and `curl -i http://127.0.0.1:3006/up`. Then sign in at `https://quilt-staging.patchworklabs.org`.
 
-To test top-ups on staging, add a sandbox `MERCURY_WRITE_TOKEN` with alastor's IP on its allowlist, and set `QUILT_TOPUPS` to `approval_only`.
+To test top-ups on staging, add a sandbox `MERCURY_WRITE_TOKEN` with batting's public IP on its allowlist, and set `QUILT_TOPUPS` to `approval_only`.
 
 ## Commands
 

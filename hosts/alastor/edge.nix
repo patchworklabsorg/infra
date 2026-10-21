@@ -12,9 +12,16 @@ let
   tailnet = "wildebeest-stargazer.ts.net";
 
   # <router name> = { backend = "<host>"; hosts = [ "<fqdn>" ... ]; };
-  # Quilt moves to batting and Krater runs on weft. Their routes come with
-  # those changes.
+  # Krater on weft gets its route with that change.
   routes = {
+    quilt = {
+      backend = "batting";
+      hosts = [ "quilt.patchworklabs.org" ];
+    };
+    quilt-staging = {
+      backend = "batting";
+      hosts = [ "quilt-staging.patchworklabs.org" ];
+    };
     # Every host in ../warp/redirects.nix. A new path on an existing host
     # needs no change here.
     redirects = {

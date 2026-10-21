@@ -1,8 +1,8 @@
 # modules/quilt/default.nix
 # Quilt: Patchwork Labs funding and records (Rails). Two Docker containers from
 # one image: web and worker. Exported by this flake as nixosModules.quilt; the
-# host that runs it imports nixosModules.quilt-alastor
-# (hosts/alastor/quilt.nix), which sets the instance options below.
+# host that runs it imports hosts/batting/quilt.nix, which sets the instance
+# options below.
 #
 # The contract with the app is docs/deploy.md in patchworklabsorg/quilt.
 #

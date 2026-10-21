@@ -72,9 +72,6 @@
         edge-alastor = ./hosts/alastor/edge.nix;
         # The Quilt service module alone, with no instance settings.
         quilt = ./modules/quilt;
-        # Quilt on alastor: instance settings, Traefik route and agenix
-        # secrets. Needs alastor's Tailscale to reach seam.
-        quilt-alastor = ./hosts/alastor/quilt.nix;
       };
 
       nixosConfigurations = nixpkgs.lib.genAttrs hosts mkHost;
@@ -148,10 +145,10 @@
                   inherit (self) nixosModules;
                   agenixModule = agenix.nixosModules.default;
                 };
-                quilt-alastor = import ./tests/quilt-alastor.nix {
+                quilt-batting = import ./tests/quilt-batting.nix {
                   inherit pkgs;
                   inherit (nixpkgs.lib) nixosSystem;
-                  module = self.nixosModules.quilt-alastor;
+                  module = ./hosts/batting/quilt.nix;
                   agenixModule = agenix.nixosModules.default;
                 };
               }

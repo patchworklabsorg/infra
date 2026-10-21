@@ -15,7 +15,8 @@ let
   seam = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIIpDr8Ilx3Nh4VOgDK4y54OTbt/ax2bExU+fv+aWSAB6";
   warp = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIJoRstg6i9nq60YNVyKvlhsURUHnNGPXcR5eV6P6hmXH";
   hem = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIHFHZ/2Q8x+Z9toPli2yQZpQ4e8dBMOqDAFyAFaxgsIE";
-  # batting, weft: add each key after its install, then add the host to the
+  batting = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIEN68vw2ir+q4fMQV8WBJvH7WDG4D2uFjChwkkA93LJC";
+  # weft: add its key after its install, then add the host to the
   # files it needs and run `agenix -r`.
   #
   # Central DB passwords, one file per app and environment, password only:
@@ -59,7 +60,7 @@ in
     alastor
   ];
 
-  # Quilt (quilt.patchworklabs.org on alastor) runtime env. Must contain the
+  # Quilt (quilt.patchworklabs.org on batting) runtime env. Must contain the
   # variables in docs/deploy.md of patchworklabsorg/quilt:
   #   RESTRICTED_DATABASE_URL=postgres://quilt:<password>@seam.wildebeest-stargazer.ts.net:5432/patchwork_central_restricted?sslmode=disable
   #     (<password> is the value in restricted-prod-quilt.age)
@@ -71,10 +72,10 @@ in
   #   QUILT_TOPUPS=off
   "quilt-env.age".publicKeys = [
     jsp
-    alastor
+    batting
   ];
 
-  # Quilt staging (quilt-staging.patchworklabs.org on alastor, RAILS_ENV=staging)
+  # Quilt staging (quilt-staging.patchworklabs.org on batting, RAILS_ENV=staging)
   # runtime env. bin/new-quilt-staging-secrets writes it. Same variables as
   # quilt-env.age, with staging values:
   #   RESTRICTED_DATABASE_URL=postgres://quilt:<password>@hem.wildebeest-stargazer.ts.net:5433/patchwork_central_restricted?sslmode=disable
@@ -85,17 +86,17 @@ in
   #   MERCURY_WRITE_TOKEN=   (a sandbox token; may be blank while QUILT_TOPUPS=off)
   #   QUILT_TOPUPS=off
   # MERCURY_API_BASE (the sandbox) and WEAVE_ISSUER (Weave staging) are set in
-  # hosts/alastor/quilt.nix and override this file.
+  # hosts/batting/quilt.nix and override this file.
   "quilt-staging-env.age".publicKeys = [
     jsp
-    alastor
+    batting
   ];
 
   # GitHub classic PAT with read:packages only, for ghcr.io/patchworklabsorg/quilt
   # (a private package). The token only, no newline needed.
   "quilt-ghcr-token.age".publicKeys = [
     jsp
-    alastor
+    batting
   ];
 
   # App role passwords in patchwork_central (skein). Password only. Add the
@@ -148,5 +149,6 @@ in
     seam
     warp
     hem
+    batting
   ];
 }

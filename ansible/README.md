@@ -50,12 +50,14 @@ These jobs are done by hand and are not in Ansible: AD CS setup and the offline 
 
 ### Tailscale tags
 
-`roles/tailscale_windows` logs a host in to the tailnet with `--advertise-tags=<tailscale_advertise_tags>`. `group_vars/domain_controllers.yml` sets `tag:patchwork-dc` for loom and spindle. The tailnet policy (`jaspermayone/infra`, `tailscale/policy.hujson`) lets alastor reach that tag on `tcp:636` only, for Weave (`../ad/README.md`, "Weave").
+`roles/tailscale_windows` logs a host in to the tailnet with `--advertise-tags=<tailscale_advertise_tags>`. `group_vars/domain_controllers.yml` sets `tag:patchwork-dc` for loom and spindle. The tailnet policy (`jaspermayone/infra`, `tailscale/policy.hujson`) lets alastor reach that tag on `tcp:636` only, for Weave (`../ad/README.md`, "Weave"). `group_vars/member_servers.yml` sets `tag:patchwork-t0` for bobbin and shuttle. The policy has no grant for that tag, so they are on the tailnet but nothing reaches them.
 
 - Merge the policy change first. The tag must exist in the live policy before a node can take it.
-- The auth key must belong to a tailnet admin, or be a tagged key with `tag:patchwork-dc`.
-- `--advertise-tags` applies only at the first login. When a logged-in host does not have a wanted tag, the play fails and shows the command that tags it. The play does not log the host in again by itself.
-- A host with no tag matches `autogroup:member`, and the policy gives that group much more access. Never let a DC join without its tag.
+- Use an untagged auth key of a tailnet admin. Do not use a tagged key: all Windows hosts use the same key, so its tags would go to each host.
+- `--advertise-tags` applies only at the first login. After the login, and on each later run, the play reads the tags of the host. When they are not exactly `tailscale_advertise_tags`, the play fails and shows the command that tags it. The play does not log the host in again by itself.
+- A host with no tag matches `autogroup:member`, and the policy gives that group much more access. The role refuses a host with no `tailscale_advertise_tags`, unless `tailscale_allow_untagged` is `true`.
+- When `tailscale up` fails, the play shows the error with the key removed.
+- The play logs in with `--accept-routes=false`, and turns off DNS registration on the Tailscale adapter. After a DC joins, check that AD DNS has no tailnet address for it: `Get-DnsServerResourceRecord -ZoneName patchwork.internal -RRType A | Where-Object { $_.RecordData.IPv4Address -like '100.*' }` must return nothing. If the DNS Server listens on the Tailscale address, set its listen addresses to the 10.100.90.x address by hand.
 
 ## Prerequisites
 

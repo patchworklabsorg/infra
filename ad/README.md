@@ -48,7 +48,7 @@ These accounts existed before `org.json`. They keep their sAMAccountNames:
 | `Admin-Accounts/Tier0`, `Tier1`, `Tier2` | Admin accounts by tier. `adm_mayonej` and `svc-ansible` are in `Tier0`. `Tier1` and `Tier2` are empty. |
 | `Groups/Roles`, `Groups/Resources` | Global role groups, domain local resource groups |
 | `Computers`, `Servers` | Workstations; member servers and lab hosts |
-| `Servers/Tier0` | Tier 0 member servers: bobbin, shuttle, and spool when it exists. No Tier 1 rights. |
+| `Servers/Tier0` | Tier 0 member servers: bobbin, shuttle and spool. No Tier 1 rights. |
 
 ## Run it
 

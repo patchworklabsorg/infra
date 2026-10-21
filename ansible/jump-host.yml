@@ -1,0 +1,131 @@
+---
+# ============================================================================
+# jump-host.yml: the Tier 0 jump host (spool) and the servers it manages.
+# ---------------------------------------------------------------------------
+# 1. On tier0_servers (loom, spindle, bobbin, shuttle): allow Remote
+#    Credential Guard (DisableRestrictedAdmin = 0). Without it, mstsc
+#    /remoteGuard fails. The same value also allows Restricted Admin RDP,
+#    which accepts a hash in place of a password. See "Restricted Admin" in
+#    README.md for the controls that limit that.
+#    No GPO sets this value. If a GPO sets it later, remove this play.
+# 2. On spool: the RSAT consoles, and a "Tier 0" folder on the public desktop
+#    with one RDP shortcut per server and one shortcut per console. Only
+#    SYSTEM and Administrators can change the folder. The play removes any
+#    shortcut in it that the lists in group_vars/jump_hosts.yml do not have.
+#
+#   ansible-playbook jump-host.yml --check --diff
+#   ansible-playbook jump-host.yml
+# ============================================================================
+- name: Tier 0 servers accept Remote Credential Guard
+  hosts: domain_controllers:member_servers
+  gather_facts: false
+  tasks:
+    - name: Only Tier 0 servers get Restricted Admin
+      ansible.builtin.assert:
+        that: inventory_hostname in tier0_servers
+        fail_msg: >-
+          {{ inventory_hostname }} is not in tier0_servers
+          (group_vars/patchwork.yml). It must not accept Restricted Admin RDP.
+        quiet: true
+
+    - name: Allow Remote Credential Guard and Restricted Admin RDP
+      ansible.windows.win_regedit:
+        path: HKLM:\SYSTEM\CurrentControlSet\Control\Lsa
+        name: DisableRestrictedAdmin
+        data: 0
+        type: dword
+
+- name: Jump host consoles and shortcuts
+  hosts: jump_hosts
+  gather_facts: false
+  vars:
+    folder: C:\Users\Public\Desktop\Tier 0
+  tasks:
+    - name: RSAT consoles
+      ansible.windows.win_feature:
+        name: "{{ jump_host_features }}"
+        include_sub_features: true
+        state: present
+
+    - name: Shortcut folder
+      ansible.windows.win_file:
+        path: "{{ folder }}"
+        state: directory
+
+    # C:\Users\Public gives Users Modify. A user could then swap a shortcut
+    # for a program that runs when an admin clicks it. Remove the inherited
+    # rights: SYSTEM and Administrators change it, Users only read it.
+    - name: Shortcut folder | no inherited rights
+      ansible.windows.win_acl_inheritance:
+        path: "{{ folder }}"
+        state: absent
+        reorganize: false
+
+    - name: Shortcut folder | rights
+      ansible.windows.win_acl:
+        path: "{{ folder }}"
+        user: "{{ item.sid }}"
+        rights: "{{ item.rights }}"
+        type: allow
+        state: present
+        inherit: ContainerInherit, ObjectInherit
+        propagation: None
+      loop:
+        - { sid: S-1-5-18, rights: FullControl }        # SYSTEM
+        - { sid: S-1-5-32-544, rights: FullControl }    # Administrators
+        - { sid: S-1-5-32-545, rights: ReadAndExecute } # Users
+
+    # WScript.Shell makes the .lnk files, so no extra collection is needed.
+    # SupportsShouldProcess lets the script run in --check: it then only
+    # reports what it would change.
+    # A shortcut is written only when it is missing or its target, arguments
+    # or description differ.
+    - name: Shortcuts
+      ansible.windows.win_powershell:
+        parameters:
+          Folder: "{{ folder }}"
+          Shortcuts: >-
+            {{ (jump_host_rdp_targets | map('combine', {'kind': 'rdp'}) | list)
+               + (jump_host_tools | map('combine', {'kind': 'tool'}) | list) }}
+        script: |
+          [CmdletBinding(SupportsShouldProcess)]
+          param([string]$Folder, [object[]]$Shortcuts)
+          # win_powershell reports a change unless the script says otherwise.
+          $Ansible.Changed = $false
+          $shell = New-Object -ComObject WScript.Shell
+          $sys = Join-Path $env:SystemRoot 'System32'
+          $want = @()
+          foreach ($s in $Shortcuts) {
+            if ($s.kind -eq 'rdp') {
+              $file = "RDP $($s.name).lnk"
+              $target = Join-Path $sys 'mstsc.exe'
+              $arguments = "/v:$($s.fqdn) /remoteGuard"
+              $desc = "RDP to $($s.fqdn) ($($s.role)) with Remote Credential Guard"
+            } else {
+              $file = "$($s.name).lnk"
+              $target = Join-Path $sys $s.file
+              $arguments = ''
+              $desc = $s.name
+            }
+            $want += $file
+            $path = Join-Path $Folder $file
+            $have = if (Test-Path -LiteralPath $path) { $shell.CreateShortcut($path) }
+            if ($have -and $have.TargetPath -eq $target -and $have.Arguments -eq $arguments -and
+                $have.Description -eq $desc -and $have.WorkingDirectory -eq $sys -and
+                $have.IconLocation -eq ',0') { continue }
+            $Ansible.Changed = $true
+            if ($Ansible.CheckMode) { continue }
+            $lnk = $shell.CreateShortcut($path)
+            $lnk.TargetPath = $target
+            $lnk.Arguments = $arguments
+            $lnk.Description = $desc
+            $lnk.WorkingDirectory = $sys
+            $lnk.IconLocation = ',0'
+            $lnk.Save()
+          }
+          # Remove shortcuts in the folder that the list no longer has.
+          if (-not (Test-Path -LiteralPath $Folder)) { return }
+          Get-ChildItem -LiteralPath $Folder -Filter *.lnk | Where-Object { $want -notcontains $_.Name } | ForEach-Object {
+            $Ansible.Changed = $true
+            if (-not $Ansible.CheckMode) { Remove-Item -LiteralPath $_.FullName -Force }
+          }

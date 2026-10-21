@@ -9,15 +9,17 @@ Ansible for the Windows side of `patchwork.internal` (the domain controllers, th
 | `loom` | 10.100.90.10 | `domain_controllers` | PDC emulator, DNS, DHCP |
 | `spindle` | 10.100.90.11 | `domain_controllers` | Second DC, DNS |
 | `bobbin` | 10.100.90.12 | `member_servers` | Issuing CA |
-| `shuttle` | 10.100.90.14 | `member_servers` | NPS / RADIUS. thimble does not use it yet (see "thimble"). |
-| `thimble` | 10.100.92.20 | `vyos_edges` | VyOS VPN edge. WireGuard, one key per device. |
+| `shuttle` | 10.100.90.14 | `member_servers` | NPS / RADIUS for the thimble VPN |
+| `spool` | 10.100.90.59 | `jump_hosts` | Tier 0 jump host (`../ad/TIERING.md`). No Tailscale. |
+| `thimble` | 10.100.92.20 (verify) | `vyos_edges` | VyOS VPN edge. Staff log in with AD through NPS. |
 
 | Playbook | Target | What it does |
 |---|---|---|
-| `windows.yml` | `windows` | windows_exporter (`roles/windows_base`) and Tailscale (`roles/tailscale_windows`) |
+| `windows.yml` | `windows` | windows_exporter (`roles/windows_base`) and Tailscale (`roles/tailscale_windows`). Neither on spool (`group_vars/jump_hosts.yml`). |
 | `ad.yml` | `domain_controllers` | Directory maintenance. Each job has its own tag. See below. |
 | `sync-join-password.yml` | loom | Sets the AD password of `svc-lnx-join` to `../secrets/ad-join.age`, only if they differ. |
 | `vyos.yml` | `vyos_edges` | thimble's config, from `templates/vyos/thimble.conf.j2`. |
+| `jump-host.yml` | `jump_hosts`, and the DCs and member servers | The RSAT consoles and a `Tier 0` desktop folder on spool, with one RDP shortcut (`mstsc /remoteGuard`) per Tier 0 server. The servers get `DisableRestrictedAdmin = 0`, so they accept Remote Credential Guard. |
 
 Ansible does not manage these hosts:
 
@@ -33,9 +35,10 @@ These jobs are done by hand and are not in Ansible: AD CS setup and the offline 
 | Path | Contents |
 |---|---|
 | `ansible.cfg` | Inventory path, roles path, vault password file. |
-| `inventory/hosts.yml` | The four Windows hosts. |
+| `inventory/hosts.yml` | The Windows hosts and thimble. |
 | `inventory/group_vars/patchwork.yml` | The forest: realm, DCs, OU DNs, service accounts, DHCP scopes. |
 | `inventory/group_vars/windows.yml` | WinRM connection settings. |
+| `inventory/group_vars/jump_hosts.yml` | spool: no Tailscale, the RDP targets, the consoles and the RSAT features. |
 | `inventory/group_vars/all/main.yml` | Variables for every host. |
 | `inventory/group_vars/all/vault.yml` | Symlink to `../../../vault/vault.yml`. |
 | `vault/` | Git submodule: `patchworklabsorg/infra-vault` (private). Holds `vault.yml`. |
@@ -131,7 +134,7 @@ ansible windows -m ansible.windows.win_ping -l <host>
 Run all commands from this directory.
 
 ```sh
-ansible-playbook windows.yml                  # all Windows hosts
+ansible-playbook windows.yml                  # all Windows hosts (spool gets neither role)
 ansible-playbook windows.yml -l shuttle       # one host
 ansible-playbook ad.yml -t audit              # report only, changes nothing
 ansible-playbook ad.yml -t host-groups        # login groups for every NixOS host
@@ -370,3 +373,15 @@ python3 -m unittest discover -s tests
 yamllint .
 ansible-lint
 ```
+
+## Restricted Admin
+
+`jump-host.yml` sets `DisableRestrictedAdmin = 0` on `tier0_servers`. Remote Credential Guard (`mstsc /remoteGuard`) needs this value on the target, and Windows has no narrower switch. The same value allows Restricted Admin RDP: a client can log on with an NT hash or a Kerberos key and no password.
+
+- `adm_mayonej` is in Protected Users, so its NTLM hash does not work.
+- Other accounts can still use a hash: the local `Administrator` on bobbin and shuttle until LAPS sets it, `svc-ansible` (not in Protected Users, `../ad/TIERING.md` decision 8), and any later Domain Admin.
+- Planned controls, not applied yet:
+  - a GPO on `Servers/Tier0` that denies network logon and Remote Desktop logon to local accounts (`S-1-5-114`)
+  - Remote Desktop logon on the Tier 0 servers only for `GG-T0-Eligible`
+  - `T0-Silo` in enforce mode (TIERING.md phase 3)
+

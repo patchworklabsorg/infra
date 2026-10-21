@@ -39,7 +39,9 @@
 
       # Lab VMs on pve01, VLAN 90. See README for the address plan.
       hosts = [
-        "warp" # apps: Weave prod + staging, future apps
+        "warp" # misc: redirects and other low-risk shared things
+        "batting" # Quilt
+        "weft" # Krater
         "skein" # patchwork_central, prod
         "seam" # patchwork_central_restricted, prod
         "hem" # both staging clusters
@@ -62,11 +64,11 @@
       nixosModules = {
         # The Weave service module alone, with no instance settings.
         weave = ./modules/weave;
-        # Weave as it runs on alastor today: instance settings, deploy key,
-        # Traefik routes and agenix secrets. Retire once Weave runs on warp.
+        # Weave on alastor: instance settings, deploy key, Traefik routes and
+        # agenix secrets. Weave stays on alastor.
         weave-alastor = ./hosts/alastor/weave.nix;
-        # alastor as the public edge for apps on lab hosts. Replaces
-        # weave-alastor on alastor after the move to warp.
+        # alastor as the public edge for apps on the lab app VMs. Import it
+        # next to weave-alastor.
         edge-alastor = ./hosts/alastor/edge.nix;
         # The Quilt service module alone, with no instance settings.
         quilt = ./modules/quilt;

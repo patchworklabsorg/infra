@@ -24,16 +24,11 @@ in
     enable = true;
     database = "patchwork_central";
     inherit (schema) apps sharedSchemas;
-    # Apps in the lab (warp) connect over the LAN; everything else over the
-    # tailnet.
-    allowedCIDRs = [
-      "10.100.90.0/24"
-      "100.64.0.0/10"
-    ];
-    firewallInterfaces = [
-      "ens18"
-      "tailscale0"
-    ];
+    # Tailnet only, as on seam. On the LAN every VLAN 90 host could reach
+    # the port. On the tailnet the policy in jaspermayone/infra picks the
+    # clients: alastor (Weave) and tag:patchwork-krater (weft).
+    allowedCIDRs = [ "100.64.0.0/10" ];
+    firewallInterfaces = [ "tailscale0" ];
   };
 
   # One secret per app: secrets/central-prod-<app>.age, the password only.

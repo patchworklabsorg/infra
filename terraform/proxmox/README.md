@@ -10,6 +10,10 @@ This root manages the Patchwork NixOS VMs on the Proxmox node `pve01`. It uses t
 | `skein` | 355 | 10.100.90.55 | 4 GB |
 | `seam` | 357 | 10.100.90.57 | 2 GB |
 | `hem` | 358 | 10.100.90.58 | 2 GB |
+| `batting` | 360 | 10.100.90.60 | 2 GB |
+| `weft` | 361 | 10.100.90.61 | 2 GB |
+
+hem, batting and weft are not in the state yet, so a plain apply creates all three. To create one VM, target it: `tofu apply -target='proxmox_virtual_environment_vm.nixos["batting"]'`.
 
 Each VM matches `hosts/proxmox-vm.nix`:
 

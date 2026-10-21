@@ -42,7 +42,7 @@ function New-PolicyDefaults {
 }
 
 $userAttrs = 'company', 'division', 'department', 'title', 'givenName', 'sn', 'displayName',
-'manager', 'userPrincipalName', 'mail'
+'manager', 'userPrincipalName', 'mail', 'employeeID'
 
 function Reset-FakeAD {
     $script:objects.Clear()
@@ -126,6 +126,7 @@ function Select-Fake([string]$Filter, [string]$SearchBase, [string[]]$Classes) {
         'SamAccountName' { { param($o) $o.Sam } }
         'distinguishedName' { { param($o) $o.DN } }
         'UserPrincipalName' { { param($o) $o.Attrs['userPrincipalName'] } }
+        'employeeID' { { param($o) $o.Attrs['employeeID'] } }
         'objectClass' { { param($o) $o.Class } }
         'Name' { { param($o) Get-RdnValue $o.DN } }
         'objectSid' { { param($o) $o.Sid } }

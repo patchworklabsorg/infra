@@ -56,6 +56,9 @@
     ad_audit_service_accounts:
       - svc-ansible
       - svc-lnx-join
+      # Weave (ad/README.md, Weave). LDAPS binds only, no Kerberos
+      # delegation. ad/converge.ps1 creates it.
+      - svc-weave-ldap
     # -t ldap-binds rotates a bind password only with
     # -e ad_ldap_bind_rotate=true. The accounts are in group_vars/patchwork.yml.
     ad_ldap_bind_rotate: false

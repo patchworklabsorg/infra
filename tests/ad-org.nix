@@ -98,19 +98,22 @@ let
         ];
         policyNames = map (p: p.name) policies;
       in
-      lib.optional (dupes (policyNames ++ [ tiering.silo ]) != [ ])
-        "tiering: the silo and the policies need different names"
+      lib.optional (
+        dupes (policyNames ++ [ tiering.silo ]) != [ ]
+      ) "tiering: the silo and the policies need different names"
       ++ lib.optional (!builtins.isBool tiering.enforce) "tiering.enforce must be true or false"
-      ++ lib.optional (tiering.computerPolicy ? tgtMinutes)
-        "tiering.computerPolicy: Microsoft says not to set a TGT lifetime for computers"
+      ++ lib.optional (
+        tiering.computerPolicy ? tgtMinutes
+      ) "tiering.computerPolicy: Microsoft says not to set a TGT lifetime for computers"
       ++ lib.concatMap (
         p:
         lib.optional (
           p ? tgtMinutes && (p.tgtMinutes < 45 || p.tgtMinutes > 600)
         ) "${p.name}: tgtMinutes must be 45 to 600 (AD minimum, domain maximum)"
       ) policies
-      ++ lib.optional (!(tiering.userPolicy.deviceInSilo or false))
-        "tiering.userPolicy: deviceInSilo must be true, or the silo protects nothing"
+      ++ lib.optional (
+        !(tiering.userPolicy.deviceInSilo or false)
+      ) "tiering.userPolicy: deviceInSilo must be true, or the silo protects nothing"
       ++ map (u: "tiering.users: ${u} is not an admin account in users") (
         builtins.filter (u: !lib.elem u adminSams) tiering.users
       )
@@ -120,8 +123,12 @@ let
       ++ map (c: "tiering.computers: ${c} must be the computer name in capitals, without the $") (
         builtins.filter (c: lib.hasSuffix "$" c || lib.toUpper c != c) tiering.computers
       )
-      ++ lib.optional (dupes (tiering.users ++ tiering.computers) != [ ]) "tiering: duplicate silo members"
-      ++ lib.optional (jit.group != org.privileged.tier0Group) "tiering.jit.group must be privileged.tier0Group"
+      ++ lib.optional (
+        dupes (tiering.users ++ tiering.computers) != [ ]
+      ) "tiering: duplicate silo members"
+      ++ lib.optional (
+        jit.group != org.privileged.tier0Group
+      ) "tiering.jit.group must be privileged.tier0Group"
       ++ map (g: "tiering.jit: ${g} is not a role group") (
         builtins.filter (g: !lib.elem g roleNames) [
           jit.group
@@ -141,7 +148,18 @@ let
   rightsTemplates = [
     "user-helpdesk"
     "computer-admin"
+    "weave-password"
+    "weave-members"
   ];
+  # Service accounts that converge.ps1 creates. A grant with "principal"
+  # must name one of these.
+  serviceSams = map (u: u.sam) (builtins.filter (u: u.kind == "service" && creates u) org.users);
+  # OUs that another system owns ("managed": false, Users/Members).
+  unmanagedOUs = map (o: o.path) (builtins.filter (o: (o.managed or true) == false) org.ous);
+  # Weave public ids: PWL, one digit, nine upper-case hex digits (the weave
+  # repo, User.p_id_format). The prod forest takes prod ids only, not SPWL.
+  weaveIdRe = "PWL[0-9][A-F0-9]{9}";
+  weaveIds = map (u: u.weaveId) (builtins.filter (u: (u.weaveId or null) != null) org.users);
   # True when OU path a is b or below b.
   atOrBelow = a: b: a == b || lib.hasPrefix "${b}/" a;
   delegationErrors =
@@ -157,26 +175,61 @@ let
         mustProtect = [
           "Admin-Accounts"
           "Service-Accounts"
-          "Users/Members"
+          "Disabled"
         ];
+        # Who gets the grant: a domain local group, or one service account.
+        whoOf = g: g.group or g.principal;
+        # Every grantee must have the deny on these OUs, so a right on a
+        # parent OU later cannot reach an admin, a service account or a
+        # Tier 0 server.
+        mustDeny = [
+          "Admin-Accounts"
+          "Service-Accounts"
+        ]
+        ++ lib.optional (tiering != null && tiering ? serverOU) tiering.serverOU;
       in
-      map (g: "delegation.grants: ${g.group} is not a resource group. AGDLP: only domain local groups get rights.") (
-        builtins.filter (g: !lib.elem g.group resourceNames) grants
+      map (g: "delegation.grants: a grant needs exactly one of group and principal") (
+        builtins.filter (g: (g ? group) == (g ? principal)) grants
       )
-      ++ map (g: "delegation.grants: ${g.group}: unknown rights template ${g.rights}") (
+      ++ map (
+        g:
+        "delegation.grants: ${g.group} is not a resource group. AGDLP: only domain local groups get rights."
+      ) (builtins.filter (g: g ? group && !lib.elem g.group resourceNames) grants)
+      ++ map (g: "delegation.grants: ${g.principal} is not a service account that converge.ps1 creates") (
+        builtins.filter (g: g ? principal && !lib.elem g.principal serviceSams) grants
+      )
+      ++
+        map
+          (
+            g:
+            "delegation.grants: ${g.rights} on ${toString g.ous}: an OU that another system owns gets rights only for that system's service account (principal)"
+          )
+          (
+            builtins.filter (
+              g: g ? group && lib.any (ou: lib.any (n: atOrBelow ou n) unmanagedOUs) g.ous
+            ) grants
+          )
+      ++ map (g: "delegation.grants: ${whoOf g}: unknown rights template ${g.rights}") (
         builtins.filter (g: !lib.elem g.rights rightsTemplates) grants
       )
       ++ lib.concatMap (
         g:
+        map (ou: "delegation.deny: ${whoOf g} has a grant, so it needs a deny on ${ou}") (
+          builtins.filter (ou: !(deniedAt ou (whoOf g))) mustDeny
+        )
+      ) grants
+      ++ lib.concatMap (
+        g:
         lib.concatMap (
           ou:
-          lib.optional (!lib.elem ou ouPaths) "delegation.grants: ${g.group}: OU ${ou} is not in ous"
-          ++ map (n: "delegation.grants: ${g.group} on ${ou} is in or below ${n}, which is in noDelegation") (
+          lib.optional (!lib.elem ou ouPaths) "delegation.grants: ${whoOf g}: OU ${ou} is not in ous"
+          ++ map (n: "delegation.grants: ${whoOf g} on ${ou} is in or below ${n}, which is in noDelegation") (
             builtins.filter (n: atOrBelow ou n) noDelegation
           )
           ++ map (
-            n: "delegation.grants: ${g.group} on ${ou} is inherited by ${n} (noDelegation). Add a deny for ${g.group} on ${n}."
-          ) (builtins.filter (n: n != ou && atOrBelow n ou && !(deniedAt n g.group)) noDelegation)
+            n:
+            "delegation.grants: ${whoOf g} on ${ou} is inherited by ${n} (noDelegation). Add a deny for ${whoOf g} on ${n}."
+          ) (builtins.filter (n: n != ou && atOrBelow n ou && !(deniedAt n (whoOf g))) noDelegation)
         ) g.ous
       ) grants
       ++ map (ou: "delegation: OU ${ou} is not in ous") (
@@ -205,8 +258,12 @@ let
         builtins.filter (u: u.kind == "admin" && !lib.hasPrefix "Admin-Accounts/Tier" u.ou) org.users
       )
       ++ lib.optionals (tiering != null && tiering ? serverOU) (
-        lib.optional (!lib.elem tiering.serverOU ouPaths) "tiering.serverOU ${tiering.serverOU} is not in ous"
-        ++ lib.optional (!lib.elem tiering.serverOU noDelegation) "tiering.serverOU must be in delegation.noDelegation"
+        lib.optional (
+          !lib.elem tiering.serverOU ouPaths
+        ) "tiering.serverOU ${tiering.serverOU} is not in ous"
+        ++ lib.optional (
+          !lib.elem tiering.serverOU noDelegation
+        ) "tiering.serverOU must be in delegation.noDelegation"
       );
 
   errors =
@@ -221,6 +278,21 @@ let
     )
     ++ lib.optional (dupes roleNames != [ ]) "duplicate groups: ${toString (dupes roleNames)}"
     ++ lib.optional (dupes upns != [ ]) "duplicate UPNs: ${toString (dupes upns)}"
+    ++ map (u: "${u.sam}: weaveId is only for a person (kind person)") (
+      builtins.filter (u: u ? weaveId && u.kind != "person") org.users
+    )
+    ++
+      map
+        (
+          u:
+          "${u.sam}: weaveId ${u.weaveId} is not a Weave public id (PWL, a digit, nine upper-case hex digits)"
+        )
+        (
+          builtins.filter (
+            u: (u.weaveId or null) != null && builtins.match weaveIdRe u.weaveId == null
+          ) org.users
+        )
+    ++ lib.optional (dupes weaveIds != [ ]) "duplicate weaveIds: ${toString (dupes weaveIds)}"
     ++ map (u: "${u.sam}: upn is the part before the @, without the @") (
       builtins.filter (u: u ? upn && lib.hasInfix "@" u.upn) org.users
     )

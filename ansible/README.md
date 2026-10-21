@@ -148,7 +148,7 @@ Every tag is opt-in. A run without `-t` does nothing. Directory changes run once
 | `audit` | Reports join delegation, Protected Users and service-account posture. Changes nothing. Add `-e ad_audit_strict=true` to fail on a finding. |
 | `join-delegation` | Gives `svc-lnx-join` the rights to join computers in both computer OUs. |
 | `host-groups` | Creates `lnx-<host>-users` and `lnx-<host>-admins` for every NixOS host in the flake. |
-| `svc-posture` | Sets AES only and "not delegatable" on `svc-ansible` and `svc-lnx-join`. |
+| `svc-posture` | Sets AES only and "not delegatable" on `svc-ansible`, `svc-lnx-join` and `svc-weave-ldap`. |
 | `user-mail` | Sets the `mail` attribute from `ad_user_mail`. Does nothing while the map is empty. |
 | `ldap-binds` | Creates the read-only LDAP bind accounts in `ad_ldap_bind_accounts` (`group_vars/patchwork.yml`). The list is empty until an app needs one; the comment there shows how to add one. |
 | `ca-check` | Lists the enterprise CAs in AD and the CA certificates on loom, and checks that `ad_ca_subject_match` selects them. Changes nothing. Run it before `ca-chain`. |

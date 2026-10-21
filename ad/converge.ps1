@@ -53,7 +53,9 @@
 
     The delegation block gives the domain local groups in delegation.grants
     their rights on OUs (helpdesk on the people OUs, computer admin on
-    Servers and Computers), and puts explicit deny ACEs on the OUs in
+    Servers and Computers). A grant can also name one service account
+    ("principal"): svc-weave-ldap gets the Weave rights on the people OUs
+    and on Users/Members. It puts explicit deny ACEs on the OUs in
     delegation.deny (Admin-Accounts, Service-Accounts, Servers/Tier0). ACEs
     are added only when missing. Extra ACEs are reported, never removed. It
     also reports the AdminSDHolder state (adminCount=1 accounts, extra ACEs).
@@ -61,6 +63,10 @@
     Build moves an object only down, into a child OU of the OU it is in now
     (Admin-Accounts -> Admin-Accounts/Tier0, Servers -> Servers/Tier0 for
     the Tier 0 member servers in tiering.computers). Other moves are Migrate.
+
+    "weaveId" on a person is the Weave public id (PWL..., the OIDC sub).
+    Build writes it to employeeID. A person without one is reported. A
+    weaveId that another account already holds is reported and not set.
 
     It never touches the contents of an OU marked "managed": false
     (Users/Members, which Weave owns) or the members of a group marked
@@ -163,7 +169,11 @@ function Find-Object([string]$Filter, [string[]]$Properties = @()) {
 function Find-User([string]$Sam) {
     Get-ADUser -Filter "SamAccountName -eq '$Sam'" @ad -Properties `
         company, division, department, title, givenName, sn, displayName, manager, `
-        userPrincipalName, mail, Enabled, ProtectedFromAccidentalDeletion
+        userPrincipalName, mail, employeeID, Enabled, ProtectedFromAccidentalDeletion
+}
+
+function Find-UserByEmployeeId([string]$Id) {
+    Get-ADUser -Filter "employeeID -eq '$Id'" @ad
 }
 
 function Find-UserByUpn([string]$Upn) {
@@ -360,6 +370,22 @@ function Sync-User($u) {
             @('title', 'title'), @('givenName', 'givenName'), @('surname', 'sn'),
             @('displayName', 'displayName'), @('mail', 'mail'))) {
         if (Test-Field $u $pair[0]) { $want[$pair[1]] = $u.($pair[0]) }
+    }
+    # The Weave link. Only a person has one. Weave sets employeeID itself
+    # for the members it creates in Users/Members.
+    if ($u.kind -eq 'person') {
+        if (Test-Field $u 'weaveId') {
+            $want.employeeID = $u.weaveId
+            if ($u.weaveId) {
+                $holder = Find-UserByEmployeeId $u.weaveId
+                if ($holder -and (-not $existing -or "$($holder.ObjectGUID)" -ne "$($existing.ObjectGUID)")) {
+                    Write-Report "$($u.sam): weaveId $($u.weaveId) is the employeeID of $($holder.SamAccountName) ($($holder.DistinguishedName)). employeeID was not set. Fix org.json or the accounts."
+                    $want.Remove('employeeID')
+                }
+            }
+        } else {
+            Write-Report "$($u.sam) has no weaveId. Weave cannot link this account. Add the Weave public id (PWL...) to org.json."
+        }
     }
     if (-not $want.Contains('displayName') -and $want.Contains('givenName') -and $want.Contains('sn')) {
         $want.displayName = "$($want.givenName) $($want.sn)"
@@ -1030,6 +1056,14 @@ $guids = @{
     resetPassword = [guid]'00299570-246d-11d0-a768-00aa006e0529'  # User-Force-Change-Password
     lockoutTime   = [guid]'28630ebf-41d5-11d1-a9c1-0000f80367c1'  # attribute lockoutTime
     pwdLastSet    = [guid]'bf967a0a-0de6-11d0-a285-00aa003049e2'  # attribute pwdLastSet
+    changePassword     = [guid]'ab721a53-1e2f-11d0-9819-00aa0040529b'  # User-Change-Password
+    userAccountControl = [guid]'bf967a68-0de6-11d0-a285-00aa003049e2'  # attribute userAccountControl
+    employeeID         = [guid]'bf967962-0de6-11d0-a285-00aa003049e2'  # attribute employeeID
+    givenName          = [guid]'f0f8ff8e-1191-11d0-a060-00aa006c33ed'  # attribute givenName
+    sn                 = [guid]'bf967a41-0de6-11d0-a285-00aa003049e2'  # attribute sn
+    displayName        = [guid]'bf967953-0de6-11d0-a285-00aa003049e2'  # attribute displayName
+    mail               = [guid]'bf967961-0de6-11d0-a285-00aa003049e2'  # attribute mail
+    userPrincipalName  = [guid]'28630ebb-41d5-11d1-a9c1-0000f80367c1'  # attribute userPrincipalName
     none          = [guid]::Empty
 }
 
@@ -1050,6 +1084,32 @@ $rightsTemplates = @{
         @{ label = 'reset password'; rights = @('ExtendedRight'); objectType = 'resetPassword'; inheritance = 'Descendents'; inheritedObjectType = 'user' }
         @{ label = 'unlock (lockoutTime)'; rights = @('ReadProperty', 'WriteProperty'); objectType = 'lockoutTime'; inheritance = 'Descendents'; inheritedObjectType = 'user' }
         @{ label = 'change at next logon (pwdLastSet)'; rights = @('ReadProperty', 'WriteProperty'); objectType = 'pwdLastSet'; inheritance = 'Descendents'; inheritedObjectType = 'user' }
+        @{ label = 'read all'; rights = @('GenericRead'); objectType = 'none'; inheritance = 'Descendents'; inheritedObjectType = 'user' }
+    )
+    # Weave on the people that converge.ps1 manages: set a new password
+    # (reset) and change it, and read all. Weave writes no attribute here.
+    # converge.ps1 owns the attributes, employeeID too.
+    'weave-password' = @(
+        @{ label = 'reset password'; rights = @('ExtendedRight'); objectType = 'resetPassword'; inheritance = 'Descendents'; inheritedObjectType = 'user' }
+        @{ label = 'change password'; rights = @('ExtendedRight'); objectType = 'changePassword'; inheritance = 'Descendents'; inheritedObjectType = 'user' }
+        @{ label = 'read all'; rights = @('GenericRead'); objectType = 'none'; inheritance = 'Descendents'; inheritedObjectType = 'user' }
+    )
+    # Weave on Users/Members, which it owns: create user objects, set and
+    # change passwords, enable, disable and unlock, and write the attributes
+    # it manages. No delete: Weave disables a member.
+    'weave-members'  = @(
+        @{ label = 'create users'; rights = @('CreateChild'); objectType = 'user'; inheritance = 'All'; inheritedObjectType = 'none' }
+        @{ label = 'reset password'; rights = @('ExtendedRight'); objectType = 'resetPassword'; inheritance = 'Descendents'; inheritedObjectType = 'user' }
+        @{ label = 'change password'; rights = @('ExtendedRight'); objectType = 'changePassword'; inheritance = 'Descendents'; inheritedObjectType = 'user' }
+        @{ label = 'pwdLastSet'; rights = @('ReadProperty', 'WriteProperty'); objectType = 'pwdLastSet'; inheritance = 'Descendents'; inheritedObjectType = 'user' }
+        @{ label = 'unlock (lockoutTime)'; rights = @('ReadProperty', 'WriteProperty'); objectType = 'lockoutTime'; inheritance = 'Descendents'; inheritedObjectType = 'user' }
+        @{ label = 'enable and disable (userAccountControl)'; rights = @('ReadProperty', 'WriteProperty'); objectType = 'userAccountControl'; inheritance = 'Descendents'; inheritedObjectType = 'user' }
+        @{ label = 'employeeID'; rights = @('ReadProperty', 'WriteProperty'); objectType = 'employeeID'; inheritance = 'Descendents'; inheritedObjectType = 'user' }
+        @{ label = 'givenName'; rights = @('ReadProperty', 'WriteProperty'); objectType = 'givenName'; inheritance = 'Descendents'; inheritedObjectType = 'user' }
+        @{ label = 'sn'; rights = @('ReadProperty', 'WriteProperty'); objectType = 'sn'; inheritance = 'Descendents'; inheritedObjectType = 'user' }
+        @{ label = 'displayName'; rights = @('ReadProperty', 'WriteProperty'); objectType = 'displayName'; inheritance = 'Descendents'; inheritedObjectType = 'user' }
+        @{ label = 'mail'; rights = @('ReadProperty', 'WriteProperty'); objectType = 'mail'; inheritance = 'Descendents'; inheritedObjectType = 'user' }
+        @{ label = 'userPrincipalName'; rights = @('ReadProperty', 'WriteProperty'); objectType = 'userPrincipalName'; inheritance = 'Descendents'; inheritedObjectType = 'user' }
         @{ label = 'read all'; rights = @('GenericRead'); objectType = 'none'; inheritance = 'Descendents'; inheritedObjectType = 'user' }
     )
     # Create and delete computer objects in the OU and its child OUs, and full
@@ -1192,7 +1252,10 @@ function Sync-Delegation {
     $wantedByOU = @{}
     $pairs = @()
     foreach ($g in @($del.grants)) {
-        foreach ($ou in @($g.ous)) { $pairs += , @((ConvertTo-OUDN $ou), $g.group, $g.rights, 'Allow') }
+        # A grant names a domain local group (AGDLP), or one service account
+        # ("principal") whose rights belong to that one integration.
+        $who = if (Test-Field $g 'group') { $g.group } else { $g.principal }
+        foreach ($ou in @($g.ous)) { $pairs += , @((ConvertTo-OUDN $ou), $who, $g.rights, 'Allow') }
     }
     foreach ($d in @($del.deny)) {
         foreach ($ou in @($d.ous)) {

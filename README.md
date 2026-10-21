@@ -52,7 +52,7 @@ The Windows hosts are managed by Ansible (`ansible/`):
 | `bobbin` | 312 | 10.100.90.12 | Issuing CA |
 | `shuttle` | 314 | 10.100.90.14 | NPS / RADIUS |
 
-VMIDs 358, 360 and 361 and their addresses are proposed. Confirm that they are free before you create the VMs. pve01 had 121 of 125.8 GiB committed on 2026-08-25, so free about 14 GiB first.
+VMIDs 358, 360 and 361 and their addresses are proposed. Confirm that they are free before you create the VMs. On 2026-10-21 pve01 had about 25 GiB available. hem, batting and weft need 6 GiB together, with no ballooning.
 
 ```mermaid
 flowchart LR

@@ -7,12 +7,14 @@
 # Public traffic arrives from alastor over the tailnet
 # (nixosModules.edge-alastor) as plain HTTP to nginx on tailscale0:80.
 #
-# The tailnet tag is tag:patchwork-quilt. The policy in jaspermayone/infra lets
-# that tag reach seam:5432 and hem:5433 only.
+# Tailnet tags: tag:patchwork (ssh from admins, port 80 from alastor) and
+# tag:patchwork-quilt. The policy in jaspermayone/infra lets tag:patchwork-quilt
+# reach seam:5432 (prod) only. hem (staging) gets a grant when it joins the tailnet.
 #
 # Bring-up: create the VM (terraform/proxmox), install with nixos-anywhere,
-# tag the node tag:patchwork-quilt, then add the host key to secrets/secrets.nix.
-# Quilt itself comes in a later change, after the host key is a recipient.
+# tag the node with both tags, then add the host key to secrets/secrets.nix
+# as a recipient of ad-join.age (AD logon) and run `agenix -r`.
+# Quilt itself comes in a later change, with its secrets and its edge route.
 { ... }:
 {
   imports = [

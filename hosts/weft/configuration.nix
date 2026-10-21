@@ -7,12 +7,14 @@
 # Public traffic arrives from alastor over the tailnet
 # (nixosModules.edge-alastor) as plain HTTP to nginx on tailscale0:80.
 #
-# The tailnet tag is tag:patchwork-krater. The policy in jaspermayone/infra lets
-# that tag reach skein:5432 and hem:5432 only.
+# Tailnet tags: tag:patchwork (ssh from admins, port 80 from alastor) and
+# tag:patchwork-krater. The policy in jaspermayone/infra lets tag:patchwork-krater
+# reach skein:5432 (prod) only. hem (staging) gets a grant when it joins the tailnet.
 #
 # Bring-up: create the VM (terraform/proxmox), install with nixos-anywhere,
-# tag the node tag:patchwork-krater, then add the host key to secrets/secrets.nix.
-# Krater itself comes in a later change, after the host key is a recipient.
+# tag the node with both tags, then add the host key to secrets/secrets.nix
+# as a recipient of ad-join.age (AD logon) and run `agenix -r`.
+# Krater itself comes in a later change, with its secrets and its edge route.
 { ... }:
 {
   imports = [

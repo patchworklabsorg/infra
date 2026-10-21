@@ -13,6 +13,8 @@ This root manages the Patchwork NixOS VMs on the Proxmox node `pve01`. It uses t
 | `batting` | 360 | 10.100.90.60 | 2 GB |
 | `weft` | 361 | 10.100.90.61 | 2 GB |
 
+hem, batting and weft are not in the state yet, so a plain apply creates all three. To create one VM, target it: `tofu apply -target='proxmox_virtual_environment_vm.nixos["batting"]'`.
+
 Each VM matches `hosts/proxmox-vm.nix`:
 
 - SeaBIOS, `virtio-scsi-single`, one disk `scsi0` (`/dev/sda` in the guest).

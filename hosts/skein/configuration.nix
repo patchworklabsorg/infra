@@ -24,8 +24,9 @@ in
     enable = true;
     database = "patchwork_central";
     inherit (schema) apps sharedSchemas;
-    # Apps in the lab (warp) connect over the LAN; everything else over the
-    # tailnet.
+    # Apps in the lab (weft) connect over the LAN; everything else over the
+    # tailnet. The LAN range lets every VLAN 90 host reach the port, so
+    # the role passwords are what keep the apps apart here.
     allowedCIDRs = [
       "10.100.90.0/24"
       "100.64.0.0/10"

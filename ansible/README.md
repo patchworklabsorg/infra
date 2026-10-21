@@ -48,6 +48,15 @@ These jobs are done by hand and are not in Ansible: AD CS setup and the offline 
 | `templates/vyos/` | VyOS configs as `set` commands, with the secrets replaced by vault references. |
 | `filter_plugins/vyos_secrets.py` | Splits the secrets out of a VyOS config. Tested by `tests/`. |
 
+### Tailscale tags
+
+`roles/tailscale_windows` logs a host in to the tailnet with `--advertise-tags=<tailscale_advertise_tags>`. `group_vars/domain_controllers.yml` sets `tag:patchwork-dc` for loom and spindle. The tailnet policy (`jaspermayone/infra`, `tailscale/policy.hujson`) lets alastor reach that tag on `tcp:636` only, for Weave (`../ad/README.md`, "Weave").
+
+- Merge the policy change first. The tag must exist in the live policy before a node can take it.
+- The auth key must belong to a tailnet admin, or be a tagged key with `tag:patchwork-dc`.
+- `--advertise-tags` applies only at the first login. When a logged-in host does not have a wanted tag, the play fails and shows the command that tags it. The play does not log the host in again by itself.
+- A host with no tag matches `autogroup:member`, and the policy gives that group much more access. Never let a DC join without its tag.
+
 ## Prerequisites
 
 1. Install the collections:

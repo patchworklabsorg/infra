@@ -1,3 +1,8 @@
 ---
 tailscale_auth_key: "{{ vault_tailscale_auth_key | default('') }}"
 tailscale_msi_url: "https://pkgs.tailscale.com/stable/tailscale-setup-latest-amd64.msi"
+# Tags the node asks for at login (--advertise-tags). Empty: an untagged node,
+# owned by the user who made the auth key. That user, or the key, must own each
+# tag in tagOwners of the tailnet policy (jaspermayone/infra,
+# tailscale/policy.hujson), and the tag must exist there first.
+tailscale_advertise_tags: []

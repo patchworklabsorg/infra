@@ -18,7 +18,8 @@
     { "path": "Users/Sponsored-Projects", "description": "Fiscally sponsored projects" },
     { "path": "Users/Sponsored-Projects/HackBoston", "description": "HackBoston (hackboston.dev)", "upnSuffix": "hackboston.dev" },
     { "path": "Users/Sponsored-Projects/hackathon.help", "description": "hackathon.help", "upnSuffix": "hackathon.help" },
-    { "path": "Users/Members", "description": "Community members. Weave creates and changes these; converge.ps1 does not.", "managed": false },
+    { "path": "Users/Members", "description": "Community members. Weave (svc-weave-ldap) creates and changes these; converge.ps1 does not.", "managed": false,
+      "owner": "svc-weave-ldap" },
     { "path": "Service-Accounts", "description": "Non-human accounts for integrations" },
     { "path": "Disabled", "description": "Suspended users, all access off (Workspace: Purgatory)" },
     { "path": "Admin-Accounts", "description": "Admin accounts, separate from daily accounts. Only Domain Admins has rights here." },
@@ -56,6 +57,9 @@
     { "sam": "svc-lnx-join", "kind": "service", "ou": "Service-Accounts", "create": false },
     { "sam": "svc-dhcp-dns", "kind": "service", "ou": "Service-Accounts", "create": false },
     { "sam": "svc-pve-ldap", "kind": "service", "ou": "Service-Accounts", "create": false },
+    { "sam": "svc-weave-ldap", "kind": "service", "ou": "Service-Accounts",
+      "company": "Patchwork Labs inc.", "division": "Operations", "department": "Infrastructure",
+      "title": "Weave LDAP service account (password reset, Users/Members)", "manager": null },
 
     { "sam": "adm_mayonej", "kind": "admin", "ou": "Admin-Accounts/Tier0", "givenName": "Jasper", "surname": "Mayone",
       "displayName": "Jasper Mayone (Admin)", "title": "Tier 0 administrator", "manager": null },
@@ -78,7 +82,7 @@
     { "name": "GG-All-Staff", "description": "Every person in org.json: staff, board, organizers. Gets PSO-Staff.",
       "members": ["mayonej", "adam.sidwa", "klukask", "petrarcad", "cj", "daniel", "logan", "wei"] },
     { "name": "GG-Service-Accounts", "description": "Service accounts. Gets PSO-Service.",
-      "members": ["svc-service", "svc-lnx-join", "svc-dhcp-dns", "svc-pve-ldap", "svc-ansible"] },
+      "members": ["svc-service", "svc-lnx-join", "svc-dhcp-dns", "svc-pve-ldap", "svc-weave-ldap", "svc-ansible"] },
     { "name": "GG-Domain-Admins-Tier0", "description": "Tier 0 admin accounts. Member of Domain Admins. Gets PSO-Tier0.", "members": ["adm_mayonej"] },
     { "name": "GG-T0-Eligible", "description": "Tier 0 accounts that can request a JIT Domain Admins grant (PatchworkT0 JEA endpoint). Gets PSO-Tier0.",
       "members": ["adm_mayonej"] },
@@ -154,14 +158,18 @@
     "grants": [
       { "group": "DL-Users-PasswordReset", "rights": "user-helpdesk",
         "ous": ["Users/Staff", "Users/Board-Only", "Users/Sponsored-Projects"] },
-      { "group": "DL-Servers-ComputerAdmin", "rights": "computer-admin", "ous": ["Servers", "Computers"] }
+      { "group": "DL-Servers-ComputerAdmin", "rights": "computer-admin", "ous": ["Servers", "Computers"] },
+      { "principal": "svc-weave-ldap", "rights": "weave-password",
+        "ous": ["Users/Staff", "Users/Board-Only", "Users/Sponsored-Projects"] },
+      { "principal": "svc-weave-ldap", "rights": "weave-members", "ous": ["Users/Members"] }
     ],
     "deny": [
-      { "ous": ["Admin-Accounts", "Service-Accounts"], "principals": ["DL-Users-PasswordReset", "DL-Servers-ComputerAdmin"] },
-      { "ous": ["Servers/Tier0"], "principals": ["DL-Users-PasswordReset", "DL-Servers-ComputerAdmin", "svc-lnx-join"] }
+      { "ous": ["Admin-Accounts", "Service-Accounts"], "principals": ["DL-Users-PasswordReset", "DL-Servers-ComputerAdmin", "svc-weave-ldap"] },
+      { "ous": ["Servers/Tier0"], "principals": ["DL-Users-PasswordReset", "DL-Servers-ComputerAdmin", "svc-lnx-join", "svc-weave-ldap"] },
+      { "ous": ["Disabled"], "principals": ["svc-weave-ldap"] }
     ],
     "noDelegation": ["Admin-Accounts", "Admin-Accounts/Tier0", "Admin-Accounts/Tier1", "Admin-Accounts/Tier2",
-      "Service-Accounts", "Servers/Tier0", "Users/Members", "Disabled"],
+      "Service-Accounts", "Servers/Tier0", "Disabled"],
     "knownAces": [
       { "principal": "svc-lnx-join", "ous": ["Servers", "Computers"], "why": "ansible/ad.yml -t join-delegation" }
     ],

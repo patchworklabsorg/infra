@@ -26,6 +26,11 @@ let
   # ad-join.age: the svc-lnx-join password only (vault key
   # vault_ad_join_password_patchwork). Recipients: jsp and every host.
   # modules/ad-join uses it when the file exists.
+  #
+  # weave-ldap.age: the svc-weave-ldap password only (ad/README.md, Weave).
+  # Recipients: jsp and the host that runs Weave (alastor now, warp after
+  # the move). Not made yet: an admin sets the password in AD, then adds the
+  # entry here and runs `agenix -e weave-ldap.age`.
 in
 {
   # Weave (Patchwork IDP) runtime env. Must contain:

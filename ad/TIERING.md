@@ -95,7 +95,7 @@ The rule: an account of tier N logs on only to assets of tier N. A higher tier c
 | Tier | Assets | Accounts |
 |---|---|---|
 | **0** | loom, spindle (DCs). bobbin (issuing CA). pattern (offline root CA). shuttle (NPS). The Proxmox hosts that run these VMs. The proposed Tier 0 jump host. remus, as long as it holds the `svc-ansible` password. | `adm_mayonej`, `svc-ansible`, `Administrator` (disabled), DSRM (LAPS-DSRM) |
-| **1** | warp, skein, seam, hem (NixOS). thimble (VyOS edge). App servers. | `lnx-<host>-admins` members. `svc-lnx-join`, `svc-pve-ldap`, `svc-dhcp-dns`. No dedicated Tier 1 person account yet. |
+| **1** | warp, skein, seam, hem (NixOS). thimble (VyOS edge). App servers. Weave and the host that runs it (alastor today, warp later). | `lnx-<host>-admins` members. `svc-lnx-join`, `svc-pve-ldap`, `svc-dhcp-dns`, `svc-weave-ldap`. No dedicated Tier 1 person account yet. |
 | **2** | Staff workstations (`Computers` OU). VPN sessions. | Daily accounts: `mayonej`, staff, members |
 
 ```mermaid
@@ -115,6 +115,7 @@ flowchart TB
   subgraph T1["Tier 1: servers"]
     nix["warp, skein, seam, hem"]
     thimble["thimble VPN edge"]
+    weave["Weave on alastor, svc-weave-ldap"]
   end
   subgraph T2["Tier 2: people"]
     daily["mayonej and staff"]
@@ -147,6 +148,26 @@ A Proxmox administrator can read the disk of a DC VM and take `ntds.dit`. The Pr
 - Delegated rights below Domain Admins: `GG-T1-Admins` (computer objects in `Servers` and `Computers`, and the helpdesk rights) and `GG-T2-Helpdesk` (reset, unlock, change at next logon in the people OUs). Both are empty. No group except Domain Admins has rights on `Admin-Accounts` or `Servers/Tier0`. See "Delegation" in `README.md`.
 - `GG-Infra` gives the daily account sudo on the NixOS hosts. That is a Tier 2 account that administers Tier 1. Accept it for now. The NixOS hosts hold no Tier 0 credentials, and no Tier 0 account is in `GG-Infra`. Later, add a Tier 1 account (`mayonej.t1`) if more people get sudo.
 - `Tier0-Admin-Protection` denies Domain Admins local and RDP logon on Staff-Computers. Keep it. Link it to the new `Computers` OU at Migrate (Migrate copies links). Add a second GPO for member servers that are Tier 1, when such Windows servers exist.
+
+### Weave and alastor: Tier 1 (sensitive)
+
+`svc-weave-ldap` can reset the password of, and unlock, each person in `Users/Staff`, `Users/Board-Only`, `Users/Sponsored-Projects` and `Users/Members` (see "Weave" in `README.md`). It controls Tier 2. So by the rule above, Weave is Tier 1, and so is everything that controls Weave:
+
+- alastor, the host that runs Weave today. Root on alastor can read `weave-ldap.age` after agenix decrypts it. alastor also terminates public traffic for many other services. A break-in through any of them is a break-in into Weave.
+- The Weave code and its deploy path: write access to `patchworklabsorg/weave`, its CI, and the `weave-deploy` SSH key.
+- The admins of Weave, and the recipients of `weave-ldap.age` (`jsp`, `alastor`).
+- Weave is also the sign-in for Google Workspace, so Weave already controls the Google identity of each person.
+
+Weave can reach Tier 1 through one path: a reset of `mayonej`, whose `GG-Infra` membership gives sudo on the NixOS hosts. The same path exists for helpdesk (see "Tier 1 and Tier 2 today"). Today `mayonej` has `adminCount=1`, so no inherited right reaches it, Weave included. After a Domain Admin clears `adminCount`, Weave can reset it.
+
+Weave has no path to Tier 0. The denies on `Admin-Accounts`, `Service-Accounts` and `Servers/Tier0`, and AdminSDHolder on protected accounts, keep it out. A Tier 0 account must never get a `weaveId`, and must never sign in through Weave.
+
+Rules:
+
+- Treat alastor as sensitive. Keep the agenix recipients of `weave-ldap.age` to `jsp` and the Weave host.
+- Move Weave to warp when the move is ready. warp runs only Patchwork apps.
+- Rotate the `svc-weave-ldap` password when somebody leaves the Weave admins or the recipient list.
+- Watch the DC security log for password resets (event 4724) by `svc-weave-ldap` on accounts outside the people OUs. There must be none.
 
 ## 2. Authentication policy silo for Tier 0
 

@@ -166,7 +166,7 @@ Check 'adm_mayonej keeps its UPN and name' ((U 'adm_mayonej').userPrincipalName 
 Check 'svc-ansible not created or changed' ((U 'svc-ansible').DistinguishedName -like "*,$old")
 Check 'GG-Board members' (((MembersOf 'GG-Board') | Sort-Object) -join ',' -eq 'klukask,mayonej,petrarcad')
 Check 'GG-Board is Global in Roles' ((G 'GG-Board').GroupScope -eq 'Global' -and (G 'GG-Board').DistinguishedName -like "*,OU=Roles,OU=Groups,$new")
-Check 'GG-Service-Accounts members' (((MembersOf 'GG-Service-Accounts') | Sort-Object) -join ',' -eq 'svc-ansible,svc-dhcp-dns,svc-lnx-join,svc-pve-ldap,svc-service')
+Check 'GG-Service-Accounts members' (((MembersOf 'GG-Service-Accounts') | Sort-Object) -join ',' -eq 'svc-ansible,svc-dhcp-dns,svc-lnx-join,svc-pve-ldap,svc-service,svc-weave-ldap')
 Check 'svc-service gets UPN service@patchworklabs.org' ((Get-ADUser -Filter "SamAccountName -eq 'svc-service'" -Properties UserPrincipalName).UserPrincipalName -eq 'service@patchworklabs.org')
 Check 'cj gets the HackBoston domain from the OU' ((Get-ADUser -Filter "SamAccountName -eq 'cj'" -Properties UserPrincipalName).UserPrincipalName -eq 'cj@hackboston.dev')
 Check 'wei gets the hackathon.help domain from the OU' ((Get-ADUser -Filter "SamAccountName -eq 'wei'" -Properties UserPrincipalName).UserPrincipalName -eq 'wei@hackathon.help')
@@ -268,6 +268,37 @@ Check 'AdminSDHolder: extra ACE and adminCount drift reported' ($r.Output -match
 Check 'admin account in the old tree: reported for Migrate, not moved by Build' ((U 'adm_mayonej').DistinguishedName -like "*,$old" -and
     $r.Output -match 'adm_mayonej is in OU=Admin-Accounts,OU=Administrative,OU=Patchwork-Objects[^\n]*Migrate moves it')
 
+# Weave: svc-weave-ldap, its rights on the people OUs and Users/Members, and
+# the denies that keep it off admin, service, Tier 0 and disabled accounts.
+$changePwGuid = 'ab721a53-1e2f-11d0-9819-00aa0040529b'
+$employeeIdGuid = 'bf967962-0de6-11d0-a285-00aa003049e2'
+$weave = U 'svc-weave-ldap'
+Check 'svc-weave-ldap created disabled in Service-Accounts, must change password' ($weave -and -not $weave.Enabled -and
+    $weave.DistinguishedName -eq "CN=svc-weave-ldap,OU=Service-Accounts,$new" -and
+    (Get-FakeADState) -match "CN=svc-weave-ldap,[^|]*\|user\|False\|[^|]*\|[^|]*\|[^|]*pwdLastSet=0")
+Check 'svc-weave-ldap is reported until an admin enables it' ((Converge Build -WhatIf).Output -match 'REPORT\s+svc-weave-ldap is disabled')
+Check 'Weave on the three people OUs: reset, change, unlock, read; nothing else' (@($helpdeskOUs | Where-Object {
+            $a = @(AcesFor $_ 'svc-weave-ldap')
+            $a.Count -eq 4 -and @($a | Where-Object { $_.AccessControlType -eq 'Allow' -and "$($_.InheritedObjectType)" -eq $userGuid -and $_.PropagationFlags -eq 'InheritOnly' }).Count -eq 4 -and
+            @($a | Where-Object { "$($_.ObjectType)" -eq $resetGuid -and $_.ActiveDirectoryRights -eq 256 }).Count -eq 1 -and
+            @($a | Where-Object { "$($_.ObjectType)" -eq $changePwGuid -and $_.ActiveDirectoryRights -eq 256 }).Count -eq 1 -and
+            -not ($a | Where-Object { "$($_.ObjectType)" -eq $employeeIdGuid })
+        }).Count -eq 3)
+$membersOU = "OU=Members,OU=Users,$new"
+$m = @(AcesFor $membersOU 'svc-weave-ldap')
+Check 'Weave on Users/Members: create users, passwords, employeeID and its attributes, no delete' ($m.Count -eq 13 -and
+    -not ($m | Where-Object { $_.AccessControlType -ne 'Allow' }) -and
+    @($m | Where-Object { $_.ActiveDirectoryRights -eq 1 -and "$($_.ObjectType)" -eq $userGuid -and $_.PropagationFlags -eq 'None' }).Count -eq 1 -and
+    @($m | Where-Object { $_.ActiveDirectoryRights -eq 48 -and "$($_.ObjectType)" -eq $employeeIdGuid -and "$($_.InheritedObjectType)" -eq $userGuid }).Count -eq 1 -and
+    -not ($m | Where-Object { ($_.ActiveDirectoryRights -band (2 + 64 + 65536 + 262144 + 524288)) -ne 0 }))
+Check 'Weave denied on Admin-Accounts, Service-Accounts, Servers/Tier0, Disabled; no allow there' (@("OU=Admin-Accounts,$new", "OU=Service-Accounts,$new", "OU=Tier0,OU=Servers,$new", "OU=Disabled,$new" | Where-Object {
+            $a = @(AcesFor $_ 'svc-weave-ldap'); $a.Count -eq 2 -and -not ($a | Where-Object { $_.AccessControlType -ne 'Deny' })
+        }).Count -eq 4)
+Check 'Weave has nothing on the Domain Controllers OU, Admin-Accounts/Tier0, Groups, Servers' (@("OU=Domain Controllers,$dom", "OU=Tier0,OU=Admin-Accounts,$new", "OU=Groups,$new", "OU=Servers,$new", "OU=Users,$new" | Where-Object {
+            @(AcesFor $_ 'svc-weave-ldap').Count }).Count -eq 0)
+Check 'Weave ACEs are not reported as extra' ($r.Output -notmatch 'extra ACE[^\n]*svc-weave-ldap')
+Check 'a person with no weaveId is reported' ($r.Output -match 'REPORT\s+mayonej has no weaveId' -and $r.Output -notmatch 'svc-weave-ldap has no weaveId')
+
 $r = Converge Build
 Check 'Build twice: zero changes' ($r.Changes -eq 0 -and $r.Errors -eq 0)
 if ($r.Changes) { Write-Host $r.Output }
@@ -286,6 +317,51 @@ Check 'delegation drift: missing ACE added back, nothing else changed' ($r.Error
 Check 'delegation drift: extra ACE reported and kept, known ACE not reported' ($r.Output -match "OU=Admin-Accounts,$new has an extra ACE: allow 983551 for GG-Board" -and
     @(AcesFor "OU=Admin-Accounts,$new" 'GG-Board').Count -eq 1 -and $r.Output -notmatch 'extra ACE[^\n]*svc-lnx-join')
 Remove-FakeAces "OU=Admin-Accounts,$new" { $_.IdentityReference.Value -eq (SidOf 'GG-Board') }
+
+# weaveId -> employeeID. adam.sidwa gets one. klukask asks for an id that a
+# Weave member already holds: reported, not set. Without the key, Build
+# leaves employeeID alone.
+Set-ADUser -Identity 'member1' -Replace @{ employeeID = 'PWL2000000001' }
+$withIds = New-OrgJson { param($o)
+    ($o.users | Where-Object { $_.sam -eq 'adam.sidwa' }) | Add-Member -NotePropertyName weaveId -NotePropertyValue 'PWL1A2B3C4D5E'
+    ($o.users | Where-Object { $_.sam -eq 'klukask' }) | Add-Member -NotePropertyName weaveId -NotePropertyValue 'PWL2000000001'
+}
+$before = Get-FakeADState
+$r = Converge Build -DataFile $withIds -WhatIf
+Check 'weaveId -WhatIf changes nothing and shows the employeeID' ((Get-FakeADState) -eq $before -and
+    $r.Output -match "WOULD\s+Set employeeID='PWL1A2B3C4D5E' : CN=Adam Sidwa")
+$r = Converge Build -DataFile $withIds
+Check 'weaveId set as employeeID' ($r.Errors -eq 0 -and (U 'adam.sidwa').employeeID -eq 'PWL1A2B3C4D5E' -and
+    $r.Output -notmatch 'adam.sidwa has no weaveId')
+Check 'weaveId held by another account: reported, not set' ($r.Output -match 'REPORT\s+klukask: weaveId PWL2000000001 is the employeeID of member1' -and
+    $null -eq (U 'klukask').employeeID -and (U 'member1').employeeID -eq 'PWL2000000001')
+$r = Converge Build -DataFile $withIds
+Check 'weaveId: rerun has zero changes' ($r.Changes -eq 0 -and $r.Errors -eq 0)
+$r = Converge Build
+Check 'weaveId absent: employeeID not cleared' ($r.Changes -eq 0 -and (U 'adam.sidwa').employeeID -eq 'PWL1A2B3C4D5E')
+
+# A Weave member holds the sam of a new org.json entry. Build must not take
+# it over: no attributes, no groups (GG-Infra gives sudo on Tier 1).
+Add-FakeObject "CN=newstaff,OU=Members,OU=Users,$new" 'user' @{ Sam = 'newstaff' } | Out-Null
+$takeover = New-OrgJson { param($o)
+    $o.users += [pscustomobject]@{ sam = 'newstaff'; kind = 'person'; ou = 'Users/Staff'; givenName = 'New'; surname = 'Staff'
+        division = 'Programs'; department = 'Programs'; title = 'Volunteer'; manager = $null }
+    ($o.roleGroups | Where-Object { $_.name -eq 'GG-Infra' }).members += 'newstaff'
+}
+$r = Converge Build -DataFile $takeover
+Check 'a member with a new sam: reported, not changed, not added to groups' ($r.Errors -eq 0 -and
+    $r.Output -match 'REPORT\s+newstaff is CN=newstaff,OU=Members,OU=Users,[^\n]*another system owns' -and
+    $r.Output -match 'REPORT\s+newstaff is [^\n]*so it was not added to GG-Infra' -and
+    -not ((MembersOf 'GG-Infra') -contains 'newstaff') -and $null -eq (U 'newstaff').title -and
+    (U 'newstaff').DistinguishedName -eq "CN=newstaff,OU=Members,OU=Users,$new")
+# newstaff stays in Users/Members. Build ignores it from now on.
+
+# A member that became staff still has Weave as its owner: reported.
+(Find-Fake 'adam.sidwa').Owner = 'PATCHWORK\svc-weave-ldap'
+$r = Converge Build
+Check 'a managed account owned by svc-weave-ldap is reported' ($r.Errors -eq 0 -and $r.Changes -eq 0 -and
+    $r.Output -match 'REPORT\s+adam.sidwa is owned by PATCHWORK\\svc-weave-ldap')
+(Find-Fake 'adam.sidwa').Owner = $null
 
 # Drift: a changed PSO, an extra subject and an unknown PSO.
 Set-ADFineGrainedPasswordPolicy -Identity 'PSO-Staff' -MinPasswordLength 8

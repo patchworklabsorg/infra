@@ -160,6 +160,8 @@ A Proxmox administrator can read the disk of a DC VM and take `ntds.dit`. The Pr
 
 Weave can reach Tier 1 through one path: a reset of `mayonej`, whose `infra` membership gives sudo on the NixOS hosts. The same path exists for helpdesk (see "Tier 1 and Tier 2 today"). Today `mayonej` has `adminCount=1`, so no inherited right reaches it, Weave included. After a Domain Admin clears `adminCount`, Weave can reset it.
 
+`mayonej` is linked to Weave (`weaveId` in `org.json`). Weave therefore sees the AD password of an `infra` member at each sign-in, because it checks the password with an LDAPS bind. A compromise of Weave or alastor can capture that password. Accepted on purpose. Never reuse the Weave admin password, and keep Tier 0 work on `adm_mayonej`, which has no `weaveId`.
+
 Weave has no path to Tier 0. The denies on `Admin-Accounts`, `Service-Accounts` and `Servers/Tier0`, and AdminSDHolder on protected accounts, keep it out. A Tier 0 account must never get a `weaveId`, and must never sign in through Weave.
 
 Rules:

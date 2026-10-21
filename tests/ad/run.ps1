@@ -626,6 +626,31 @@ Remove-ADGroup -Identity 'GG-Infra'
 $r = Converge Build
 Check 'both names exist: after the extra group is deleted, zero changes' ($r.Changes -eq 0 -and $r.Errors -eq 0 -and $r.Output -notmatch 'more than once')
 
+# The live order: the new name is taken BEFORE the rename. A user holds
+# password-reset, and somebody made an empty group infra. Neither may get the
+# rights, members or memberships of the real groups.
+New-BaseDirectory
+Add-FakeObject "CN=Jasper Mayone (Admin),CN=Users,$dom" 'user' @{ Sam = 'adm_mayonej' } | Out-Null
+foreach ($svc in 'svc-ansible', 'svc-lnx-join', 'svc-dhcp-dns', 'svc-pve-ldap') {
+    Add-FakeObject "CN=$svc,CN=Users,$dom" 'user' @{ Sam = $svc } | Out-Null
+}
+Converge Build -DataFile $legacy | Out-Null
+Converge Build -DataFile $legacy | Out-Null
+Add-FakeObject "CN=password-reset,CN=Users,$dom" 'user' @{ Sam = 'password-reset' } | Out-Null
+Add-FakeObject "CN=infra,OU=Roles,OU=Groups,$new" 'group' @{ Sam = 'infra'; Scope = 'Global' } | Out-Null
+$before = Get-FakeADState
+$r = Converge Build -WhatIf
+Check 'new name taken before the rename, -WhatIf: reported, no ACE or member line for them' ((Get-FakeADState) -eq $before -and
+    $r.Output -match 'REPORT\s+Group password-reset: a user has this sAMAccountName' -and $r.Output -match 'REPORT\s+Group infra exists more than once' -and
+    $r.Output -notmatch '(Allow|Deny) for password-reset' -and $r.Output -notmatch 'Rename group (DL-Users-PasswordReset|GG-Infra)' -and
+    $r.Output -notmatch 'WOULD\s+(Add|Remove) member[^\n]*: lnx-')
+$r = Converge Build
+Check 'new name taken before the rename: the user and the empty group get nothing, the real groups keep their names' ($r.Errors -eq 0 -and
+    @(Get-FakeAces $staffOU | Where-Object { $_.IdentityReference.Value -eq (SidOf 'password-reset') }).Count -eq 0 -and
+    -not @(MembersOf 'infra').Count -and ((MembersOf 'lnx-skein-users') -join ',') -eq 'GG-Infra' -and
+    [bool](G 'DL-Users-PasswordReset') -and [bool](G 'GG-Infra') -and (G 'board').Name -ceq 'board' -and
+    -not (Get-ADPrincipalGroupMembership -Identity 'password-reset' | Where-Object { $_.Name -ne 'Domain Users' }))
+
 Remove-Item -Recurse -Force $logDir
 if ($script:failed) { Write-Host "$script:failed checks failed"; exit 1 }
 Write-Host 'all checks passed'

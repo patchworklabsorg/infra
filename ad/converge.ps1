@@ -286,6 +286,14 @@ function Initialize-GroupNames {
         $found = @()
         $current = Find-GroupExact $name
         if ($current) { $found += $current }
+        # sAMAccountName is one namespace. A user or computer with the new
+        # name would get the group's ACEs and memberships.
+        $other = @(Find-Object "SamAccountName -eq '$name'" | Where-Object { $_.ObjectClass -ne 'group' })
+        if ($other.Count) {
+            $script:groupConflicts += $name
+            Write-Report "Group ${name}: a $($other[0].ObjectClass) has this sAMAccountName ($($other[0].DistinguishedName)). Nothing was renamed or changed for $name, or for the groups, PSOs and ACEs that name it. Rename that object by hand, then run Build again."
+            continue
+        }
         foreach ($old in $script:formerNames[$name]) {
             $g = Find-GroupExact $old
             if ($g -and -not ($found | Where-Object { "$($_.ObjectGUID)" -eq "$($g.ObjectGUID)" })) { $found += $g }
@@ -321,7 +329,8 @@ function Sync-GroupName($G, [string]$Name) {
     $disp = "$(Get-Prop $G 'DisplayName')"
     if ($disp -and $former -contains $disp) {
         Invoke-Change $G.DistinguishedName "Set displayName '$Name' (was $disp)" {
-            Set-ADGroup -Identity $G -DisplayName $Name @ad
+            # By GUID: a CN rename above changed the DN of $G.
+            Set-ADGroup -Identity $G.ObjectGUID -DisplayName $Name @ad
         }
     }
 }
@@ -412,7 +421,13 @@ function Sync-Group([string]$Name, [string]$Description, [string]$Scope, [string
     if (Test-GroupConflict $Name) { return }
     $g = Find-Group $Name
     $target = ConvertTo-OUDN $OUPath
-    if ($g) { Sync-GroupName $g $Name }
+    if ($g) {
+        Sync-GroupName $g $Name
+        # Read it again by GUID: a rename changed its name and DN.
+        if (-not $WhatIfPreference) {
+            $g = Get-ADGroup -Identity $g.ObjectGUID -Properties Description, DisplayName, ProtectedFromAccidentalDeletion @ad
+        }
+    }
     if (-not $g) {
         Invoke-Change "CN=$Name,$target" "Create $Scope group" {
             New-ADGroup -Name $Name -SamAccountName $Name -GroupCategory Security -GroupScope $Scope `
@@ -460,7 +475,12 @@ function Sync-Members([string]$Group, [string[]]$Desired) {
             Write-Report "$m is $($mu.DistinguishedName), in an OU that another system owns, so it was not added to $Group."
             continue
         }
-        Invoke-Change $Group "Add member $m" { Add-ADGroupMember -Identity $g -Members $m @ad }
+        Invoke-Change $Group "Add member $m" {
+            # The resolved object, not the name: a managed group goes by
+            # Find-Group, so a user with the same name is never added.
+            $mObj = if ($script:formerNames.ContainsKey($m)) { Find-Group $m } else { $m }
+            Add-ADGroupMember -Identity $g -Members $mObj @ad
+        }
     }
     foreach ($m in $current | Where-Object { $Desired -notcontains $_ }) {
         Invoke-Change $Group "Remove member $m" {
@@ -1300,9 +1320,9 @@ function Get-Delegation {
 # The objectSid of a principal (a SecurityIdentifier from AD), or $null.
 function Get-PrincipalSid([string]$Sam) {
     if (Test-GroupConflict $Sam) { return $null }
-    $o = Find-Object "SamAccountName -eq '$Sam'"
-    # A managed group that still has a former name (under -WhatIf).
-    if (-not $o) { $o = Find-Group $Sam }
+    # A managed group with former names: only Find-Group, so a user or a
+    # computer with the same name never gets the group's ACEs.
+    $o = if ($script:formerNames.ContainsKey($Sam)) { Find-Group $Sam } else { Find-Object "SamAccountName -eq '$Sam'" }
     if (-not $o) { return $null }
     Get-Prop (Get-ADObject -Identity $o.DistinguishedName -Properties objectSid @ad) 'objectSid'
 }
@@ -1402,7 +1422,8 @@ function Write-ExtraAceReport([string]$DN, [object[]]$Wanted, [string[]]$KnownSi
         if ($defaults -contains $sid -or $KnownSids -contains $sid) { continue }
         $mask = [int]$ace.ActiveDirectoryRights
         if (($mask -band (-bnot $adRights.GenericRead)) -eq 0) { continue }
-        $same = @($Wanted | Where-Object { Test-SameAceKey $ace $_ })
+        # $Wanted is $null when every principal on the OU was skipped.
+        $same = @($Wanted | Where-Object { $null -ne $_ -and (Test-SameAceKey $ace $_) })
         $allowed = 0
         foreach ($w in $same) { $allowed = $allowed -bor $w.Mask }
         if ($same.Count -and ($mask -band (-bnot $allowed)) -eq 0) { continue }

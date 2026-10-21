@@ -93,9 +93,16 @@ function Get-RdnValue([string]$DN) { (($DN -split '(?<!\\),', 2)[0] -split '=', 
 
 function Find-Fake($Identity) {
     if ($null -eq $Identity) { throw 'Identity is null' }
-    if ($Identity -is [psobject] -and $Identity.PSObject.Properties['ObjectGUID']) {
+    if ($Identity -is [guid]) {
+        $o = $script:objects | Where-Object { $_.Id -eq $Identity }
+    } elseif ($Identity -is [psobject] -and $Identity.PSObject.Properties['ObjectGUID']) {
+        # Like the AD module: an object from a search is found by the DN it
+        # had then. After a rename or a move, use the GUID or -PassThru.
         $id = $Identity.ObjectGUID
         $o = $script:objects | Where-Object { $_.Id -eq $id }
+        if ($o -and $Identity.PSObject.Properties['DistinguishedName'] -and $Identity.DistinguishedName -and $o.DN -ne $Identity.DistinguishedName) {
+            throw "Directory object not found (stale DN): '$($Identity.DistinguishedName)'"
+        }
     } else {
         $s = "$Identity"
         # Like AD: a DN, a sAMAccountName or a SID. The RDN is a fallback for

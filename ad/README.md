@@ -228,8 +228,8 @@ The role groups that have a Workspace group have the same name as its address: `
 
 A rename must keep the group object. The SID stays, so the members, the nesting, the ACEs, the PSO links and the silo and JIT references stay. Do not delete a group and make a new one.
 
-1. In `org.json`, change `name`, and add the old name to `formerNames`: `{ "name": "infra", "formerNames": ["infra"], ... }`. Change every reference in the repo (members, `appliesTo`, `privileged`, `tiering.jit`, `delegation`).
-2. Run `.\converge.ps1 -WhatIf`. Each rename shows as `WOULD Rename group <old> to <new> (sAMAccountName)` and `WOULD Rename group CN <old> to <new>`. A `displayName` that holds the old name shows as `WOULD Set displayName`. There must be no `Create ... group` line and no member change for the renamed groups.
+1. In `org.json`, change `name`, and add the old name to `formerNames`: `{ "name": "infra", "formerNames": ["GG-Infra"], ... }`. Change every reference in the repo (members, `appliesTo`, `privileged`, `tiering.jit`, `delegation`).
+2. Run `.\converge.ps1 -WhatIf`. Each rename shows as `WOULD Rename group <old> to <new> (sAMAccountName)` and `WOULD Rename group CN <old> to <new>`. A `displayName` that holds the old name shows as `WOULD Set displayName`. There must be no `Create ... group` line, no member change and no `Allow for` or `Deny for` ACE line for the renamed groups. Look for `REPORT Group <name>` lines: a conflict blocks the rename.
 3. Run `.\converge.ps1`. Each line is a `CHANGE`. A second run has zero changes.
 4. Refresh the systems that keep a group name (see below).
 5. Keep `formerNames` until every system uses the new names. Remove it in a later change.
@@ -241,7 +241,7 @@ Build finds a group by its name, then by a former name. If it finds the group un
 | System | What keeps the name | What to do |
 |---|---|---|
 | JIT endpoint on loom and spindle | `jit.json` and the `RoleDefinitions` of `PatchworkT0.pssc` name `tiering.jit.group` and `tiering.jit.eligible` | `ansible-playbook ad.yml -t jit-endpoint`. It writes the new names and registers the endpoint again. Until then, `Request-T0Admin` looks for the old group names and fails. |
-| Break-glass alert task | The event filter holds the SID of `privileged.tier0Group` | Nothing is required: the SID does not change. `ansible-playbook ad.yml -t breakglass-alert` refreshes the description. |
+| Break-glass alert task | The event filter holds the SID of `privileged.tier0Group` | Nothing is required: the SID does not change. Run `ansible-playbook ad.yml -t breakglass-alert` only after Build. Before the rename it stops, because `privileged.tier0Group` does not exist yet. After Build a rerun changes nothing. |
 | NixOS hosts (sssd) | The cache holds the nested group names (`infra` in `lnx-<host>-*`) | On each host: `sudo sss_cache -E`, or wait for the cache to expire. Login and sudo use the `lnx-` groups, which keep their names. |
 | Proxmox (`pve01`) | An AD or LDAP realm with a group filter or synced groups, if one is set up by hand | Change a filter that names a `GG-` group. Then run `pveum realm sync <realm>`. This repo has no realm config. |
 | NPS on shuttle | A Windows Groups condition in a network policy | NPS keeps the SID. Open `nps.msc` and check that each condition shows the new name. |

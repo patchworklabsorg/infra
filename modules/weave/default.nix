@@ -7,9 +7,9 @@
 # Traefik routing (`traefik.*` options) is a fragment in
 # /etc/traefik/conf.d/weave.toml. The host's Traefik must use the file
 # provider on that directory and define the cert resolver and middlewares the
-# routers name. jaspermayone/infra's modules/traefik does both. The `idp`
-# router points idp.patchworklabs.org, weave.patchworklabs.org and
-# slack.patchworklabs.org at 127.0.0.1:3003.
+# routers name. jaspermayone/infra's modules/traefik does both. The `weave`
+# router points weave.patchworklabs.org and slack.patchworklabs.org at
+# 127.0.0.1:3003.
 #
 # CI deploys happen without nixos-rebuild:
 #   1. CI builds and pushes a new image to ghcr.io/patchworklabsorg/weave
@@ -441,8 +441,8 @@ in
       hosts = lib.mkOption {
         type = lib.types.listOf lib.types.str;
         default = [ ];
-        example = [ "idp.patchworklabs.org" ];
-        description = "Hostnames routed to the production web container (router `idp`).";
+        example = [ "weave.patchworklabs.org" ];
+        description = "Hostnames routed to the production web container (router `weave`).";
       };
 
       certResolver = lib.mkOption {
@@ -572,8 +572,7 @@ in
       }
 
       # ── Traefik ───────────────────────────────────────────────────────────────
-      # Router and service names (`idp`, `weave-staging`) are the ones alastor
-      # used before this module moved here. Keep them.
+      # Router and service names: `weave` and `weave-staging`.
       (lib.mkIf cfg.traefik.enable {
         environment.etc."traefik/conf.d/weave.toml".source =
           let
@@ -592,13 +591,13 @@ in
           (pkgs.formats.toml { }).generate "weave.toml" {
             http = {
               routers = {
-                idp = router cfg.traefik.hosts "idp";
+                weave = router cfg.traefik.hosts "weave";
               }
               // lib.optionalAttrs withStaging {
                 weave-staging = router cfg.staging.hosts "weave-staging";
               };
               services = {
-                idp = backend cfg.port;
+                weave = backend cfg.port;
               }
               // lib.optionalAttrs withStaging {
                 weave-staging = backend cfg.staging.port;

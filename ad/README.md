@@ -286,7 +286,7 @@ sequenceDiagram
 | Rights | The two `svc-weave-ldap` rows in the delegation table above. |
 | Denied | `Admin-Accounts` (all tiers), `Service-Accounts`, `Servers/Tier0`, `Disabled`. A deny covers write, create, delete, permissions, owner and every extended right. |
 | Not delegatable | `ansible/ad.yml -t svc-posture` sets AES only and "not delegatable". `-t audit` checks it. |
-| Password store | `secrets/weave-ldap.age` (agenix), password only. Recipients: `jsp` and the host that runs Weave (`alastor` today, `warp` after the move). |
+| Password store | `secrets/weave-ldap.age` (agenix), password only. Recipients: `jsp` and `alastor`, the host that runs Weave. |
 
 The deny on `Service-Accounts` covers `svc-weave-ldap` itself, but it is an inherited deny. The default ACL of a user object gives Everyone and SELF an explicit "change password" right, and an explicit allow wins over an inherited deny. So Weave can change its own password when it knows the old one. A compromised Weave can rotate the password, and then the copy in `weave-ldap.age` is stale. Watch for event 4723 on `svc-weave-ldap`.
 
@@ -340,7 +340,7 @@ Weave staging does this now (`hosts/alastor/weave.nix`, `staging.extraHosts` and
 
 ### Network
 
-alastor reaches the DCs over the tailnet on TCP 636 only. The grant is in `jaspermayone/infra`, `tailscale/policy.hujson` (`tag:ingress` to `tag:patchwork-dc`, `tcp:636`). The DCs join the tailnet through `ansible/windows.yml` with that tag. Both are separate PRs. Merge the policy PR first, then the `windows.yml` PR, then run `windows.yml`. Until then, Weave cannot reach LDAPS from alastor. When Weave runs on warp, it is on VLAN 90 with the DCs, and it does not need the tailnet path.
+alastor reaches the DCs over the tailnet on TCP 636 only. The grant is in `jaspermayone/infra`, `tailscale/policy.hujson` (`tag:ingress` to `tag:patchwork-dc`, `tcp:636`). The DCs join the tailnet through `ansible/windows.yml` with that tag. Both are separate PRs. Merge the policy PR first, then the `windows.yml` PR, then run `windows.yml`. Until then, Weave cannot reach LDAPS from alastor.
 
 ### Start Weave on AD: steps for an admin
 

@@ -35,9 +35,10 @@ SECRET_WORDS = {
 }
 
 # Lines that pull leaves out. VyOS writes them itself, so they are not
-# configuration: pki adds "pki ca AUTOCHAIN_<cert>" with the issuer of each
-# ACME certificate (vpn-le), and replaces it when Let's Encrypt changes the
-# intermediate. A copy in the template would set the old issuer back.
+# configuration: after an ACME request, pki adds "pki ca AUTOCHAIN_<cert>"
+# with the issuer of the certificate when that issuer is not in the config.
+# The template pins the issuers instead (thimble.conf.j2, stage 3) and
+# deletes AUTOCHAIN_vpn-le. A copy in the template would add it back.
 DERIVED = re.compile(r"^set pki ca AUTOCHAIN_\S+ ")
 
 LINE = re.compile(r"^set (?P<path>.+?) (?P<word>[\w-]+) (?P<value>'(?:[^']|'\\'')*'|\S+)$")

@@ -5,3 +5,6 @@ ansible_network_os: vyos.vyos.vyos
 # The local VyOS user with your SSH key. thimble has no RADIUS. Pass
 # --ask-pass for a password login.
 ansible_user: vyos
+# A pki commit runs certbot (an HTTP-01 request) inside the commit. The
+# default of 30 seconds can stop the task before the commit ends.
+ansible_command_timeout: 300

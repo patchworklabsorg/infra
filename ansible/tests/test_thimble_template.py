@@ -27,13 +27,13 @@ class _Secrets(dict):
 
 @unittest.skipIf(jinja2 is None, "jinja2 not installed")
 class ThimbleStages(unittest.TestCase):
-    def render(self, stage):
+    def render(self, stage, **extra):
         # Ansible renders templates with trim_blocks on.
         env = jinja2.Environment(trim_blocks=True, keep_trailing_newline=True,
                                  undefined=jinja2.StrictUndefined)
         with open(TEMPLATE) as fh:
             text = env.from_string(fh.read()).render(
-                vyos_secrets=_Secrets(), vyos_ikev2_stage=stage)
+                vyos_secrets=_Secrets(), vyos_ikev2_stage=stage, **extra)
         return [line for line in text.splitlines() if line.strip()]
 
     def test_every_line_is_a_command(self):
@@ -96,6 +96,28 @@ class ThimbleStages(unittest.TestCase):
         self.assertEqual(names, {"pw-ikev2"})
         # The constraint in vyos-1x interface-definitions/vpn_ipsec.xml.in.
         self.assertTrue(all(re.fullmatch(r"[a-zA-Z][0-9a-zA-Z_-]+", n) for n in names))
+
+    def test_ipsec_ca_certificates_are_pinned(self):
+        import base64
+        lines = self.render(4)
+        cas = {line.split()[3]: line.split()[5].strip("'") for line in lines
+               if line.startswith("set pki ca ") and " certificate " in line}
+        used = [line.split()[-1].strip("'") for line in lines
+                if " authentication x509 ca-certificate " in line]
+        self.assertEqual(sorted(used), sorted(cas))
+        self.assertIn("ISRG-Root-X1", cas)
+        for name, value in cas.items():
+            der = base64.b64decode(value, validate=True)
+            self.assertEqual(der[0], 0x30, name)  # a DER SEQUENCE
+        self.assertIn("delete pki ca AUTOCHAIN_vpn-le", lines)
+        self.assertFalse(any("AUTOCHAIN" in line for line in lines if line.startswith("set ")))
+        # Staging (stage 2) has a different issuer: no pinned CAs yet.
+        self.assertFalse(any(line.startswith("set pki ca ") for line in self.render(2)))
+
+    def test_always_send_cert_only_when_set(self):
+        self.assertFalse(any("always-send-cert" in line for line in self.render(4)))
+        self.assertTrue(any(line.endswith("authentication always-send-cert")
+                            for line in self.render(4, vyos_ikev2_always_send_cert=True)))
 
     def test_radius_key_name_matches_pull(self):
         # pull (vyos_split_secrets) must give the router's line the same name

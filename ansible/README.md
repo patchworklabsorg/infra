@@ -376,7 +376,7 @@ What the first pull showed (2026-10-20):
 
 The list above is the router before the IKEv2 VPN. The template now also has the VPN, the firewall and the ACME certificate, behind `vyos_ikev2_stage` in `inventory/host_vars/thimble.yml`. At stage 0 (the default) the template gives the same commands as the first pull. See "VPN".
 
-`vyos.yml -t pull` leaves out the `pki ca AUTOCHAIN_*` lines. VyOS adds them itself with the issuer of each ACME certificate, and replaces them at renewal. A copy in the template would set an old issuer back.
+`vyos.yml -t pull` leaves out the `pki ca AUTOCHAIN_*` lines. After an ACME request, VyOS adds one with the issuer of the certificate when that issuer is not in the config. A renewal does not update it. The template pins the Let's Encrypt issuers instead (see "VPN").
 
 ## VPN
 
@@ -404,13 +404,14 @@ sequenceDiagram
 | Item | Value |
 |---|---|
 | Public name | `vpn.patchworklabs.org`, 69.54.28.49. UniFi forwards UDP 500, UDP 4500 and TCP 80 to 10.100.92.20. |
-| Connection | `pw-ikev2`: server `x509` with `vpn-le`, client `eap-radius`, local ID `vpn.patchworklabs.org`, `unique replace` |
+| Connection | `pw-ikev2`: server `x509` with `vpn-le`, client `eap-radius`, local ID `vpn.patchworklabs.org`, `unique replace`. One session per person: a second device closes the first session. |
 | Pool | `ra-v4`, 10.100.93.0/24, DNS 10.100.90.10 and 10.100.90.11. IPv4 only. |
 | Split tunnel | Traffic selectors 10.100.90.0/24, 10.100.91.0/24, 10.100.92.0/24. Not 10.100.0.0/16: it includes other tenants. |
 | IKE (`PW-IKE`) | IKEv2. aes256-sha256-modp2048, aes128gcm128-prfsha256-modp2048. Lifetime 28800 s. DPD `clear`, 30 s. |
 | ESP (`PW-ESP`) | aes256-sha256, aes128gcm128. PFS group 14. Lifetime 3600 s. |
 | RADIUS | 10.100.90.14 port 1812, NAS-Identifier `thimble-ikev2`. The key is `vpn_ipsec_remote_access_radius_server_10_100_90_14_key` in `vault_vyos_thimble`. |
 | Certificate | `pki certificate vpn-le acme`, HTTP-01 on 10.100.92.20 TCP 80, RSA 2048, `security@patchworklabs.org` |
+| Chain | Pinned as `pki ca` nodes and `x509 ca-certificate`: `ISRG-Root-X1`, `LE-Root-YR-X1` (Root YR signed by ISRG Root X1), `LE-YR1`, `LE-YR2`, `LE-YR3`. strongSwan sends the intermediates from these files. |
 | AD group | `vpn-users` (domain local, `Groups/Resources`). Members: `mayonej`. |
 | Clients | `files/vpn/patchwork-ikev2.mobileconfig`, `files/vpn/Add-PatchworkVpn.ps1` |
 
@@ -425,7 +426,7 @@ Why PFS group 14 on ESP: Windows and Apple can both do PFS on a CHILD_SA rekey, 
 | 0 | Nothing. The router as the first pull showed it. |
 | 1 | Firewall groups `PW-NETS` and `SSH-SOURCES`. Input and forward rules. Both default actions stay `accept`. Input rule 999 accepts and logs what stage 5 will drop. |
 | 2 | ACME certificate `vpn-le` from the Let's Encrypt staging CA |
-| 3 | The same certificate from the Let's Encrypt production CA |
+| 3 | The same certificate from the Let's Encrypt production CA. The pinned chain CAs (see "The pinned chain"). `AUTOCHAIN_vpn-le` deleted. |
 | 4 | IKE and ESP groups, pool `ra-v4`, RADIUS, connection `pw-ikev2`, source NAT rule 110 |
 | 5 | Input default action `drop`, rule 999 deleted. Do this by hand with `commit-confirm` first. |
 
@@ -433,14 +434,19 @@ The firewall is new on thimble. A wrong rule can lock out SSH or stop WireGuard.
 
 The input rules accept: replies, loopback, ICMP, SSH (TCP 22) from 10.100.79.0/24, 10.100.93.0/24 and 10.100.90.0/24, WireGuard (UDP 51822), IKE and NAT-T (UDP 500, 4500), ESP, and TCP 80 to 10.100.92.20 for ACME. There is no IPv6 firewall yet.
 
-Do not run `vyos.yml -t pull` during the rollout. Pull writes the router config over the template, and the stages that are not applied are lost. After stage 5, pull is safe again.
+Do not run `vyos.yml -t pull` during the rollout. Pull writes the router config over the template, and the stages that are not applied are lost. After stage 5, a pull gives a flat template with no stages. In the same commit, remove `vyos_ikev2_stage` and `vyos_ikev2_always_send_cert` from `inventory/host_vars/thimble.yml` and remove `tests/test_thimble_template.py` (or change it to test the flat file). Else the tests fail.
 
-`--diff` shows the commands that it sends, and stage 4 sends the RADIUS key line. Do not paste that output anywhere.
+The apply task has `diff: true`. Each apply prints the commands that it sends, also without `--diff`. Stage 4 sends the RADIUS key line. Do not paste that output anywhere.
+
+Stage 5 is a manual step. `vyos.yml` refuses stage 5 while the router does not drop on input yet, so the play cannot be the first to drop.
+
+Risk: an IKEv2 login needs only a password, and WireGuard needs a device key. With NAT (phase 1), each VPN client arrives at the servers as 10.100.92.20, the same as WireGuard and the Ansible control node. Thus a person in `vpn-users` with a stolen password has the network position of the admin. Keep `vpn-users` small until phase 2 (routing, no NAT, rules per address). `../ad/TIERING.md` has the details.
 
 ### Steps
 
 Do the steps in this order. Each step has its rollback.
 
+0. **DNS.** `dig +short vpn.patchworklabs.org` must give 69.54.28.49. The ACME request (stage 2) and the clients need this name. The record is not in this repo.
 1. **RADIUS key in the vault.** Make a key of letters and numbers only: `openssl rand -hex 32`. Keep it in your clipboard only. Run `ansible-vault edit vault/vault.yml` and add `"vpn_ipsec_remote_access_radius_server_10_100_90_14_key": "<key>"` to the `vault_vyos_thimble` mapping. Commit `vault.yml` in `vault/`, then the submodule pointer here. `bin/vault-set` cannot do this: it replaces the whole mapping.
    Rollback: remove the entry.
 2. **AD group.** On a DC as `adm_mayonej`: `.\converge.ps1 -WhatIf`, then `.\converge.ps1`. The log shows "Create DomainLocal group" for `vpn-users` and "Add member mayonej". The NPS policy in step 3 needs the group, so this step comes first.
@@ -450,15 +456,16 @@ Do the steps in this order. Each step has its rollback.
    2. Add a RADIUS client: name `thimble`, address 10.100.92.20, shared secret = the key from step 1. PowerShell: `New-NpsRadiusClient -Name thimble -Address 10.100.92.20 -SharedSecret (Read-Host)`.
    3. Add a network policy "Patchwork IKEv2 VPN", above the default policies. Conditions: Windows Groups = `PATCHWORK\vpn-users`, Client IPv4 Address = 10.100.92.20, NAS Identifier = `thimble-ikev2`. Access: granted. Authentication methods: only EAP type "Microsoft: Secured password (EAP-MSCHAP v2)". Clear all "less secure" methods (MS-CHAP-v2, MS-CHAP, CHAP, PAP).
    4. Make sure that the NPS server is registered in AD (member of "RAS and IAS Servers"). Otherwise NPS cannot read the dial-in properties.
-   5. Export again: `netsh nps export filename="C:\ProgramData\Patchwork\nps\nps-after-ikev2.xml" exportPSK=YES`. The same rules apply to this file.
-   Rollback: `netsh nps import filename="C:\ProgramData\Patchwork\nps\nps-before-ikev2.xml"`, or delete the client and the policy.
+   5. Turn on the NPS account lockout, below the AD lockout (10 tries): in `HKLM\SYSTEM\CurrentControlSet\Services\RemoteAccess\Parameters\AccountLockout`, set `MaxDenials` to 5 and `ResetTime (mins)` to 15. Then restart NPS (`Restart-Service IAS`). UDP 500 and 4500 are open to the internet. Without this, anyone who knows a UPN in `vpn-users` can guess passwords and lock the AD account. With it, NPS refuses after 5 failures and AD does not lock. The person can still be kept out of the VPN for 15 minutes. To unlock early, delete the value `<domain>:<user>` under that key.
+   6. Export again: `netsh nps export filename="C:\ProgramData\Patchwork\nps\nps-after-ikev2.xml" exportPSK=YES`. The same rules apply to this file.
+   Rollback: `netsh nps import filename="C:\ProgramData\Patchwork\nps\nps-before-ikev2.xml"`, or delete the client and the policy. Set `MaxDenials` to 0 to turn off the NPS lockout.
 4. **UniFi.** Forward UDP 500, UDP 4500 and TCP 80 from 69.54.28.49 to 10.100.92.20. Keep UDP 51822 for WireGuard. TCP 80 must stay open: certbot renews `vpn-le` on it every 60 days or so.
    Rollback: remove the three forwards.
 5. **Stage 1, firewall in accept mode.** Open the Proxmox console of thimble, logged in, before each apply. Set `vyos_ikev2_stage: 1`. Run `ansible-playbook vyos.yml --check --diff`, read the commands, then `ansible-playbook vyos.yml`. Test SSH from WireGuard and from spool, and a WireGuard client. Watch `show firewall ipv4 input filter` for some days: rule 999 counts what stage 5 will drop. Read the log lines of rule 999.
    Rollback: on the console, `configure`, `delete firewall`, `commit`, `save`, and set the stage back to 0. thimble had no firewall before.
-6. **Stages 2 and 3, the certificate.** Set stage 2 and apply (check first). certbot gets a staging certificate. `show pki certificate` shows it, and `show configuration commands | match AUTOCHAIN` shows `pki ca AUTOCHAIN_vpn-le`. If the request fails, the commit fails and nothing changes: check DNS for `vpn.patchworklabs.org`, the TCP 80 forward and firewall rule 80. Then set stage 3 and apply. The certificate now comes from the production CA (issuer R10 to R14, not "(STAGING)"). The staging step protects the production rate limits.
+6. **Stages 2 and 3, the certificate.** Set stage 2 and apply (check first). certbot gets a staging certificate. `show pki certificate` shows it. pki also adds `pki ca AUTOCHAIN_vpn-le` with the staging issuer. If the request fails, the commit should fail: check DNS, the TCP 80 forward and firewall rule 80. If Ansible stops on a timeout, compare the running config with the saved config before you continue. Then set stage 3 and apply. The certificate now comes from the production CA (issuer YR1 or YR2, not "(STAGING)"). Stage 3 also adds the pinned chain CAs and deletes `AUTOCHAIN_vpn-le`. The staging step protects the production rate limits.
    Rollback: `delete pki certificate vpn-le`, `delete pki ca AUTOCHAIN_vpn-le`, `commit`, `save`, and set the stage back to 1.
-7. **Stage 4, IKEv2.** Needs steps 1 to 4 and stage 3. Check `sudo swanctl --version` (see "Why PFS"). Check that `AUTOCHAIN_vpn-le` exists. Set stage 4, run `--check --diff`, then apply. On thimble: `show vpn ike sa`, `show vpn ipsec sa` and the IPsec log. Hold a console open.
+7. **Stage 4, IKEv2.** Needs steps 1 to 4 and stage 3. Check `sudo swanctl --version` (see "Why PFS"). Run `set vpn ipsec remote-access connection pw-ikev2 authentication ?` in configure mode. If it lists `always-send-cert`, set `vyos_ikev2_always_send_cert: true` (Apple clients can need it), then `exit discard`. Set stage 4, run `--check --diff`, then apply. On thimble: `show vpn ike sa`, `show vpn ipsec sa` and the IPsec log. Hold a console open.
    Rollback: `delete vpn ipsec`, `delete nat source rule 110`, `commit`, `save`, and set the stage back to 3.
 8. **Client tests.** Test from mobile data, not from the office network, so that the test uses the public name and the UniFi forwards.
    - Apple: open `files/vpn/patchwork-ikev2.mobileconfig` and install it (Settings > General > VPN & Device Management on iOS, System Settings > Privacy & Security > Profiles on macOS). Enter the daily account (`jasper@patchworklabs.org`) and the password.
@@ -482,12 +489,26 @@ Do the steps in this order. Each step has its rollback.
     3. Add firewall rules per person on spool and the servers (`../ad/TIERING.md`).
     4. Retire WireGuard when every person uses IKEv2: delete `wg0`, NAT 100, `nat66` 100, input rule 50, the UniFi forward for UDP 51822, and 10.100.79.0/24 in `SSH-SOURCES`.
 
+### The pinned chain
+
+IPsec with `server-mode x509` needs a `ca-certificate` from `pki ca` (`verify()` in vyos-1x `vpn_ipsec.py`). On this build, pki adds `pki ca AUTOCHAIN_<cert>` after the first ACME request, but only on a config commit: a renewal by the certbot timer does not update it. Let's Encrypt picks the intermediate for each certificate. After a renewal from another intermediate, an `AUTOCHAIN_` CA can no longer give strongSwan the chain, and clients that do not fetch intermediates fail. Thus the template pins the whole Let's Encrypt RSA chain (letsencrypt.org/certificates, read 2026-10-20). The default chain is: certificate, YR1 or YR2, Root YR (signed by ISRG Root X1), ISRG Root X1.
+
+| `pki ca` | Subject | Issuer | Valid until | SHA-256 |
+|---|---|---|---|---|
+| `ISRG-Root-X1` | C=US, O=Internet Security Research Group, CN=ISRG Root X1 | C=US, O=Internet Security Research Group, CN=ISRG Root X1 | Jun  4 11:04:38 2035 GMT | `96:BC:EC:06:26:49:76:F3:74:60:77:9A:CF:28:C5:A7:CF:E8:A3:C0:AA:E1:1A:8F:FC:EE:05:C0:BD:DF:08:C6` |
+| `LE-Root-YR-X1` | C=US, O=ISRG, CN=Root YR | C=US, O=Internet Security Research Group, CN=ISRG Root X1 | Sep  2 23:59:59 2032 GMT | `07:26:39:D0:B1:40:D5:BF:FA:E1:6A:D9:C3:F6:CC:60:86:04:06:21:F5:1E:E6:1A:6D:46:A8:91:5C:07:CF:76` |
+| `LE-YR1` | C=US, O=Let's Encrypt, CN=YR1 | C=US, O=ISRG, CN=Root YR | Sep  2 23:59:59 2028 GMT | `13:94:96:34:D9:9C:D6:FD:6A:A8:0B:C0:34:FE:FA:CC:EB:19:69:FE:EF:98:65:86:71:3E:CD:BB:05:75:8D:3F` |
+| `LE-YR2` | C=US, O=Let's Encrypt, CN=YR2 | C=US, O=ISRG, CN=Root YR | Sep  2 23:59:59 2028 GMT | `23:8B:85:A0:09:9C:65:B9:70:47:7D:57:24:F1:A1:D4:75:CE:50:58:CF:FE:4E:FA:87:33:89:9B:DB:86:3C:47` |
+| `LE-YR3` | C=US, O=Let's Encrypt, CN=YR3 | C=US, O=ISRG, CN=Root YR | Sep  2 23:59:59 2028 GMT | `35:50:0C:B6:3B:8D:97:69:52:8D:65:D8:72:20:F5:1C:06:98:07:A5:95:AC:BF:2F:B6:EC:A3:8F:BE:0A:4B:D2` |
+
+When Let's Encrypt adds an RSA intermediate (the page lists it as active or backup), add it as a `pki ca` and a `ca-certificate` line at stage 3 and 4, before it issues. Check each new file with `openssl x509 -noout -subject -issuer -fingerprint -sha256` against the page. YR1 to YR3 expire on 2028-09-02.
+
 ### Open points
 
 - The ESP proposals and the remote-access template come from vyos-1x. Check them on thimble with `sudo swanctl --list-conns` after stage 4.
-- `always-send-cert` is in vyos-1x since November 2025 (T8027), for Apple clients. It is not certain on this build. Check with `set vpn ipsec remote-access connection pw-ikev2 authentication ?`. If it is there, remove the `{# #}` around its line in the template and apply.
-- On this build, pki imports the issuer of an ACME certificate as `pki ca AUTOCHAIN_<name>`, and IPsec needs a `ca-certificate`. vyos-1x changed this in August 2026 (T9135): it reads the chain from disk and adds no `AUTOCHAIN_` node. After a VyOS upgrade, check that `AUTOCHAIN_vpn-le` still exists before you commit.
-- After the first renewal (about 60 days), check that clients get the new certificate. If not, run `restart vpn` on thimble.
+- `always-send-cert` is in vyos-1x since November 2025 (T8027). It is not certain on this build (step 7).
+- vyos-1x changed the ACME chain in August 2026 (T9135): it reads the chain from disk and adds no `AUTOCHAIN_` node. The pinned CAs work with both. After a VyOS upgrade, read `show pki ca` before you commit.
+- A renewal marks `vpn-le` as changed and runs the IPsec config again (vyos-1x `pki.py`, `certbot_renew`). After the first renewal (about 60 days), check that clients get the new certificate. If not, run `restart vpn` on thimble.
 
 ## Checks
 

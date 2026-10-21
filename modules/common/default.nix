@@ -99,7 +99,11 @@ in
       '';
       nameservers = cfg.lanNameservers;
       search = [ "patchwork.internal" ];
-      firewall.enable = true;
+      firewall = {
+        enable = true;
+        allowedTCPPorts = [ 22 ];
+        interfaces.tailscale0.allowedTCPPorts = [ 2222 ];
+      };
     };
 
     time.timeZone = "America/New_York";
@@ -128,8 +132,18 @@ in
     security.sudo.wheelNeedsPassword = false;
     programs.zsh.enable = true;
 
+    # 22 is for people: on the LAN it is sshd, and on the tailnet tailscaled
+    # answers it (Tailscale SSH, --ssh below). 2222 is sshd on the tailnet
+    # only, for deploy-rs (flake.nix deploy.nodes). A deploy that restarts
+    # tailscaled would kill a session that runs inside tailscaled, so deploys
+    # must not use Tailscale SSH.
     services.openssh = {
       enable = true;
+      ports = [
+        22
+        2222
+      ];
+      openFirewall = false;
       settings = {
         PasswordAuthentication = false;
         KbdInteractiveAuthentication = false;
@@ -147,7 +161,15 @@ in
       # MagicDNS would take /etc/resolv.conf, and the tailnet has no global
       # nameservers, so lab names would stop resolving. DNS comes from
       # lanNameservers. Same setting as saker and the mrm hosts.
-      extraSetFlags = [ "--accept-dns=false", "--ssh" ];
+      #
+      # --ssh: tailscaled answers port 22 on the tailnet (Tailscale SSH). The
+      # ssh rule for tag:patchwork in jaspermayone/infra tailscale/policy.hujson
+      # must be live first, or ssh over the tailnet on 22 is refused. sshd
+      # still answers on the LAN, and deploy-rs uses sshd on 2222.
+      extraSetFlags = [
+        "--accept-dns=false"
+        "--ssh"
+      ];
     };
 
     nix.settings = {

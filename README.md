@@ -79,7 +79,7 @@ Staff reach the lab over the thimble VPN or over Tailscale. thimble has WireGuar
 Before a host is installed:
 
 1. Add the host to `hosts` in `flake.nix`. Then create `lnx-<host>-users` and `lnx-<host>-admins` in AD: `cd ansible && ansible-playbook ad.yml -t host-groups`. The play reads the host names from the flake. If a group does not resolve, every AD login fails.
-2. Add the host's A record in AD DNS. sssd does not update DNS.
+2. The same run adds the host's A record in AD DNS, from `patchwork.lanAddress` in its config (`ad.yml -t host-dns` runs only that part). sssd does not update DNS.
 3. After the install, add the host key to `secrets/ad-join.age` and run `agenix -r`. `ad-join.service` then joins on the next boot or deploy.
 
 loom and spindle must run. They are the DNS servers, the KDCs and the time source of every host.

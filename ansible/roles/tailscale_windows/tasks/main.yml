@@ -184,3 +184,39 @@
         Set-DnsClient -InterfaceAlias 'Tailscale' -RegisterThisConnectionsAddress $false
         $Ansible.Changed = $true
       }
+
+# On a DC the DNS server also listens on every address of the host, the
+# tailnet ones included, and it publishes an A and an AAAA record for each
+# listening address under its own name. The setting above does not stop
+# that. So on a host that runs the DNS server, listen on every address but
+# the Tailscale adapter's. Runs one host at a time, because the DNS service
+# restarts, and it puts the old setting back if the DC then does not answer.
+# ad.yml -t host-dns removes the records that were published before.
+- name: The DNS server does not listen on the Tailscale adapter
+  ansible.windows.win_powershell:
+    script: |
+      $Ansible.Changed = $false
+      if (-not (Get-Service DNS -ErrorAction SilentlyContinue)) { $Ansible.Result = 'no DNS server'; return }
+      $ts = @(Get-NetIPAddress -InterfaceAlias 'Tailscale' -ErrorAction SilentlyContinue | ForEach-Object { ($_.IPAddress -split '%')[0] })
+      if ($ts.Count -eq 0) { $Ansible.Result = 'no Tailscale adapter'; return }
+      $s = Get-DnsServerSetting -All
+      $old = @($s.ListeningIPAddress | ForEach-Object { $_.ToString() })
+      $want = @($old | Where-Object { $ts -notcontains $_ })
+      if ($want.Count -eq $old.Count) { $Ansible.Result = 'not listening on Tailscale'; return }
+      if ($want.Count -eq 0) { throw 'no address left to listen on' }
+      $s.ListeningIPAddress = $want
+      Set-DnsServerSetting -InputObject $s
+      Restart-Service DNS
+      Start-Sleep -Seconds 5
+      $lan = ($want | Where-Object { $_ -match '^\d+\.\d+\.\d+\.\d+$' } | Select-Object -First 1)
+      $okLoop = Resolve-DnsName -Name $env:USERDNSDOMAIN -Server 127.0.0.1 -DnsOnly -ErrorAction SilentlyContinue
+      $okLan = Resolve-DnsName -Name $env:USERDNSDOMAIN -Server $lan -DnsOnly -ErrorAction SilentlyContinue
+      if (-not $okLoop -or -not $okLan) {
+        $s.ListeningIPAddress = $old
+        Set-DnsServerSetting -InputObject $s
+        Restart-Service DNS
+        throw "DNS did not answer on 127.0.0.1 or $lan after the change; the old setting is back"
+      }
+      $Ansible.Changed = $true
+      $Ansible.Result = "listening on $($want -join ', ')"
+  throttle: 1

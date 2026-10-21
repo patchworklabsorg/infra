@@ -79,6 +79,20 @@ variable "vms" {
       disk_gb   = 20
       ip        = "10.100.90.58"
     }
+    batting = {
+      vmid      = 360
+      memory_mb = 2048
+      cores     = 2
+      disk_gb   = 20
+      ip        = "10.100.90.60"
+    }
+    weft = {
+      vmid      = 361
+      memory_mb = 2048
+      cores     = 2
+      disk_gb   = 20
+      ip        = "10.100.90.61"
+    }
   }
 }
 

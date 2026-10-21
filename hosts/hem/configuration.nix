@@ -40,11 +40,8 @@ let
     central-staging = {
       database = "patchwork_central";
       port = 5432;
-      # Same reach as prod: central from the LAN and the tailnet.
-      allowedCIDRs = [
-        "10.100.90.0/24"
-        "100.64.0.0/10"
-      ];
+      # Same reach as prod: tailnet only.
+      allowedCIDRs = [ "100.64.0.0/10" ];
       schema = schemas.central;
       passwordFiles = passwordFilesFor "central-staging" schemas.central;
       secretPrefix = "central-staging";
@@ -134,7 +131,6 @@ in
   ++ map (c: "d ${passwordRoot}/${c.database} 0755 root root -") (builtins.attrValues clusters);
 
   networking.firewall.interfaces = {
-    ens18.allowedTCPPorts = [ 5432 ];
     tailscale0.allowedTCPPorts = [
       5432
       5433

@@ -188,34 +188,68 @@
 # On a DC the DNS server also listens on every address of the host, the
 # tailnet ones included, and it publishes an A and an AAAA record for each
 # listening address under its own name. The setting above does not stop
-# that. So on a host that runs the DNS server, listen on every address but
-# the Tailscale adapter's. Runs one host at a time, because the DNS service
-# restarts, and it puts the old setting back if the DC then does not answer.
-# ad.yml -t host-dns removes the records that were published before.
-- name: The DNS server does not listen on the Tailscale adapter
+# that. So on a host that runs the DNS server, drop every tailnet address
+# (100.64.0.0/10, fd7a:115c:a1e0::/48, and the addresses of the Tailscale
+# adapter, its link-local one too) from the listening list.
+#
+# The list is then explicit: the DNS server does not pick up an address that
+# the host gets later. If a DC gets a new LAN address, add it in DNS Manager
+# (Properties, Interfaces), or set the list back to all addresses.
+#
+# One host at a time, because the DNS service restarts. It checks that the
+# DC answers on 127.0.0.1 and on its LAN address for up to 60 seconds, and
+# puts the old list back if not. ad.yml -t host-dns removes the records that
+# were published before.
+- name: The DNS server does not listen on tailnet addresses
   ansible.windows.win_powershell:
+    parameters:
+      domain: "{{ ansible_windows_domain | default('') }}"
     script: |
+      param([string]$domain)
+      $ErrorActionPreference = 'Stop'
       $Ansible.Changed = $false
       if (-not (Get-Service DNS -ErrorAction SilentlyContinue)) { $Ansible.Result = 'no DNS server'; return }
-      $ts = @(Get-NetIPAddress -InterfaceAlias 'Tailscale' -ErrorAction SilentlyContinue | ForEach-Object { ($_.IPAddress -split '%')[0] })
-      if ($ts.Count -eq 0) { $Ansible.Result = 'no Tailscale adapter'; return }
+      if (-not $domain) { $domain = (Get-CimInstance Win32_ComputerSystem).Domain }
+
+      function Bare([string]$a) { ($a -split '%')[0].ToLower() }
+      function IsTailnet([string]$a) {
+        $b = Bare $a
+        if ($b -like 'fd7a:115c:a1e0:*') { return $true }
+        if ($b -match '^100\.(\d+)\.') { $o = [int]$Matches[1]; return ($o -ge 64 -and $o -le 127) }
+        return $false
+      }
+      function Answers([string]$server) {
+        for ($i = 0; $i -lt 12; $i++) {
+          if (Resolve-DnsName -Name $domain -Server $server -DnsOnly -QuickTimeout -ErrorAction SilentlyContinue) { return $true }
+          Start-Sleep -Seconds 5
+        }
+        return $false
+      }
+
+      $adapter = @(Get-NetIPAddress -InterfaceAlias 'Tailscale' -ErrorAction SilentlyContinue | ForEach-Object { Bare $_.IPAddress })
       $s = Get-DnsServerSetting -All
       $old = @($s.ListeningIPAddress | ForEach-Object { $_.ToString() })
-      $want = @($old | Where-Object { $ts -notcontains $_ })
-      if ($want.Count -eq $old.Count) { $Ansible.Result = 'not listening on Tailscale'; return }
-      if ($want.Count -eq 0) { throw 'no address left to listen on' }
-      $s.ListeningIPAddress = $want
-      Set-DnsServerSetting -InputObject $s
-      Restart-Service DNS
-      Start-Sleep -Seconds 5
-      $lan = ($want | Where-Object { $_ -match '^\d+\.\d+\.\d+\.\d+$' } | Select-Object -First 1)
-      $okLoop = Resolve-DnsName -Name $env:USERDNSDOMAIN -Server 127.0.0.1 -DnsOnly -ErrorAction SilentlyContinue
-      $okLan = Resolve-DnsName -Name $env:USERDNSDOMAIN -Server $lan -DnsOnly -ErrorAction SilentlyContinue
-      if (-not $okLoop -or -not $okLan) {
+      $want = @($old | Where-Object { -not (IsTailnet $_) -and ($adapter -notcontains (Bare $_)) })
+      if ($want.Count -eq $old.Count) { $Ansible.Result = "not listening on tailnet addresses: $($old -join ', ')"; return }
+
+      $lan = $want | Where-Object { $_ -match '^\d+\.\d+\.\d+\.\d+$' -and $_ -notmatch '^(127|169\.254)\.' } | Select-Object -First 1
+      if (-not $lan) { throw "no LAN IPv4 address would be left in the listening list: $($want -join ', ')" }
+
+      try {
+        $s.ListeningIPAddress = $want
+        Set-DnsServerSetting -InputObject $s
+        Restart-Service DNS
+        $ok = (Answers '127.0.0.1') -and (Answers $lan)
+      } catch {
+        $ok = $false
+        $err = $_
+      }
+      if (-not $ok) {
         $s.ListeningIPAddress = $old
         Set-DnsServerSetting -InputObject $s
         Restart-Service DNS
-        throw "DNS did not answer on 127.0.0.1 or $lan after the change; the old setting is back"
+        $back = (Answers '127.0.0.1') -and (Answers $lan)
+        throw "DNS did not answer on 127.0.0.1 and $lan after the change ($err). Old list restored; it answers again: $back"
       }
       $Ansible.Changed = $true
       $Ansible.Result = "listening on $($want -join ', ')"

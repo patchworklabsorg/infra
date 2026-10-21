@@ -351,18 +351,21 @@
           foreach ($p in $hosts.PSObject.Properties) {
               $name = $p.Name.ToLower()
               $ip = $p.Value
+              if ($ip -notmatch '^\d+\.\d+\.\d+\.\d+$') { throw "${name}: lanAddress '$ip' is not an IPv4 address" }
               $rr = @(Get-DnsServerResourceRecord -ZoneName $zone -Name $name -RRType A -ErrorAction SilentlyContinue)
+              # Add first, then remove the wrong ones, so the name always has
+              # an address.
+              if (-not ($rr | Where-Object { $_.RecordData.IPv4Address.IPAddressToString -eq $ip })) {
+                  Add-DnsServerResourceRecordA -ZoneName $zone -Name $name -IPv4Address $ip -ErrorAction Stop
+                  $done += "added $name $ip"
+                  $Ansible.Changed = $true
+              }
               foreach ($r in $rr) {
                   if ($r.RecordData.IPv4Address.IPAddressToString -ne $ip) {
-                      Remove-DnsServerResourceRecord -ZoneName $zone -InputObject $r -Force
+                      Remove-DnsServerResourceRecord -ZoneName $zone -InputObject $r -Force -ErrorAction Stop
                       $done += "removed $name $($r.RecordData.IPv4Address)"
                       $Ansible.Changed = $true
                   }
-              }
-              if (-not ($rr | Where-Object { $_.RecordData.IPv4Address.IPAddressToString -eq $ip })) {
-                  Add-DnsServerResourceRecordA -ZoneName $zone -Name $name -IPv4Address $ip
-                  $done += "added $name $ip"
-                  $Ansible.Changed = $true
               }
           }
 
@@ -372,14 +375,14 @@
               foreach ($r in @(Get-DnsServerResourceRecord -ZoneName $z -RRType A -ErrorAction SilentlyContinue)) {
                   $o = $r.RecordData.IPv4Address.GetAddressBytes()
                   if ($o[0] -eq 100 -and $o[1] -ge 64 -and $o[1] -le 127) {
-                      Remove-DnsServerResourceRecord -ZoneName $z -InputObject $r -Force
+                      Remove-DnsServerResourceRecord -ZoneName $z -InputObject $r -Force -ErrorAction Stop
                       $done += "removed $($r.HostName).$z $($r.RecordData.IPv4Address)"
                       $Ansible.Changed = $true
                   }
               }
               foreach ($r in @(Get-DnsServerResourceRecord -ZoneName $z -RRType AAAA -ErrorAction SilentlyContinue)) {
                   if ($r.RecordData.IPv6Address.ToString() -like 'fd7a:115c:a1e0:*') {
-                      Remove-DnsServerResourceRecord -ZoneName $z -InputObject $r -Force
+                      Remove-DnsServerResourceRecord -ZoneName $z -InputObject $r -Force -ErrorAction Stop
                       $done += "removed $($r.HostName).$z $($r.RecordData.IPv6Address)"
                       $Ansible.Changed = $true
                   }

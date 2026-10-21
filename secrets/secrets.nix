@@ -40,8 +40,10 @@ in
     alastor
   ];
 
-  # svc-weave-ldap password (no newline). Weave reads it from
-  # AD_BIND_PASSWORD_FILE. Set in AD on 2026-10-20.
+  # svc-weave-ldap password (no newline). Set in AD on 2026-10-20.
+  # Weave reads it from AD_BIND_PASSWORD_FILE (patchworklabsorg/weave#218).
+  # Not wired into modules/weave yet. Give the container a copy outside
+  # /run/agenix, as modules/central-db does.
   "weave-ldap.age".publicKeys = [
     jsp
     alastor

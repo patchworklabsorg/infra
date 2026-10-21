@@ -1,7 +1,9 @@
 ---
-# The Tier 0 jump host. Reach it only over the thimble VPN (ad/TIERING.md),
-# so windows.yml does not install Tailscale on it.
+# The Tier 0 jump host. Reach it only over the thimble VPN (ad/TIERING.md).
+# windows.yml installs neither Tailscale nor windows_exporter on it: its
+# firewall allows only RDP from the VPN, and both would add inbound paths.
 tailscale_enabled: false
+windows_base_enabled: false
 
 # jump-host.yml: one RDP shortcut per Tier 0 server. mstsc uses Remote
 # Credential Guard (/remoteGuard), because Protected Users blocks the

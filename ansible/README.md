@@ -15,7 +15,7 @@ Ansible for the Windows side of `patchwork.internal` (the domain controllers, th
 
 | Playbook | Target | What it does |
 |---|---|---|
-| `windows.yml` | `windows` | windows_exporter (`roles/windows_base`) and Tailscale (`roles/tailscale_windows`) |
+| `windows.yml` | `windows` | windows_exporter (`roles/windows_base`) and Tailscale (`roles/tailscale_windows`). Neither on spool (`group_vars/jump_hosts.yml`). |
 | `ad.yml` | `domain_controllers` | Directory maintenance. Each job has its own tag. See below. |
 | `sync-join-password.yml` | loom | Sets the AD password of `svc-lnx-join` to `../secrets/ad-join.age`, only if they differ. |
 | `vyos.yml` | `vyos_edges` | thimble's config, from `templates/vyos/thimble.conf.j2`. |
@@ -134,7 +134,7 @@ ansible windows -m ansible.windows.win_ping -l <host>
 Run all commands from this directory.
 
 ```sh
-ansible-playbook windows.yml                  # all Windows hosts
+ansible-playbook windows.yml                  # all Windows hosts (spool gets neither role)
 ansible-playbook windows.yml -l shuttle       # one host
 ansible-playbook ad.yml -t audit              # report only, changes nothing
 ansible-playbook ad.yml -t host-groups        # login groups for every NixOS host
@@ -365,3 +365,15 @@ python3 -m unittest discover -s tests
 yamllint .
 ansible-lint
 ```
+
+## Restricted Admin
+
+`jump-host.yml` sets `DisableRestrictedAdmin = 0` on `tier0_servers`. Remote Credential Guard (`mstsc /remoteGuard`) needs this value on the target, and Windows has no narrower switch. The same value allows Restricted Admin RDP: a client can log on with an NT hash or a Kerberos key and no password.
+
+- `adm_mayonej` is in Protected Users, so its NTLM hash does not work.
+- Other accounts can still use a hash: the local `Administrator` on bobbin and shuttle until LAPS sets it, `svc-ansible` (not in Protected Users, `../ad/TIERING.md` decision 8), and any later Domain Admin.
+- Planned controls, not applied yet:
+  - a GPO on `Servers/Tier0` that denies network logon and Remote Desktop logon to local accounts (`S-1-5-114`)
+  - Remote Desktop logon on the Tier 0 servers only for `GG-T0-Eligible`
+  - `T0-Silo` in enforce mode (TIERING.md phase 3)
+

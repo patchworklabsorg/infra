@@ -206,7 +206,7 @@ remus cannot armor. So `adm_mayonej` must never type its password into remus for
 
 - A Windows Server 2025 VM on the Tier 0 Proxmox host, joined, in `T0-Silo`. It holds RSAT, GPMC, the AD module and the JIT client.
 - It is on the server VLAN. Its firewall and thimble allow RDP to it only from Jasper's VPN address.
-- Name: `spool`. It is free: no AD object, no DNS record in `patchwork.internal`, and no host in either infra repo uses it.
+- Name: `spool`. Built 2026-10-20: `terraform/proxmox/windows.tf`, offline domain join into `Servers/Tier0`, `ansible/jump-host.yml` for the consoles and the RDP shortcuts.
 
 #### What NLA is
 
@@ -443,7 +443,7 @@ flowchart LR
 
 - Enable `Microsoft-Windows-Authentication/AuthenticationPolicyFailures-DomainController` and `ProtectedUserFailures-DomainController` on both DCs.
 - Audit policy on the DCs: Kerberos Authentication Service and Kerberos Service Ticket Operations, success and failure. Credential Validation, success and failure. Today failures are not logged.
-- Build `spool`, the jump host. Join it. Do not add it to the silo yet.
+- Build `spool`, the jump host. Join it. Done 2026-10-20. `converge.ps1` also put `SPOOL$` in `T0-Silo`, which is still in audit mode, so the silo blocks nothing.
 - Check that `adm_mayonej` can log on to the jump host and run RSAT with Kerberos.
 - Rollback: disable the logs. No risk.
 

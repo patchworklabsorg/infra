@@ -32,6 +32,10 @@ ad_dcs:
 # hosts read it from secrets/ad-join.age (agenix).
 ad_join_account: svc-lnx-join
 
+# The Tier 0 servers that the jump host manages over RDP. jump-host.yml sets
+# DisableRestrictedAdmin = 0 only on these hosts, and refuses any other host.
+tier0_servers: [loom, spindle, bobbin, shuttle]
+
 # OU root: OU=Patchwork,DC=patchwork,DC=internal (ad/org.json).
 ad_computer_ou_client: "OU=Computers,OU=Patchwork,DC=patchwork,DC=internal"
 ad_computer_ou_server: "OU=Servers,OU=Patchwork,DC=patchwork,DC=internal"

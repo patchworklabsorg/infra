@@ -277,9 +277,9 @@ Check 'svc-weave-ldap created disabled in Service-Accounts, must change password
     $weave.DistinguishedName -eq "CN=svc-weave-ldap,OU=Service-Accounts,$new" -and
     (Get-FakeADState) -match "CN=svc-weave-ldap,[^|]*\|user\|False\|[^|]*\|[^|]*\|[^|]*pwdLastSet=0")
 Check 'svc-weave-ldap is reported until an admin enables it' ((Converge Build -WhatIf).Output -match 'REPORT\s+svc-weave-ldap is disabled')
-Check 'Weave on the three people OUs: reset, change, read; nothing else' (@($helpdeskOUs | Where-Object {
+Check 'Weave on the three people OUs: reset, change, unlock, read; nothing else' (@($helpdeskOUs | Where-Object {
             $a = @(AcesFor $_ 'svc-weave-ldap')
-            $a.Count -eq 3 -and @($a | Where-Object { $_.AccessControlType -eq 'Allow' -and "$($_.InheritedObjectType)" -eq $userGuid -and $_.PropagationFlags -eq 'InheritOnly' }).Count -eq 3 -and
+            $a.Count -eq 4 -and @($a | Where-Object { $_.AccessControlType -eq 'Allow' -and "$($_.InheritedObjectType)" -eq $userGuid -and $_.PropagationFlags -eq 'InheritOnly' }).Count -eq 4 -and
             @($a | Where-Object { "$($_.ObjectType)" -eq $resetGuid -and $_.ActiveDirectoryRights -eq 256 }).Count -eq 1 -and
             @($a | Where-Object { "$($_.ObjectType)" -eq $changePwGuid -and $_.ActiveDirectoryRights -eq 256 }).Count -eq 1 -and
             -not ($a | Where-Object { "$($_.ObjectType)" -eq $employeeIdGuid })
@@ -339,6 +339,29 @@ $r = Converge Build -DataFile $withIds
 Check 'weaveId: rerun has zero changes' ($r.Changes -eq 0 -and $r.Errors -eq 0)
 $r = Converge Build
 Check 'weaveId absent: employeeID not cleared' ($r.Changes -eq 0 -and (U 'adam.sidwa').employeeID -eq 'PWL1A2B3C4D5E')
+
+# A Weave member holds the sam of a new org.json entry. Build must not take
+# it over: no attributes, no groups (GG-Infra gives sudo on Tier 1).
+Add-FakeObject "CN=newstaff,OU=Members,OU=Users,$new" 'user' @{ Sam = 'newstaff' } | Out-Null
+$takeover = New-OrgJson { param($o)
+    $o.users += [pscustomobject]@{ sam = 'newstaff'; kind = 'person'; ou = 'Users/Staff'; givenName = 'New'; surname = 'Staff'
+        division = 'Programs'; department = 'Programs'; title = 'Volunteer'; manager = $null }
+    ($o.roleGroups | Where-Object { $_.name -eq 'GG-Infra' }).members += 'newstaff'
+}
+$r = Converge Build -DataFile $takeover
+Check 'a member with a new sam: reported, not changed, not added to groups' ($r.Errors -eq 0 -and
+    $r.Output -match 'REPORT\s+newstaff is CN=newstaff,OU=Members,OU=Users,[^\n]*another system owns' -and
+    $r.Output -match 'REPORT\s+newstaff is [^\n]*so it was not added to GG-Infra' -and
+    -not ((MembersOf 'GG-Infra') -contains 'newstaff') -and $null -eq (U 'newstaff').title -and
+    (U 'newstaff').DistinguishedName -eq "CN=newstaff,OU=Members,OU=Users,$new")
+# newstaff stays in Users/Members. Build ignores it from now on.
+
+# A member that became staff still has Weave as its owner: reported.
+(Find-Fake 'adam.sidwa').Owner = 'PATCHWORK\svc-weave-ldap'
+$r = Converge Build
+Check 'a managed account owned by svc-weave-ldap is reported' ($r.Errors -eq 0 -and $r.Changes -eq 0 -and
+    $r.Output -match 'REPORT\s+adam.sidwa is owned by PATCHWORK\\svc-weave-ldap')
+(Find-Fake 'adam.sidwa').Owner = $null
 
 # Drift: a changed PSO, an extra subject and an unknown PSO.
 Set-ADFineGrainedPasswordPolicy -Identity 'PSO-Staff' -MinPasswordLength 8

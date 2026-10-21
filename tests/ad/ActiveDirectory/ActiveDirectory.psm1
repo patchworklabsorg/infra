@@ -80,7 +80,7 @@ function Add-FakeObject([string]$DN, [string]$Class, [hashtable]$Extra = @{}) {
         Id = [guid]::NewGuid(); DN = $DN; Class = $Class; Sam = $null; Sid = $null; Enabled = $true
         Scope = $null; Protected = $false; Description = $null; Attrs = @{}
         Members = [System.Collections.Generic.List[guid]]::new(); Ttl = @{}
-        Acl = [System.Collections.Generic.List[object]]::new()
+        Acl = [System.Collections.Generic.List[object]]::new(); Owner = $null
     }
     foreach ($k in $Extra.Keys) { $o.$k = $Extra[$k] }
     if (-not $o.Sid -and $Class -in 'user', 'group', 'computer') { $o.Sid = "$script:domainSid-$($script:nextRid)"; $script:nextRid++ }
@@ -529,7 +529,8 @@ function Get-FakeAces([string]$DN) { @((Find-Fake $DN).Acl) }
 function Get-Acl { param([string]$Path)
     if ($Path -notmatch '^AD:\\(.+)$') { throw "Fake AD supports only AD:\<dn> paths: $Path" }
     $o = Find-Fake $Matches[1]
-    $sd = [pscustomobject]@{ Path = $Path; Rules = [System.Collections.Generic.List[object]]::new() }
+    $owner = if ($o.PSObject.Properties['Owner'] -and $o.Owner) { $o.Owner } else { 'PATCHWORK\Domain Admins' }
+    $sd = [pscustomobject]@{ Path = $Path; Owner = $owner; Rules = [System.Collections.Generic.List[object]]::new() }
     foreach ($a in $o.Acl) { $sd.Rules.Add($a) }
     $sd | Add-Member -MemberType ScriptMethod -Name GetAccessRules -Value {
         param($IncludeExplicit, $IncludeInherited, $TargetType)

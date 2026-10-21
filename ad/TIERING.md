@@ -151,7 +151,7 @@ A Proxmox administrator can read the disk of a DC VM and take `ntds.dit`. The Pr
 
 ### Weave and alastor: Tier 1 (sensitive)
 
-`svc-weave-ldap` can reset the password of each person in `Users/Staff`, `Users/Board-Only`, `Users/Sponsored-Projects` and `Users/Members` (see "Weave" in `README.md`). It controls Tier 2. So by the rule above, Weave is Tier 1, and so is everything that controls Weave:
+`svc-weave-ldap` can reset the password of, and unlock, each person in `Users/Staff`, `Users/Board-Only`, `Users/Sponsored-Projects` and `Users/Members` (see "Weave" in `README.md`). It controls Tier 2. So by the rule above, Weave is Tier 1, and so is everything that controls Weave:
 
 - alastor, the host that runs Weave today. Root on alastor can read `weave-ldap.age` after agenix decrypts it. alastor also terminates public traffic for many other services. A break-in through any of them is a break-in into Weave.
 - The Weave code and its deploy path: write access to `patchworklabsorg/weave`, its CI, and the `weave-deploy` SSH key.

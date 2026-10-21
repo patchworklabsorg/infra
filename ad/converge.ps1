@@ -225,8 +225,16 @@ function Test-DN([string]$DN) {
     [bool](Find-Object "distinguishedName -eq '$DN'")
 }
 
-$unmanagedOUs = @($data.ous | Where-Object { $_.PSObject.Properties['managed'] -and -not $_.managed } |
-        ForEach-Object { ConvertTo-OUDN $_.path })
+$unmanagedPaths = @($data.ous | Where-Object { $_.PSObject.Properties['managed'] -and -not $_.managed } |
+        ForEach-Object { $_.path })
+# The OUs another system owns, and the old-tree OUs that Migrate maps to them
+# (Patchwork-Objects/Members -> Users/Members).
+$unmanagedOUs = @($unmanagedPaths | ForEach-Object { ConvertTo-OUDN $_ }) + @($data.migration.ouMap |
+        Where-Object { $_.from -and $unmanagedPaths -contains $_.to } | ForEach-Object { ConvertTo-OUDN $_.from $oldRootDN })
+# The service accounts that own those OUs ("owner"). An account they created
+# has them as its owner, and an owner can change the ACL of the account.
+$unmanagedOwners = @($data.ous | Where-Object { $_.PSObject.Properties['managed'] -and -not $_.managed -and $_.PSObject.Properties['owner'] } |
+        ForEach-Object { $_.owner })
 
 function Test-InUnmanagedOU([string]$DN) {
     foreach ($ou in $unmanagedOUs) { if ($DN -like "*,$ou") { return $true } }
@@ -330,8 +338,13 @@ function Sync-Members([string]$Group, [string[]]$Desired) {
     foreach ($m in $Desired | Where-Object { $current -notcontains $_ }) {
         # Under -WhatIf a new user does not exist yet. In a real run a missing
         # member is a user that Sync-User skipped.
-        if (-not $WhatIfPreference -and -not (Find-User $m) -and -not (Find-Group $m)) {
+        $mu = Find-User $m
+        if (-not $WhatIfPreference -and -not $mu -and -not (Find-Group $m)) {
             Write-Report "$m does not exist, so it was not added to $Group. Read the reports for $m above."
+            continue
+        }
+        if ($mu -and (Test-InUnmanagedOU $mu.DistinguishedName)) {
+            Write-Report "$m is $($mu.DistinguishedName), in an OU that another system owns, so it was not added to $Group."
             continue
         }
         Invoke-Change $Group "Add member $m" { Add-ADGroupMember -Identity $g -Members $m @ad }
@@ -401,6 +414,15 @@ function Sync-User($u) {
         } else { $null }
     }
 
+    # An account in an OU that another system owns (a Weave member) is never
+    # taken over by a name match. Weave picks member names, so a member could
+    # otherwise get the name of a future entry and, with it, its groups.
+    if ($existing -and (Test-InUnmanagedOU $existing.DistinguishedName)) {
+        Write-Report "$($u.sam) is $($existing.DistinguishedName), in an OU that another system owns. Nothing changed for this user. Pick another sam, or move the account out by hand and set its owner to Domain Admins."
+        return
+    }
+    if ($existing) { Test-ForeignOwner $existing $u.sam }
+
     if (-not $existing) {
         if (-not $create) {
             Write-Report "$($u.sam) does not exist. org.json says not to create it."
@@ -457,6 +479,19 @@ function Sync-User($u) {
     }
 
     Sync-Placement $existing $target $u.sam
+}
+
+# Reports a managed account whose owner is the service account of an
+# unmanaged OU (a Weave member that became staff). The owner can change the
+# ACL of the account, so it can give itself any right on it.
+function Test-ForeignOwner($Obj, [string]$Label) {
+    if (-not $unmanagedOwners.Count) { return }
+    $owner = "$((Get-Acl -Path (Get-AclPath $Obj.DistinguishedName)).Owner)"
+    foreach ($o in $unmanagedOwners) {
+        if ($owner -eq $o -or $owner -like "*\$o") {
+            Write-Report "$Label is owned by $owner. The owner can change its ACL. Set the owner to Domain Admins: dsacls `"$($Obj.DistinguishedName)`" /takeownership, as a Domain Admin."
+        }
+    }
 }
 
 # True when $Child is an OU below $Parent, and $Parent is in the new tree.
@@ -1087,11 +1122,13 @@ $rightsTemplates = @{
         @{ label = 'read all'; rights = @('GenericRead'); objectType = 'none'; inheritance = 'Descendents'; inheritedObjectType = 'user' }
     )
     # Weave on the people that converge.ps1 manages: set a new password
-    # (reset) and change it, and read all. Weave writes no attribute here.
-    # converge.ps1 owns the attributes, employeeID too.
+    # (reset), change it, unlock (a reset does not unlock), and read all.
+    # Weave writes no other attribute here. converge.ps1 owns the
+    # attributes, employeeID too.
     'weave-password' = @(
         @{ label = 'reset password'; rights = @('ExtendedRight'); objectType = 'resetPassword'; inheritance = 'Descendents'; inheritedObjectType = 'user' }
         @{ label = 'change password'; rights = @('ExtendedRight'); objectType = 'changePassword'; inheritance = 'Descendents'; inheritedObjectType = 'user' }
+        @{ label = 'unlock (lockoutTime)'; rights = @('ReadProperty', 'WriteProperty'); objectType = 'lockoutTime'; inheritance = 'Descendents'; inheritedObjectType = 'user' }
         @{ label = 'read all'; rights = @('GenericRead'); objectType = 'none'; inheritance = 'Descendents'; inheritedObjectType = 'user' }
     )
     # Weave on Users/Members, which it owns: create user objects, set and

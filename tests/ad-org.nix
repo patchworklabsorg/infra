@@ -155,7 +155,8 @@ let
   # must name one of these.
   serviceSams = map (u: u.sam) (builtins.filter (u: u.kind == "service" && creates u) org.users);
   # OUs that another system owns ("managed": false, Users/Members).
-  unmanagedOUs = map (o: o.path) (builtins.filter (o: (o.managed or true) == false) org.ous);
+  unmanagedOUList = builtins.filter (o: (o.managed or true) == false) org.ous;
+  unmanagedOUs = map (o: o.path) unmanagedOUList;
   # Weave public ids: PWL, one digit, nine upper-case hex digits (the weave
   # repo, User.p_id_format). The prod forest takes prod ids only, not SPWL.
   weaveIdRe = "PWL[0-9][A-F0-9]{9}";
@@ -178,7 +179,14 @@ let
           "Disabled"
         ];
         # Who gets the grant: a domain local group, or one service account.
-        whoOf = g: g.group or g.principal;
+        whoOf = g: g.group or (g.principal or "<no group or principal>");
+        # The owner ("owner") of the unmanaged OU that ou is in, or null.
+        ownerAt =
+          ou:
+          let
+            o = lib.findFirst (x: atOrBelow ou x.path) null unmanagedOUList;
+          in
+          if o == null then null else (o.owner or null);
         # Every grantee must have the deny on these OUs, so a right on a
         # parent OU later cannot reach an admin, a service account or a
         # Tier 0 server.
@@ -195,20 +203,27 @@ let
         g:
         "delegation.grants: ${g.group} is not a resource group. AGDLP: only domain local groups get rights."
       ) (builtins.filter (g: g ? group && !lib.elem g.group resourceNames) grants)
-      ++ map (g: "delegation.grants: ${g.principal} is not a service account that converge.ps1 creates") (
-        builtins.filter (g: g ? principal && !lib.elem g.principal serviceSams) grants
-      )
       ++
         map
           (
             g:
-            "delegation.grants: ${g.rights} on ${toString g.ous}: an OU that another system owns gets rights only for that system's service account (principal)"
+            "delegation.grants: ${g.group} on ${toString g.ous}: the grant is on or above an OU that another system owns (${toString unmanagedOUs}). Only that system's service account gets rights there."
           )
           (
             builtins.filter (
-              g: g ? group && lib.any (ou: lib.any (n: atOrBelow ou n) unmanagedOUs) g.ous
+              g: g ? group && lib.any (ou: lib.any (n: atOrBelow ou n || atOrBelow n ou) unmanagedOUs) g.ous
             ) grants
           )
+      ++ map (o: "ous: ${o.path} has \"managed\": false, so it needs \"owner\", a service account") (
+        builtins.filter (o: !(o ? owner) || !lib.elem o.owner serviceSams) unmanagedOUList
+      )
+      ++ lib.concatMap (
+        g:
+        map (
+          ou:
+          "delegation.grants: ${g.principal} on ${ou}: only the owner of that OU (${toString (ownerAt ou)}) gets rights there"
+        ) (builtins.filter (ou: ownerAt ou != null && ownerAt ou != g.principal) g.ous)
+      ) (builtins.filter (g: g ? principal) grants)
       ++ map (g: "delegation.grants: ${whoOf g}: unknown rights template ${g.rights}") (
         builtins.filter (g: !lib.elem g.rights rightsTemplates) grants
       )

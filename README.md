@@ -69,7 +69,7 @@ Every host joins the `patchwork.internal` AD forest (`modules/ad-join`), with th
 - Members of `lnx-<host>-admins` get sudo with their AD password.
 - The local accounts in `modules/common` are the break-glass way in.
 
-Staff reach the lab over the thimble VPN (AD login through NPS on shuttle) or over Tailscale.
+Staff reach the lab over the thimble VPN (WireGuard, one key per device) or over Tailscale. AD login for the VPN is planned (IKEv2 with NPS on shuttle).
 
 Before a host is installed:
 

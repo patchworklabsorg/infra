@@ -2,6 +2,6 @@
 # VyOS edges (thimble) over SSH with network_cli.
 ansible_connection: ansible.netcommon.network_cli
 ansible_network_os: vyos.vyos.vyos
-# A local VyOS user with your SSH key, so a run does not depend on RADIUS and
-# shuttle. Pass --ask-pass for a password login.
+# The local VyOS user with your SSH key. thimble has no RADIUS. Pass
+# --ask-pass for a password login.
 ansible_user: vyos

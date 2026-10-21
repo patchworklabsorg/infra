@@ -335,7 +335,7 @@ The play decrypts the file on your machine with `~/.ssh/id_ed25519` (set `-e age
 
 ## thimble
 
-thimble's config is in `templates/vyos/thimble.conf.j2` as VyOS `set` commands. The secret values (WireGuard keys, RADIUS secrets, password hashes) are not in that file. They are in the vault as `vault_vyos_thimble`, and the template refers to them by name.
+thimble's config is in `templates/vyos/thimble.conf.j2` as VyOS `set` commands. The secret values (WireGuard keys, password hashes) are not in that file. They are in the vault as `vault_vyos_thimble`, and the template refers to them by name.
 
 ```mermaid
 flowchart LR
@@ -347,10 +347,18 @@ flowchart LR
   apply -- "vyos_config" --> router
 ```
 
-1. Confirm thimble's management address in `inventory/hosts.yml`. Today it is the RADIUS source address, which may not be the right one.
+1. thimble's management address is 10.100.92.20 (`eth0`, its only interface).
 2. `ansible-playbook vyos.yml -t pull`. Read the template diff. Look for a value that should be secret but is not, and add its option name to `SECRET_WORDS` in `filter_plugins/vyos_secrets.py`.
 3. Commit the template here, and `vault.yml` in `vault/`.
 4. To change the router, edit the template, then run `ansible-playbook vyos.yml --check --diff` and `ansible-playbook vyos.yml`.
+
+What the first pull showed (2026-10-20):
+
+- One interface, `eth0` on VLAN 92 (10.100.92.20/24). The default route goes to the UniFi gateway, 10.100.92.1.
+- WireGuard `wg0` on UDP 51822: 10.100.79.0/24 and `fd00:100:79::/64`, one peer per device.
+- Source NAT (`masquerade`) on `eth0` for 10.100.79.0/24 and `fd00:100:79::/64`. The servers see every VPN client as 10.100.92.20.
+- No RADIUS. The VPN and the SSH login do not use AD. The SSH login is the local `vyos` user with a key.
+- No VyOS firewall. Only the UniFi port forward limits what reaches thimble. The UniFi config is not in this repo. Check it in the UniFi console.
 
 `vyos_config` only adds lines that the router does not have. To remove a setting, add a `delete ...` line, apply, then remove both lines from the template.
 

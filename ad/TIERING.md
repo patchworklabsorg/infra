@@ -133,7 +133,7 @@ bobbin is an enterprise CA. A CA that the forest trusts for smart card logon can
 shuttle is in Tier 0.
 
 - `svc-ansible`, a Domain Admin, logs on to shuttle over WinRM. Any host where a Tier 0 credential logs on is a Tier 0 host.
-- shuttle checks every staff VPN login. An attacker on shuttle can let any device into the lab network and can collect MS-CHAPv2 responses of every VPN user.
+- shuttle will check every staff VPN login when the planned IKEv2 VPN goes live. Then an attacker on shuttle can let any device into the lab network and can collect MS-CHAPv2 responses of every VPN user. Today thimble uses WireGuard keys only and does not ask shuttle (`ansible/README.md`, "thimble").
 - A separate Tier 1 management identity for one server costs more than this org can maintain.
 
 The other choice is Tier 1 with a separate Tier 1 Ansible account. That removes Domain Admin logons from shuttle. It is a good change if more Windows member servers come later.
@@ -231,7 +231,7 @@ sequenceDiagram
   participant K as KDC (loom/spindle)
   participant S as DC / bobbin / shuttle
   R->>T: WireGuard tunnel (daily identity)
-  R->>J: RDP, NLA off, firewall allows only Jasper's VPN address
+  R->>J: RDP, NLA off, firewall allows only the VPN
   J->>K: AS-REQ for adm_mayonej, armored with the jump host's ticket
   K-->>J: TGT, 240 min, non-renewable (device is in T0-Silo)
   J->>S: PowerShell remoting / RSAT with Kerberos
@@ -259,10 +259,10 @@ A Linux control node can armor with its machine keytab (MIT `kinit -T`). Test in
 
 Compensating controls for step 5a:
 
-- The WinRM firewall rule allows only Jasper's VPN address (`Enable-AnsibleWinRM.ps1 -RemoteAddress`). Today the scope is the control node subnet. Make it one address.
+- The WinRM firewall rule allows only Jasper's VPN address (`Enable-AnsibleWinRM.ps1 -RemoteAddress`). Today the scope is the control node subnet. Make it one address. This needs the thimble NAT removed first: with NAT, every VPN client arrives as 10.100.92.20.
 - A GPO denies `svc-ansible` local logon, RDP logon, batch and service logon on every host.
 - Keep AES only and "not delegatable" (`-t svc-posture`, already live).
-- Alert on any logon of `svc-ansible` (4624, 4776) from an address other than the VPN address. Alert on any group change that it makes outside an Ansible run.
+- Alert on any logon of `svc-ansible` (4624, 4776) from an address other than the VPN address (one address per person only after the NAT is removed). Alert on any group change that it makes outside an Ansible run.
 - Rotate the password on a schedule and after any remus incident.
 
 ## 3. PAM and just-in-time admin

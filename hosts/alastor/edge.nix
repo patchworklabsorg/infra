@@ -14,11 +14,14 @@ let
   # <router name> = { backend = "<host>"; hosts = [ "<fqdn>" ... ]; };
   # Krater on weft gets its route with that change.
   routes = {
-    quilt = {
+    # Not `quilt`/`quilt-staging`: those were the router names of the old
+    # Traefik fragment on alastor (quilt.toml), and the same name in two
+    # files of the file provider collides.
+    quilt-batting = {
       backend = "batting";
       hosts = [ "quilt.patchworklabs.org" ];
     };
-    quilt-staging = {
+    quilt-staging-batting = {
       backend = "batting";
       hosts = [ "quilt-staging.patchworklabs.org" ];
     };

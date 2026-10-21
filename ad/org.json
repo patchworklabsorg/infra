@@ -92,7 +92,7 @@
       "members": [] }
   ],
 
-  "linuxHosts": ["hem", "seam", "skein", "warp"],
+  "linuxHosts": ["batting", "hem", "seam", "skein", "warp", "weft"],
   "retiredHosts": ["sampler", "swatch"],
   "hostGroups": [
     { "name": "lnx-{host}-users", "description": "Linux logon on {host}", "members": ["infra"] },

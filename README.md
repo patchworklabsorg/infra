@@ -36,10 +36,12 @@ The lab hosts below are NixOS VMs on pve01, VLAN 90 (`patchwork.internal`). alas
 
 | Host | VMID | Address | Memory | Runs |
 |---|---|---|---|---|
-| `warp` | 356 | 10.100.90.56 | 6 GB | Weave prod + staging, future apps. nginx on `tailscale0:80` for alastor. |
+| `warp` | 356 | 10.100.90.56 | 6 GB | Misc: redirects and other low-risk shared things. nginx on `tailscale0:80` for alastor. |
 | `skein` | 355 | 10.100.90.55 | 4 GB | `patchwork_central`, prod. LAN + tailnet. |
 | `seam` | 357 | 10.100.90.57 | 2 GB | `patchwork_central_restricted`, prod. Tailnet only. |
 | `hem` | 358 | 10.100.90.58 | 2 GB | Both staging clusters: central on 5432, restricted on 5433. Quilt staging uses the restricted one. |
+| `batting` | 360 | 10.100.90.60 | 2 GB | Quilt prod + staging (after the move from alastor). nginx on `tailscale0:80` for alastor. |
+| `weft` | 361 | 10.100.90.61 | 2 GB | Krater prod + staging. nginx on `tailscale0:80` for alastor. |
 
 The Windows hosts are managed by Ansible (`ansible/`):
 
@@ -50,15 +52,18 @@ The Windows hosts are managed by Ansible (`ansible/`):
 | `bobbin` | 312 | 10.100.90.12 | Issuing CA |
 | `shuttle` | 314 | 10.100.90.14 | NPS / RADIUS |
 
-VMIDs 356-358 and their addresses are proposed. Confirm that they are free before you create the VMs. pve01 had 121 of 125.8 GiB committed on 2026-08-25, so free about 14 GiB first.
+VMIDs 358, 360 and 361 and their addresses are proposed. Confirm that they are free before you create the VMs. pve01 had 121 of 125.8 GiB committed on 2026-08-25, so free about 14 GiB first.
 
 ```mermaid
 flowchart LR
-  internet((Internet)) --> alastor["alastor (Traefik, TLS)"]
-  alastor -- "tailnet, HTTP :80" --> warp
-  warp -- "LAN :5432" --> skein["skein: patchwork_central"]
-  warp -- "tailnet :5432" --> seam["seam: patchwork_central_restricted"]
-  warp -. staging .-> hem["hem: :5432 / :5433"]
+  internet((Internet)) --> alastor["alastor (Traefik, TLS, Weave)"]
+  alastor -- "tailnet, HTTP :80" --> warp["warp: misc"]
+  alastor -- "tailnet, HTTP :80" --> batting["batting: Quilt"]
+  alastor -- "tailnet, HTTP :80" --> weft["weft: Krater"]
+  weft -- ":5432" --> skein["skein: patchwork_central"]
+  batting -- "tailnet :5432" --> seam["seam: patchwork_central_restricted"]
+  batting -. "staging :5433" .-> hem["hem: :5432 / :5433"]
+  weft -. "staging :5432" .-> hem
 ```
 
 ## Login

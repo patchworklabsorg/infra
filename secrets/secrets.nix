@@ -14,7 +14,8 @@ let
   skein = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIMyAEZuxPllSL4clx7Si8tvMfdSLv+v4/z19nz75oHtl";
   seam = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIIpDr8Ilx3Nh4VOgDK4y54OTbt/ax2bExU+fv+aWSAB6";
   warp = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIJoRstg6i9nq60YNVyKvlhsURUHnNGPXcR5eV6P6hmXH";
-  # hem, batting, weft: add each key after its install, then add the host to the
+  hem = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIHFHZ/2Q8x+Z9toPli2yQZpQ4e8dBMOqDAFyAFaxgsIE";
+  # batting, weft: add each key after its install, then add the host to the
   # files it needs and run `agenix -r`.
   #
   # Central DB passwords, one file per app and environment, password only:
@@ -122,10 +123,22 @@ in
   # restricted-staging container (hosts/hem/configuration.nix). alastor does
   # not get this file: the same password is in quilt-staging-env.age, so a
   # rotation must change both files.
-  # Add hem here and run `agenix -r` BEFORE the first hem deploy. The file
-  # exists now, so hem's config already asks for it, and the decrypt fails
-  # while hem is not a recipient.
-  "restricted-staging-quilt.age".publicKeys = [ jsp ];
+  "restricted-staging-quilt.age".publicKeys = [
+    jsp
+    hem
+  ];
+
+  # App role passwords in patchwork_central on hem:5432 (the central staging
+  # cluster). Password only. hem decrypts them into the central-staging
+  # container. Add the host that runs the app when the app connects.
+  "central-staging-weave.age".publicKeys = [
+    jsp
+    hem
+  ];
+  "central-staging-selvage.age".publicKeys = [
+    jsp
+    hem
+  ];
 
   # svc-lnx-join password only (modules/ad-join, ansible/sync-join-password.yml).
   # Add each lab host key after its install, then `agenix -r`.
@@ -134,5 +147,6 @@ in
     skein
     seam
     warp
+    hem
   ];
 }

@@ -108,8 +108,11 @@ in
   # Quilt's role password in patchwork_central_restricted on hem:5433 (the
   # restricted staging cluster). Password only. hem decrypts it into the
   # restricted-staging container (hosts/hem/configuration.nix). alastor does
-  # not get this file: the same password is in quilt-staging-env.age.
-  # TODO: add hem after its install, then `agenix -r`.
+  # not get this file: the same password is in quilt-staging-env.age, so a
+  # rotation must change both files.
+  # Add hem here and run `agenix -r` BEFORE the first hem deploy. The file
+  # exists now, so hem's config already asks for it, and the decrypt fails
+  # while hem is not a recipient.
   "restricted-staging-quilt.age".publicKeys = [ jsp ];
 
   # svc-lnx-join password only (modules/ad-join, ansible/sync-join-password.yml).

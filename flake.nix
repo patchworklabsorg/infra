@@ -73,6 +73,9 @@
         # Quilt on alastor: instance settings, Traefik route and agenix
         # secrets. Needs alastor's Tailscale to reach seam.
         quilt-alastor = ./hosts/alastor/quilt.nix;
+        # alastor's Traefik route to the redirect server on warp
+        # (hosts/warp/redirects.nix). Independent of edge-alastor.
+        redirects-alastor = ./hosts/alastor/redirects.nix;
       };
 
       nixosConfigurations = nixpkgs.lib.genAttrs hosts mkHost;

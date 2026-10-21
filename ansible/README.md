@@ -355,7 +355,7 @@ What the first pull showed (2026-10-20):
 - WireGuard `wg0` on UDP 51822: 10.100.79.0/24 and `fd00:100:79::/64`, one peer per device.
 - Source NAT (`masquerade`) on `eth0` for 10.100.79.0/24 and `fd00:100:79::/64`. The servers see every VPN client as 10.100.92.20.
 - No RADIUS. The VPN and the SSH login do not use AD. The SSH login is the local `vyos` user with a key.
-- No VyOS firewall. Only the UniFi port forward limits what reaches thimble.
+- No VyOS firewall. Only the UniFi port forward limits what reaches thimble. The UniFi config is not in this repo. Check it in the UniFi console.
 
 `vyos_config` only adds lines that the router does not have. To remove a setting, add a `delete ...` line, apply, then remove both lines from the template.
 

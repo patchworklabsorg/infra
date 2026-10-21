@@ -41,7 +41,7 @@
       "division": "Programs", "department": "Project Ganymede", "title": "Project Ganymede Administrator", "manager": "mayonej" },
     { "sam": "klukask", "upn": "kieran", "kind": "person", "weaveId": "PWL0667B785FD", "ou": "Users/Board-Only", "givenName": "Kieran", "surname": "Klukas",
       "division": "Operations", "department": "Governance", "title": "Treasurer & Secretary", "manager": null },
-    { "sam": "petrarcad", "upn": "dominic", "kind": "person", "weaveId": "PWL908148D41E", "ou": "Users/Board-Only", "givenName": "Dominic", "surname": "Petrarca",
+    { "sam": "petrarcad", "upn": "dominic", "kind": "person", "ou": "Users/Board-Only", "givenName": "Dominic", "surname": "Petrarca",
       "division": "Operations", "department": "Governance", "title": "Director", "manager": null },
     { "sam": "cj", "kind": "person", "ou": "Users/Sponsored-Projects/HackBoston",
       "division": "Sponsored Projects", "department": "HackBoston", "title": "Organizer", "manager": null },

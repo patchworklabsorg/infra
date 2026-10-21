@@ -1,5 +1,4 @@
-# hem — both staging clusters (pve01 VMID 358, 10.100.90.58, 2 GB; VMID and
-# address to be confirmed free before create)
+# hem — both staging clusters (pve01 VMID 358, 10.100.90.58, 2 GB)
 #
 # patchwork_central on 5432 and patchwork_central_restricted on 5433, each in
 # its own NixOS container, so they are two clusters with separate data

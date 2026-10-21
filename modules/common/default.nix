@@ -147,7 +147,7 @@ in
       # MagicDNS would take /etc/resolv.conf, and the tailnet has no global
       # nameservers, so lab names would stop resolving. DNS comes from
       # lanNameservers. Same setting as saker and the mrm hosts.
-      extraSetFlags = [ "--accept-dns=false" ];
+      extraSetFlags = [ "--accept-dns=false", "--ssh" ];
     };
 
     nix.settings = {

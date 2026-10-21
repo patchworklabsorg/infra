@@ -9,7 +9,7 @@
 # Tailnet tags: tag:patchwork (ssh from admins, port 80 from alastor) and
 # tag:patchwork-quilt. The policy in jaspermayone/infra lets tag:patchwork-quilt
 # reach seam:5432 (prod) and hem:5433 (staging) only.
-{ ... }:
+{ config, ... }:
 {
   imports = [
     ../proxmox-vm.nix
@@ -23,14 +23,23 @@
 
   virtualisation.docker.enable = true;
 
+  # 4 GB and four Rails processes: zram gives room for a deploy or an image
+  # pull without the OOM killer.
+  zramSwap.enable = true;
+
   services.nginx = {
     enable = true;
-    recommendedProxySettings = true;
-    # Only alastor reaches this, over the tailnet. It already set
-    # X-Forwarded-For and X-Forwarded-Proto; keep them.
+    # Only alastor reaches this, over the tailnet. alastor terminated TLS and
+    # set X-Forwarded-For and X-Forwarded-Proto (https); pass them on as they
+    # are. recommendedProxySettings would set X-Forwarded-Proto to http.
     commonHttpConfig = ''
       set_real_ip_from 100.64.0.0/10;
       real_ip_header X-Forwarded-For;
+      proxy_set_header Host $host;
+      proxy_set_header X-Real-IP $remote_addr;
+      proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+      proxy_set_header X-Forwarded-Proto $http_x_forwarded_proto;
+      proxy_set_header X-Forwarded-Host $host;
     '';
     virtualHosts = {
       quilt = {
@@ -41,7 +50,7 @@
             port = 80;
           }
         ];
-        locations."/".proxyPass = "http://127.0.0.1:3005";
+        locations."/".proxyPass = "http://127.0.0.1:${toString config.patchwork.services.quilt.port}";
       };
       quilt-staging = {
         serverName = "quilt-staging.patchworklabs.org";
@@ -51,7 +60,8 @@
             port = 80;
           }
         ];
-        locations."/".proxyPass = "http://127.0.0.1:3006";
+        locations."/".proxyPass =
+          "http://127.0.0.1:${toString config.patchwork.services.quilt.staging.port}";
       };
     };
   };

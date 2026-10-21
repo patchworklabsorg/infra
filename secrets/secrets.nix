@@ -73,6 +73,9 @@ in
   "quilt-env.age".publicKeys = [
     jsp
     batting
+    # Until the cutover is done, so alastor can still run its old units.
+    # Remove alastor afterwards and run `agenix -r`.
+    alastor
   ];
 
   # Quilt staging (quilt-staging.patchworklabs.org on batting, RAILS_ENV=staging)
@@ -90,6 +93,9 @@ in
   "quilt-staging-env.age".publicKeys = [
     jsp
     batting
+    # Until the cutover is done, so alastor can still run its old units.
+    # Remove alastor afterwards and run `agenix -r`.
+    alastor
   ];
 
   # GitHub classic PAT with read:packages only, for ghcr.io/patchworklabsorg/quilt
@@ -97,6 +103,9 @@ in
   "quilt-ghcr-token.age".publicKeys = [
     jsp
     batting
+    # Until the cutover is done, so alastor can still run its old units.
+    # Remove alastor afterwards and run `agenix -r`.
+    alastor
   ];
 
   # App role passwords in patchwork_central (skein). Password only. Add the

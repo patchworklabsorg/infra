@@ -235,7 +235,7 @@ Do the steps in this order.
 3. Prepare AD for hem. Run `cd ansible && ansible-playbook ad.yml -t host-groups`. Add the A record for hem in AD DNS. See "Login".
 4. Create the VM: `cd terraform/proxmox && tofu apply -target='proxmox_virtual_environment_vm.nixos["hem"]'`. Read the address with `tofu output ipv4_addresses`.
 5. Install hem: `nixos-anywhere --flake .#hem --build-on remote --target-host root@<ip>`.
-6. Join hem to the tailnet. Make sure that the tailnet policy lets alastor reach `hem:5433`.
+6. Join hem to the tailnet. Make sure that the tailnet policy lets batting (`tag:patchwork-quilt`) reach `hem:5433`.
 7. Get the host key: `ssh-keyscan -t ed25519 10.100.90.58`. Add it as `hem` in `secrets/secrets.nix`. Add `hem` to `restricted-staging-quilt.age` and `ad-join.age`. Remove the TODO.
 8. Create the secrets: `nix develop -c bin/new-quilt-staging-secrets`. The script writes `restricted-staging-quilt.age` and `quilt-staging-env.age` with a random password and `SECRET_KEY_BASE`. It leaves the Weave client and the Mercury tokens empty.
 9. In Weave staging (`https://weave-staging.patchworklabs.org`), register Quilt as a confidential app:
@@ -246,10 +246,10 @@ Do the steps in this order.
 11. Add the values: `cd secrets && agenix -e quilt-staging-env.age`. Set `WEAVE_CLIENT_ID`, `WEAVE_CLIENT_SECRET` and `MERCURY_API_TOKEN`. Keep `QUILT_TOPUPS=off`.
 12. Re-key: `cd secrets && agenix -r`. Commit the `.age` files and merge.
 13. Deploy hem: `deploy .#hem`. In the container, make sure that `central-db-setup` succeeded and does not log "no password file for quilt": `sudo nixos-container run restricted-staging -- journalctl -u central-db-setup`.
-14. From alastor, test the connection: `psql "<RESTRICTED_DATABASE_URL>" -c 'SHOW search_path'`. The result must be `quilt`.
+14. From batting, test the connection: `psql "<RESTRICTED_DATABASE_URL>" -c 'SHOW search_path'`. The result must be `quilt`.
 15. Merge the DNS record `quilt-staging` (A `129.213.163.213`, proxied): patchworklabsorg/dns#11.
-16. In `jaspermayone/infra`, run `nix flake update patchwork-infra` and deploy alastor.
-17. On alastor, check `systemctl status quilt-staging-web quilt-staging-worker` and `curl -i http://127.0.0.1:3006/up`. Then sign in at `https://quilt-staging.patchworklabs.org`.
+16. Deploy batting (`deploy .#batting`). alastor routes `quilt-staging` to batting (`edge-alastor`).
+17. On batting, check `systemctl status quilt-staging-web quilt-staging-worker` and `curl -i http://127.0.0.1:3006/up`. Then sign in at `https://quilt-staging.patchworklabs.org`.
 
 To test top-ups on staging, add a sandbox `MERCURY_WRITE_TOKEN` with batting's public IP on its allowlist, and set `QUILT_TOPUPS` to `approval_only`.
 

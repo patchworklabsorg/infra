@@ -134,7 +134,8 @@ bobbin is an enterprise CA. A CA that the forest trusts for smart card logon can
 shuttle is in Tier 0.
 
 - `svc-ansible`, a Domain Admin, logs on to shuttle over WinRM. Any host where a Tier 0 credential logs on is a Tier 0 host.
-- shuttle will check every staff VPN login when the planned IKEv2 VPN goes live. Then an attacker on shuttle can let any device into the lab network and can collect MS-CHAPv2 responses of every VPN user. Today thimble uses WireGuard keys only and does not ask shuttle (`ansible/README.md`, "thimble").
+- shuttle checks every staff IKEv2 VPN login when the VPN is live (stage 4 in `ansible/README.md`, "VPN"). The NPS policy "Patchwork IKEv2 VPN" allows members of `vpn-users` (domain local, `Groups/Resources`). Then an attacker on shuttle can let any device into the lab network and can collect MS-CHAPv2 responses of every VPN user. Until stage 4, thimble uses WireGuard keys only and does not ask shuttle.
+- Accounts in Protected Users (for example `adm_mayonej`) cannot log in to the VPN: Protected Users blocks NTLM, and MS-CHAPv2 needs it. People connect with their daily account. Do not add an admin account to `vpn-users` (`nix flake check` refuses it).
 - A separate Tier 1 management identity for one server costs more than this org can maintain.
 
 The other choice is Tier 1 with a separate Tier 1 Ansible account. That removes Domain Admin logons from shuttle. It is a good change if more Windows member servers come later.

@@ -7,8 +7,9 @@ Each `set` line whose value is a secret (a private key, a pre-shared key, a
 RADIUS or other shared secret, a password or password hash) becomes
     set <path> '{{ vyos_secrets["<name>"] | replace(...) }}'
 and the value goes in `secrets`, which vyos.yml -t pull writes to the vault.
-Every other line is copied, with any "{{", "{%" or "{#" escaped so that Jinja
-renders it unchanged. The template then renders back to the same commands.
+Lines that VyOS derives itself (DERIVED) are left out. Every other line is
+copied, with any "{{", "{%" or "{#" escaped so that Jinja renders it
+unchanged. The template then renders back to the same commands.
 
 No Ansible import, so tests/test_vyos_secrets.py runs with plain Python.
 """
@@ -33,6 +34,12 @@ SECRET_WORDS = {
     "psk",
 }
 
+# Lines that pull leaves out. VyOS writes them itself, so they are not
+# configuration: pki adds "pki ca AUTOCHAIN_<cert>" with the issuer of each
+# ACME certificate (vpn-le), and replaces it when Let's Encrypt changes the
+# intermediate. A copy in the template would set the old issuer back.
+DERIVED = re.compile(r"^set pki ca AUTOCHAIN_\S+ ")
+
 LINE = re.compile(r"^set (?P<path>.+?) (?P<word>[\w-]+) (?P<value>'(?:[^']|'\\'')*'|\S+)$")
 JINJA_OPEN = re.compile(r"\{([{%#])")
 
@@ -55,6 +62,8 @@ def vyos_split_secrets(text):
     lines, found = [], {}
     for raw in text.splitlines():
         line = raw.rstrip()
+        if DERIVED.match(line):
+            continue
         m = LINE.match(line)
         # "public-key" and the like do not match: the word must be exact.
         if m and m.group("word") in SECRET_WORDS:

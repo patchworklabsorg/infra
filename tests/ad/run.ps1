@@ -242,6 +242,8 @@ Check 'role groups tier1-admins and tier2-helpdesk exist, Global, empty' (
 Check 'access groups are DomainLocal in Resources and hold the role groups (AGDLP)' ((G 'password-reset').GroupScope -eq 'DomainLocal' -and
     (G 'server-computer-admin').DistinguishedName -eq "CN=server-computer-admin,OU=Resources,OU=Groups,$new" -and
     ((MembersOf 'password-reset' | Sort-Object) -join ',') -eq 'tier1-admins,tier2-helpdesk' -and ((MembersOf 'server-computer-admin') -join ',') -eq 'tier1-admins')
+Check 'vpn-users is DomainLocal in Resources and holds mayonej' ((G 'vpn-users').GroupScope -eq 'DomainLocal' -and
+    (G 'vpn-users').DistinguishedName -eq "CN=vpn-users,OU=Resources,OU=Groups,$new" -and ((MembersOf 'vpn-users') -join ',') -eq 'mayonej')
 $helpdeskOUs = "OU=Staff,OU=Users,$new", "OU=Board-Only,OU=Users,$new", "OU=Sponsored-Projects,OU=Users,$new"
 Check 'helpdesk: reset, unlock, pwdLastSet, read on user objects in the three people OUs' (@($helpdeskOUs | Where-Object {
             $a = @(AcesFor $_ 'password-reset')

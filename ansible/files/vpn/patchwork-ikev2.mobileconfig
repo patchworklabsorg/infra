@@ -1,0 +1,123 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Patchwork VPN: IKEv2 to thimble (vpn.patchworklabs.org), AD login.
+  ansible/README.md, "VPN", tells how to install and test it.
+
+  - No secrets. The device asks for the user name and the password.
+    Use the daily account (jasper@patchworklabs.org), not an admin account.
+  - The two PayloadUUID values were made once with `uuidgen`. They are not
+    secret. Keep them: a profile with the same PayloadIdentifier and UUID
+    replaces the old one. Make new UUIDs only for a different profile.
+  - The algorithms match the PW-IKE and PW-ESP groups on thimble (proposal 1:
+    AES-256, SHA2-256, DH group 14). Change both sides together.
+  - Split tunnel: thimble sends only 10.100.90.0/24, 10.100.91.0/24 and
+    10.100.92.0/24 as traffic selectors. OverridePrimary 0 keeps other
+    traffic off the VPN.
+-->
+<plist version="1.0">
+<dict>
+  <key>PayloadType</key>
+  <string>Configuration</string>
+  <key>PayloadVersion</key>
+  <integer>1</integer>
+  <key>PayloadIdentifier</key>
+  <string>org.patchworklabs.vpn</string>
+  <key>PayloadUUID</key>
+  <string>13492AD6-536A-4A9D-8918-56AB17638878</string>
+  <key>PayloadDisplayName</key>
+  <string>Patchwork VPN</string>
+  <key>PayloadDescription</key>
+  <string>IKEv2 VPN to the Patchwork lab. Log in with your Patchwork account.</string>
+  <key>PayloadOrganization</key>
+  <string>Patchwork Labs</string>
+  <key>PayloadContent</key>
+  <array>
+    <dict>
+      <key>PayloadType</key>
+      <string>com.apple.vpn.managed</string>
+      <key>PayloadVersion</key>
+      <integer>1</integer>
+      <key>PayloadIdentifier</key>
+      <string>org.patchworklabs.vpn.ikev2</string>
+      <key>PayloadUUID</key>
+      <string>064264C5-B000-4901-93C7-025E31BE80C0</string>
+      <key>PayloadDisplayName</key>
+      <string>Patchwork VPN (IKEv2)</string>
+      <key>UserDefinedName</key>
+      <string>Patchwork VPN</string>
+      <key>VPNType</key>
+      <string>IKEv2</string>
+      <key>IKEv2</key>
+      <dict>
+        <key>RemoteAddress</key>
+        <string>vpn.patchworklabs.org</string>
+        <key>RemoteIdentifier</key>
+        <string>vpn.patchworklabs.org</string>
+        <!-- EAP only: the server uses its certificate, the user uses EAP-MSCHAPv2. -->
+        <key>AuthenticationMethod</key>
+        <string>None</string>
+        <key>ExtendedAuthEnabled</key>
+        <integer>1</integer>
+        <key>DeadPeerDetectionRate</key>
+        <string>Medium</string>
+        <key>EnablePFS</key>
+        <integer>1</integer>
+        <key>DisableMOBIKE</key>
+        <integer>0</integer>
+        <key>DisableRedirect</key>
+        <integer>0</integer>
+        <key>EnableCertificateRevocationCheck</key>
+        <integer>0</integer>
+        <key>UseConfigurationAttributeInternalIPSubnet</key>
+        <integer>0</integer>
+        <key>IKESecurityAssociationParameters</key>
+        <dict>
+          <key>EncryptionAlgorithm</key>
+          <string>AES-256</string>
+          <key>IntegrityAlgorithm</key>
+          <string>SHA2-256</string>
+          <key>DiffieHellmanGroup</key>
+          <integer>14</integer>
+          <key>LifeTimeInMinutes</key>
+          <integer>480</integer>
+        </dict>
+        <key>ChildSecurityAssociationParameters</key>
+        <dict>
+          <key>EncryptionAlgorithm</key>
+          <string>AES-256</string>
+          <key>IntegrityAlgorithm</key>
+          <string>SHA2-256</string>
+          <key>DiffieHellmanGroup</key>
+          <integer>14</integer>
+          <key>LifeTimeInMinutes</key>
+          <integer>60</integer>
+        </dict>
+      </dict>
+      <key>IPv4</key>
+      <dict>
+        <key>OverridePrimary</key>
+        <integer>0</integer>
+      </dict>
+      <key>DNS</key>
+      <dict>
+        <key>DNSProtocol</key>
+        <string>Cleartext</string>
+        <key>ServerAddresses</key>
+        <array>
+          <string>10.100.90.10</string>
+          <string>10.100.90.11</string>
+        </array>
+        <key>SearchDomains</key>
+        <array>
+          <string>patchwork.internal</string>
+        </array>
+        <key>SupplementalMatchDomains</key>
+        <array>
+          <string>patchwork.internal</string>
+        </array>
+      </dict>
+    </dict>
+  </array>
+</dict>
+</plist>

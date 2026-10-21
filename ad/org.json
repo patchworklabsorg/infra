@@ -102,7 +102,10 @@
     { "name": "password-reset", "formerNames": ["DL-Users-PasswordReset"], "description": "Reset password, unlock, change at next logon: Users/Staff, Board-Only, Sponsored-Projects",
       "members": ["tier2-helpdesk", "tier1-admins"] },
     { "name": "server-computer-admin", "formerNames": ["DL-Servers-ComputerAdmin"], "description": "Full control of computer objects: Servers and Computers, not Servers/Tier0 or Domain Controllers",
-      "members": ["tier1-admins"] }
+      "members": ["tier1-admins"] },
+    { "name": "vpn-users", "description": "Log in to the IKEv2 VPN on thimble. The NPS policy on shuttle checks this group.",
+      "allowUserMembers": true,
+      "members": ["mayonej"] }
   ],
 
   "passwordPolicy": {

@@ -50,6 +50,7 @@ These jobs are done by hand and are not in Ansible: AD CS setup and the offline 
 | `files/tiering/` | PowerShell that the Tier 0 tags install on the DCs: `PatchworkAlert` (alert events, optional mail), `PatchworkT0` (JEA module and role capability), `Invoke-BreakGlassAlert.ps1`. |
 | `templates/vyos/` | VyOS configs as `set` commands, with the secrets replaced by vault references. |
 | `filter_plugins/vyos_secrets.py` | Splits the secrets out of a VyOS config. Tested by `tests/`. |
+| `files/vpn/` | IKEv2 client profiles for the thimble VPN: `patchwork-ikev2.mobileconfig` (Apple) and `Add-PatchworkVpn.ps1` (Windows). No secrets. |
 
 ### Tailscale tags
 
@@ -372,6 +373,121 @@ What the first pull showed (2026-10-20):
 - No VyOS firewall. Only the UniFi port forward limits what reaches thimble. The UniFi config is not in this repo. Check it in the UniFi console.
 
 `vyos_config` only adds lines that the router does not have. To remove a setting, add a `delete ...` line, apply, then remove both lines from the template.
+
+The list above is the router before the IKEv2 VPN. The template now also has the VPN, the firewall and the ACME certificate, behind `vyos_ikev2_stage` in `inventory/host_vars/thimble.yml`. At stage 0 (the default) the template gives the same commands as the first pull. See "VPN".
+
+`vyos.yml -t pull` leaves out the `pki ca AUTOCHAIN_*` lines. VyOS adds them itself with the issuer of each ACME certificate, and replaces them at renewal. A copy in the template would set an old issuer back.
+
+## VPN
+
+thimble gets a second VPN: IKEv2 with AD login. People log in with their daily account and password. NPS on shuttle checks the password and the `vpn-users` group. WireGuard stays until every person uses IKEv2.
+
+```mermaid
+sequenceDiagram
+  participant C as Client (Apple or Windows)
+  participant U as UniFi 69.54.28.49
+  participant T as thimble 10.100.92.20
+  participant N as shuttle NPS 10.100.90.14
+  participant D as loom / spindle
+  C->>U: IKE, UDP 500 and 4500 to vpn.patchworklabs.org
+  U->>T: port forward
+  T->>C: certificate vpn-le (Let's Encrypt), IKE_AUTH
+  C->>T: EAP-MSCHAPv2 (user name, password)
+  T->>N: RADIUS, NAS-Identifier thimble-ikev2
+  N->>D: check the password and vpn-users
+  N->>T: Access-Accept
+  T->>C: address from ra-v4 (10.100.93.0/24), DNS 10.100.90.10 and .11
+  C->>T: traffic to 10.100.90.0/24, 10.100.91.0/24, 10.100.92.0/24 only
+  T->>D: source NAT to 10.100.92.20 (phase 1)
+```
+
+| Item | Value |
+|---|---|
+| Public name | `vpn.patchworklabs.org`, 69.54.28.49. UniFi forwards UDP 500, UDP 4500 and TCP 80 to 10.100.92.20. |
+| Connection | `pw-ikev2`: server `x509` with `vpn-le`, client `eap-radius`, local ID `vpn.patchworklabs.org`, `unique replace` |
+| Pool | `ra-v4`, 10.100.93.0/24, DNS 10.100.90.10 and 10.100.90.11. IPv4 only. |
+| Split tunnel | Traffic selectors 10.100.90.0/24, 10.100.91.0/24, 10.100.92.0/24. Not 10.100.0.0/16: it includes other tenants. |
+| IKE (`PW-IKE`) | IKEv2. aes256-sha256-modp2048, aes128gcm128-prfsha256-modp2048. Lifetime 28800 s. DPD `clear`, 30 s. |
+| ESP (`PW-ESP`) | aes256-sha256, aes128gcm128. PFS group 14. Lifetime 3600 s. |
+| RADIUS | 10.100.90.14 port 1812, NAS-Identifier `thimble-ikev2`. The key is `vpn_ipsec_remote_access_radius_server_10_100_90_14_key` in `vault_vyos_thimble`. |
+| Certificate | `pki certificate vpn-le acme`, HTTP-01 on 10.100.92.20 TCP 80, RSA 2048, `security@patchworklabs.org` |
+| AD group | `vpn-users` (domain local, `Groups/Resources`). Members: `mayonej`. |
+| Clients | `files/vpn/patchwork-ikev2.mobileconfig`, `files/vpn/Add-PatchworkVpn.ps1` |
+
+Why PFS group 14 on ESP: Windows and Apple can both do PFS on a CHILD_SA rekey, and strongSwan 6 needs the same key exchange on both sides of a rekey. The Windows script sets `-PfsGroup PFS2048` (group 14) and the Apple profile sets `EnablePFS` and group 14. The first CHILD_SA comes with IKE_AUTH and has no key exchange. iOS and macOS can still put a DH group in that proposal. strongSwan 6.0.2 and later accepts this. Check the version on thimble (`sudo swanctl --version`) before stage 4. If it is 6.0.0 or 6.0.1, Apple clients can fail with `NO_PROPOSAL_CHOSEN`.
+
+### The stages
+
+`vyos_ikev2_stage` in `inventory/host_vars/thimble.yml` turns on the parts of `templates/vyos/thimble.conf.j2` in order. Each stage keeps the stages before it.
+
+| Stage | Adds |
+|---|---|
+| 0 | Nothing. The router as the first pull showed it. |
+| 1 | Firewall groups `PW-NETS` and `SSH-SOURCES`. Input and forward rules. Both default actions stay `accept`. Input rule 999 accepts and logs what stage 5 will drop. |
+| 2 | ACME certificate `vpn-le` from the Let's Encrypt staging CA |
+| 3 | The same certificate from the Let's Encrypt production CA |
+| 4 | IKE and ESP groups, pool `ra-v4`, RADIUS, connection `pw-ikev2`, source NAT rule 110 |
+| 5 | Input default action `drop`, rule 999 deleted. Do this by hand with `commit-confirm` first. |
+
+The firewall is new on thimble. A wrong rule can lock out SSH or stop WireGuard. Thus the rules come first with `default-action accept` (they change nothing), and `drop` comes last, after the log shows that nothing needed is dropped. The forward rules affect only 10.100.93.0/24: the pool reaches `PW-NETS` through IPsec, and everything else from the pool is dropped. WireGuard forwarding does not change.
+
+The input rules accept: replies, loopback, ICMP, SSH (TCP 22) from 10.100.79.0/24, 10.100.93.0/24 and 10.100.90.0/24, WireGuard (UDP 51822), IKE and NAT-T (UDP 500, 4500), ESP, and TCP 80 to 10.100.92.20 for ACME. There is no IPv6 firewall yet.
+
+Do not run `vyos.yml -t pull` during the rollout. Pull writes the router config over the template, and the stages that are not applied are lost. After stage 5, pull is safe again.
+
+`--diff` shows the commands that it sends, and stage 4 sends the RADIUS key line. Do not paste that output anywhere.
+
+### Steps
+
+Do the steps in this order. Each step has its rollback.
+
+1. **RADIUS key in the vault.** Make a key of letters and numbers only: `openssl rand -hex 32`. Keep it in your clipboard only. Run `ansible-vault edit vault/vault.yml` and add `"vpn_ipsec_remote_access_radius_server_10_100_90_14_key": "<key>"` to the `vault_vyos_thimble` mapping. Commit `vault.yml` in `vault/`, then the submodule pointer here. `bin/vault-set` cannot do this: it replaces the whole mapping.
+   Rollback: remove the entry.
+2. **AD group.** On a DC as `adm_mayonej`: `.\converge.ps1 -WhatIf`, then `.\converge.ps1`. The log shows "Create DomainLocal group" for `vpn-users` and "Add member mayonej". The NPS policy in step 3 needs the group, so this step comes first.
+   Rollback: set `members` to `[]` and run Build. That removes every person from the VPN. Build does not delete groups. Delete `vpn-users` by hand if you need to.
+3. **NPS on shuttle.** As `adm_mayonej` over the jump host.
+   1. Export the NPS config: `netsh nps export filename="C:\ProgramData\Patchwork\nps\nps-before-ikev2.xml" exportPSK=YES`. The file holds the RADIUS secrets in clear text. Keep it on shuttle, readable by administrators only, and delete it when the VPN works.
+   2. Add a RADIUS client: name `thimble`, address 10.100.92.20, shared secret = the key from step 1. PowerShell: `New-NpsRadiusClient -Name thimble -Address 10.100.92.20 -SharedSecret (Read-Host)`.
+   3. Add a network policy "Patchwork IKEv2 VPN", above the default policies. Conditions: Windows Groups = `PATCHWORK\vpn-users`, Client IPv4 Address = 10.100.92.20, NAS Identifier = `thimble-ikev2`. Access: granted. Authentication methods: only EAP type "Microsoft: Secured password (EAP-MSCHAP v2)". Clear all "less secure" methods (MS-CHAP-v2, MS-CHAP, CHAP, PAP).
+   4. Make sure that the NPS server is registered in AD (member of "RAS and IAS Servers"). Otherwise NPS cannot read the dial-in properties.
+   5. Export again: `netsh nps export filename="C:\ProgramData\Patchwork\nps\nps-after-ikev2.xml" exportPSK=YES`. The same rules apply to this file.
+   Rollback: `netsh nps import filename="C:\ProgramData\Patchwork\nps\nps-before-ikev2.xml"`, or delete the client and the policy.
+4. **UniFi.** Forward UDP 500, UDP 4500 and TCP 80 from 69.54.28.49 to 10.100.92.20. Keep UDP 51822 for WireGuard. TCP 80 must stay open: certbot renews `vpn-le` on it every 60 days or so.
+   Rollback: remove the three forwards.
+5. **Stage 1, firewall in accept mode.** Open the Proxmox console of thimble, logged in, before each apply. Set `vyos_ikev2_stage: 1`. Run `ansible-playbook vyos.yml --check --diff`, read the commands, then `ansible-playbook vyos.yml`. Test SSH from WireGuard and from spool, and a WireGuard client. Watch `show firewall ipv4 input filter` for some days: rule 999 counts what stage 5 will drop. Read the log lines of rule 999.
+   Rollback: on the console, `configure`, `delete firewall`, `commit`, `save`, and set the stage back to 0. thimble had no firewall before.
+6. **Stages 2 and 3, the certificate.** Set stage 2 and apply (check first). certbot gets a staging certificate. `show pki certificate` shows it, and `show configuration commands | match AUTOCHAIN` shows `pki ca AUTOCHAIN_vpn-le`. If the request fails, the commit fails and nothing changes: check DNS for `vpn.patchworklabs.org`, the TCP 80 forward and firewall rule 80. Then set stage 3 and apply. The certificate now comes from the production CA (issuer R10 to R14, not "(STAGING)"). The staging step protects the production rate limits.
+   Rollback: `delete pki certificate vpn-le`, `delete pki ca AUTOCHAIN_vpn-le`, `commit`, `save`, and set the stage back to 1.
+7. **Stage 4, IKEv2.** Needs steps 1 to 4 and stage 3. Check `sudo swanctl --version` (see "Why PFS"). Check that `AUTOCHAIN_vpn-le` exists. Set stage 4, run `--check --diff`, then apply. On thimble: `show vpn ike sa`, `show vpn ipsec sa` and the IPsec log. Hold a console open.
+   Rollback: `delete vpn ipsec`, `delete nat source rule 110`, `commit`, `save`, and set the stage back to 3.
+8. **Client tests.** Test from mobile data, not from the office network, so that the test uses the public name and the UniFi forwards.
+   - Apple: open `files/vpn/patchwork-ikev2.mobileconfig` and install it (Settings > General > VPN & Device Management on iOS, System Settings > Privacy & Security > Profiles on macOS). Enter the daily account (`jasper@patchworklabs.org`) and the password.
+   - Windows: `powershell -ExecutionPolicy Bypass -File .\Add-PatchworkVpn.ps1`, then connect in Settings.
+   - Test: `ping 10.100.90.10`, `nslookup loom.patchwork.internal 10.100.90.10`, SSH to a lab host. A public site must not go through the VPN (the public address stays the mobile one). On Windows, `route print` must not show 10.0.0.0/8 on the VPN.
+   - Test the refusals: a wrong password, a person not in `vpn-users`, and `adm_mayonej` (Protected Users). Each must fail. NPS logs event 6273 (refused) and 6272 (granted) in the Security log on shuttle.
+9. **Stage 5, input default drop.** On the console, with an SSH session open from WireGuard:
+
+   ```
+   configure
+   set firewall ipv4 input filter default-action drop
+   delete firewall ipv4 input filter rule 999
+   commit-confirm 10
+   ```
+
+   Open a new SSH session from WireGuard and from spool. Connect a WireGuard client and an IKEv2 client. If all works, type `confirm`, then `save`. If you do not confirm in 10 minutes, VyOS reboots with the saved config. The action is `reboot` unless `system config-management commit-confirm action` says other. Do not `save` before `confirm`. Then set `vyos_ikev2_stage: 5` and run `--check --diff`: it must show no changes.
+   Rollback: `set firewall ipv4 input filter default-action accept`, `commit`, `save`, stage 4.
+10. **Later (phase 2, not in this change).**
+    1. Add UniFi static routes: 10.100.79.0/24 and 10.100.93.0/24 via 10.100.92.20.
+    2. Remove the source NAT: `delete nat source rule 100`, `delete nat source rule 110` (and `nat66` rule 100). Servers then see each client address.
+    3. Add firewall rules per person on spool and the servers (`../ad/TIERING.md`).
+    4. Retire WireGuard when every person uses IKEv2: delete `wg0`, NAT 100, `nat66` 100, input rule 50, the UniFi forward for UDP 51822, and 10.100.79.0/24 in `SSH-SOURCES`.
+
+### Open points
+
+- The ESP proposals and the remote-access template come from vyos-1x. Check them on thimble with `sudo swanctl --list-conns` after stage 4.
+- `always-send-cert` is in vyos-1x since November 2025 (T8027), for Apple clients. It is not certain on this build. Check with `set vpn ipsec remote-access connection pw-ikev2 authentication ?`. If it is there, remove the `{# #}` around its line in the template and apply.
+- On this build, pki imports the issuer of an ACME certificate as `pki ca AUTOCHAIN_<name>`, and IPsec needs a `ca-certificate`. vyos-1x changed this in August 2026 (T9135): it reads the chain from disk and adds no `AUTOCHAIN_` node. After a VyOS upgrade, check that `AUTOCHAIN_vpn-le` still exists before you commit.
+- After the first renewal (about 60 days), check that clients get the new certificate. If not, run `restart vpn` on thimble.
 
 ## Checks
 

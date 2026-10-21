@@ -46,3 +46,139 @@ set system name-server '10.100.90.11'
 set system option reboot-on-upgrade-failure '5'
 set system syslog local facility all level 'info'
 set system syslog local facility local7 level 'debug'
+{# ===================================================================== #}
+{# IKEv2 remote-access VPN with AD login (NPS on shuttle).              #}
+{# vyos_ikev2_stage (inventory/host_vars/thimble.yml) turns the parts on #}
+{# in order. README.md, "VPN", has the steps and the rollback.           #}
+{#   0  nothing (the router before this change)                          #}
+{#   1  firewall: groups, rules, default-action accept, log rule 999     #}
+{#   2  ACME certificate vpn-le from the Let's Encrypt STAGING CA        #}
+{#   3  the same certificate from the Let's Encrypt production CA        #}
+{#   4  IKEv2: IKE/ESP groups, pool ra-v4, RADIUS, pw-ikev2, NAT 110     #}
+{#   5  input default-action drop (do it by hand with commit-confirm)    #}
+{# Do not run `vyos.yml -t pull` before stage 5: pull writes the router  #}
+{# config over this file and the stages that are not applied are lost.   #}
+{# ===================================================================== #}
+{% set ikev2_stage = vyos_ikev2_stage | default(0) | int %}
+{% if ikev2_stage >= 1 %}
+set firewall group network-group PW-NETS description 'Patchwork networks that VPN clients can reach'
+set firewall group network-group PW-NETS network '10.100.90.0/24'
+set firewall group network-group PW-NETS network '10.100.91.0/24'
+set firewall group network-group PW-NETS network '10.100.92.0/24'
+set firewall group network-group SSH-SOURCES description 'Networks that can open SSH to thimble'
+set firewall group network-group SSH-SOURCES network '10.100.79.0/24'
+set firewall group network-group SSH-SOURCES network '10.100.90.0/24'
+set firewall group network-group SSH-SOURCES network '10.100.93.0/24'
+set firewall ipv4 forward filter default-action 'accept'
+set firewall ipv4 forward filter rule 10 action 'accept'
+set firewall ipv4 forward filter rule 10 description 'Replies'
+set firewall ipv4 forward filter rule 10 state 'established'
+set firewall ipv4 forward filter rule 10 state 'related'
+set firewall ipv4 forward filter rule 20 action 'accept'
+set firewall ipv4 forward filter rule 20 description 'IKEv2 pool to the Patchwork networks'
+set firewall ipv4 forward filter rule 20 destination group network-group 'PW-NETS'
+set firewall ipv4 forward filter rule 20 ipsec match-ipsec-in
+set firewall ipv4 forward filter rule 20 source address '10.100.93.0/24'
+set firewall ipv4 forward filter rule 30 action 'drop'
+set firewall ipv4 forward filter rule 30 description 'IKEv2 pool to all other networks'
+set firewall ipv4 forward filter rule 30 source address '10.100.93.0/24'
+set firewall ipv4 input filter default-action '{{ "drop" if ikev2_stage >= 5 else "accept" }}'
+set firewall ipv4 input filter rule 10 action 'accept'
+set firewall ipv4 input filter rule 10 description 'Replies'
+set firewall ipv4 input filter rule 10 state 'established'
+set firewall ipv4 input filter rule 10 state 'related'
+set firewall ipv4 input filter rule 20 action 'accept'
+set firewall ipv4 input filter rule 20 description 'Loopback'
+set firewall ipv4 input filter rule 20 inbound-interface name 'lo'
+set firewall ipv4 input filter rule 30 action 'accept'
+set firewall ipv4 input filter rule 30 description 'ICMP'
+set firewall ipv4 input filter rule 30 protocol 'icmp'
+set firewall ipv4 input filter rule 40 action 'accept'
+set firewall ipv4 input filter rule 40 description 'SSH from the VPN pools and the server VLAN'
+set firewall ipv4 input filter rule 40 destination port '22'
+set firewall ipv4 input filter rule 40 protocol 'tcp'
+set firewall ipv4 input filter rule 40 source group network-group 'SSH-SOURCES'
+set firewall ipv4 input filter rule 50 action 'accept'
+set firewall ipv4 input filter rule 50 description 'WireGuard'
+set firewall ipv4 input filter rule 50 destination port '51822'
+set firewall ipv4 input filter rule 50 protocol 'udp'
+set firewall ipv4 input filter rule 60 action 'accept'
+set firewall ipv4 input filter rule 60 description 'IKE and NAT-T'
+set firewall ipv4 input filter rule 60 destination port '500,4500'
+set firewall ipv4 input filter rule 60 protocol 'udp'
+set firewall ipv4 input filter rule 70 action 'accept'
+set firewall ipv4 input filter rule 70 description 'ESP'
+set firewall ipv4 input filter rule 70 protocol 'esp'
+set firewall ipv4 input filter rule 80 action 'accept'
+set firewall ipv4 input filter rule 80 description 'ACME HTTP-01 for vpn-le'
+set firewall ipv4 input filter rule 80 destination address '10.100.92.20'
+set firewall ipv4 input filter rule 80 destination port '80'
+set firewall ipv4 input filter rule 80 protocol 'tcp'
+{% if ikev2_stage < 5 %}
+set firewall ipv4 input filter rule 999 action 'accept'
+set firewall ipv4 input filter rule 999 description 'Stage 5 drops this traffic. Read the log first.'
+set firewall ipv4 input filter rule 999 log
+{% else %}
+delete firewall ipv4 input filter rule 999
+{% endif %}
+{% endif %}
+{% if ikev2_stage >= 2 %}
+set pki certificate vpn-le acme domain-name 'vpn.patchworklabs.org'
+set pki certificate vpn-le acme email 'security@patchworklabs.org'
+set pki certificate vpn-le acme listen-address '10.100.92.20'
+set pki certificate vpn-le acme rsa-key-size '2048'
+{% if ikev2_stage == 2 %}
+set pki certificate vpn-le acme url 'https://acme-staging-v02.api.letsencrypt.org/directory'
+{% else %}
+set pki certificate vpn-le acme url 'https://acme-v02.api.letsencrypt.org/directory'
+{% endif %}
+{% endif %}
+{% if ikev2_stage >= 4 %}
+set nat source rule 110 description 'ikev2-clients-pw split-tunnel'
+set nat source rule 110 outbound-interface name 'eth0'
+set nat source rule 110 source address '10.100.93.0/24'
+set nat source rule 110 translation address 'masquerade'
+set vpn ipsec esp-group PW-ESP lifetime '3600'
+set vpn ipsec esp-group PW-ESP pfs 'dh-group14'
+set vpn ipsec esp-group PW-ESP proposal 1 encryption 'aes256'
+set vpn ipsec esp-group PW-ESP proposal 1 hash 'sha256'
+set vpn ipsec esp-group PW-ESP proposal 2 encryption 'aes128gcm128'
+set vpn ipsec esp-group PW-ESP proposal 2 hash 'sha256'
+set vpn ipsec ike-group PW-IKE dead-peer-detection action 'clear'
+set vpn ipsec ike-group PW-IKE dead-peer-detection interval '30'
+set vpn ipsec ike-group PW-IKE key-exchange 'ikev2'
+set vpn ipsec ike-group PW-IKE lifetime '28800'
+set vpn ipsec ike-group PW-IKE proposal 1 dh-group '14'
+set vpn ipsec ike-group PW-IKE proposal 1 encryption 'aes256'
+set vpn ipsec ike-group PW-IKE proposal 1 hash 'sha256'
+set vpn ipsec ike-group PW-IKE proposal 2 dh-group '14'
+set vpn ipsec ike-group PW-IKE proposal 2 encryption 'aes128gcm128'
+set vpn ipsec ike-group PW-IKE proposal 2 hash 'sha256'
+set vpn ipsec ike-group PW-IKE proposal 2 prf 'prfsha256'
+set vpn ipsec remote-access connection pw-ikev2 authentication client-mode 'eap-radius'
+set vpn ipsec remote-access connection pw-ikev2 authentication local-id 'vpn.patchworklabs.org'
+set vpn ipsec remote-access connection pw-ikev2 authentication server-mode 'x509'
+{# The chain CA that pki imports after the first ACME request (stage 2).  #}
+{# Check that it exists before stage 4: show pki ca                       #}
+set vpn ipsec remote-access connection pw-ikev2 authentication x509 ca-certificate 'AUTOCHAIN_vpn-le'
+set vpn ipsec remote-access connection pw-ikev2 authentication x509 certificate 'vpn-le'
+{# Apple clients can need "send_cert = always". Uncomment only when       #}
+{# `set vpn ipsec remote-access connection pw-ikev2 authentication ?`     #}
+{# on thimble lists always-send-cert.                                     #}
+{# set vpn ipsec remote-access connection pw-ikev2 authentication always-send-cert #}
+set vpn ipsec remote-access connection pw-ikev2 description 'Staff IKEv2, AD login through NPS on shuttle'
+set vpn ipsec remote-access connection pw-ikev2 esp-group 'PW-ESP'
+set vpn ipsec remote-access connection pw-ikev2 ike-group 'PW-IKE'
+set vpn ipsec remote-access connection pw-ikev2 local prefix '10.100.90.0/24'
+set vpn ipsec remote-access connection pw-ikev2 local prefix '10.100.91.0/24'
+set vpn ipsec remote-access connection pw-ikev2 local prefix '10.100.92.0/24'
+set vpn ipsec remote-access connection pw-ikev2 local-address '10.100.92.20'
+set vpn ipsec remote-access connection pw-ikev2 pool 'ra-v4'
+set vpn ipsec remote-access connection pw-ikev2 unique 'replace'
+set vpn ipsec remote-access pool ra-v4 name-server '10.100.90.10'
+set vpn ipsec remote-access pool ra-v4 name-server '10.100.90.11'
+set vpn ipsec remote-access pool ra-v4 prefix '10.100.93.0/24'
+set vpn ipsec remote-access radius nas-identifier 'thimble-ikev2'
+set vpn ipsec remote-access radius server 10.100.90.14 key '{{ vyos_secrets["vpn_ipsec_remote_access_radius_server_10_100_90_14_key"] | replace("'", "'\\''") }}'
+set vpn ipsec remote-access radius server 10.100.90.14 port '1812'
+{% endif %}

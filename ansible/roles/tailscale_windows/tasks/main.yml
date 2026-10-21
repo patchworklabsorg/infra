@@ -92,16 +92,18 @@
 - name: Fail when the node needs a login and no auth key is set
   ansible.builtin.fail:
     msg: |
-      {{ inventory_hostname }} is not logged in to the tailnet (NeedsLogin),
+      {{ inventory_hostname }} is not logged in to the tailnet ({{ (tailscale_status.stdout | from_json).BackendState }}),
       and tailscale_auth_key is empty, so this run cannot log it in.
 
       Give the key with the exact variable name, and check that it is set:
 
         read -s TSKEY; [ -n "$TSKEY" ] && echo set
-        ansible-playbook windows.yml -l {{ inventory_hostname }} -e tailscale_auth_key=$TSKEY
+        ansible-playbook windows.yml -l {{ inventory_hostname }} -e "tailscale_auth_key=$TSKEY"
+
+      To keep a host off the tailnet, set tailscale_enabled: false for it.
   when:
     - tailscale_auth_key | length == 0
-    - (tailscale_status.stdout | from_json).BackendState == 'NeedsLogin'
+    - (tailscale_status.stdout | from_json).BackendState in ['NeedsLogin', 'NoState']
 
 # --unattended keeps the tunnel up with no user logged in (server mode).
 # --accept-dns=false: these boxes ARE the DNS / rely on AD DNS.

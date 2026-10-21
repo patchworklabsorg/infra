@@ -1212,7 +1212,7 @@
 
     # ---------------------------------------------------------- jit-endpoint
     # TIERING.md section 3. The PatchworkT0 JEA endpoint on each DC. Only
-    # GG-T0-Eligible can connect, and it can run Request-T0Admin and
+    # tier0-eligible can connect, and it can run Request-T0Admin and
     # Get-T0AdminGrant only. This tag does NOT enable the AD Privileged
     # Access Management feature, which cannot be undone. It fails while the
     # feature is off. Enable it by hand, once, after approval:

@@ -68,6 +68,13 @@
     Build writes it to employeeID. A person without one is reported. A
     weaveId that another account already holds is reported and not set.
 
+    A group with "formerNames" is renamed, never made again: Build finds it
+    by its name, else by a former name, and changes its sAMAccountName, its
+    CN and (when it holds a former name) its displayName. The SID stays, so
+    members, ACEs, PSO links and other references stay. When the name and a
+    former name both exist, Build reports it and does not touch that group
+    or anything that names it.
+
     It never touches the contents of an OU marked "managed": false
     (Users/Members, which Weave owns) or the members of a group marked
     "manageMembers": false.
@@ -217,8 +224,106 @@ function Get-WantedUpn($u) {
     $null
 }
 
+# The group with this exact sAMAccountName, or $null.
+function Find-GroupExact([string]$Name) {
+    Get-ADGroup -Filter "SamAccountName -eq '$Name'" @ad -Properties Description, DisplayName, ProtectedFromAccidentalDeletion
+}
+
+# --- Group renames -------------------------------------------------------------
+# A managed group can list "formerNames". Build finds the group by its name
+# first, then by a former name, and renames the group it found. A rename
+# keeps the object, so the SID, the members, the ACEs, the PSO links and the
+# silo references stay. Under -WhatIf the group keeps its old name, so every
+# lookup below also follows the former names.
+#
+# When a group exists under its name AND under a former name (or under two
+# former names), the script cannot know which object is right. It reports
+# the conflict and does not touch that group, its members, or any group,
+# PSO or ACE that names it.
+
+# name -> former names, for every managed group that has them.
+$script:formerNames = @{}
+foreach ($fg in @($data.roleGroups) + @($data.resourceGroups)) {
+    if ($fg.PSObject.Properties['formerNames'] -and @($fg.formerNames).Count) {
+        $script:formerNames[$fg.name] = @($fg.formerNames)
+    }
+}
+# ObjectGUID -> managed name, for groups found under a former name.
+$script:renamedGuids = @{}
+# Managed names with a rename conflict.
+$script:groupConflicts = @()
+
+# The group for a managed name: by the name, else by a former name. $null
+# for a name with a conflict, so nothing is done to either object.
 function Find-Group([string]$Name) {
-    Get-ADGroup -Filter "SamAccountName -eq '$Name'" @ad -Properties Description, ProtectedFromAccidentalDeletion
+    if ($script:groupConflicts -contains $Name) { return $null }
+    $g = Find-GroupExact $Name
+    if ($g -or -not $script:formerNames.ContainsKey($Name)) { return $g }
+    foreach ($old in $script:formerNames[$Name]) {
+        $g = Find-GroupExact $old
+        if ($g) { return $g }
+    }
+    $null
+}
+
+# The name org.json uses for an AD principal: the managed name of a group
+# that still has a former name (under -WhatIf), else its sAMAccountName.
+function Get-ManagedName($Principal) {
+    $guid = "$(Get-Prop $Principal 'ObjectGUID')"
+    if ($guid -and $script:renamedGuids.ContainsKey($guid)) { return $script:renamedGuids[$guid] }
+    $Principal.SamAccountName
+}
+
+# True when one of the names has a rename conflict.
+function Test-GroupConflict([string[]]$Names) {
+    [bool]@($Names | Where-Object { $script:groupConflicts -contains $_ }).Count
+}
+
+# Finds the conflicts and the pending renames. Build calls this first, before
+# any other lookup.
+function Initialize-GroupNames {
+    foreach ($name in @($script:formerNames.Keys | Sort-Object)) {
+        $found = @()
+        $current = Find-GroupExact $name
+        if ($current) { $found += $current }
+        foreach ($old in $script:formerNames[$name]) {
+            $g = Find-GroupExact $old
+            if ($g -and -not ($found | Where-Object { "$($_.ObjectGUID)" -eq "$($g.ObjectGUID)" })) { $found += $g }
+        }
+        if ($found.Count -gt 1) {
+            $script:groupConflicts += $name
+            $list = ($found | ForEach-Object { "$($_.SamAccountName) ($($_.DistinguishedName))" }) -join ', '
+            Write-Report "Group $name exists more than once: $list. Nothing was renamed or changed for $name, or for the groups, PSOs and ACEs that name it. Delete or rename the wrong object by hand, then run Build again."
+        } elseif ($found.Count -eq 1 -and $found[0].SamAccountName -ne $name) {
+            $script:renamedGuids["$($found[0].ObjectGUID)"] = $name
+        }
+    }
+}
+
+# Renames a group that org.json lists under another name: sAMAccountName,
+# then the CN (Rename-ADObject), then displayName when it holds a former
+# name. Each part is its own change, so a run that stops half way is
+# finished by the next run.
+function Sync-GroupName($G, [string]$Name) {
+    $former = @(if ($script:formerNames.ContainsKey($Name)) { $script:formerNames[$Name] })
+    if (-not $former.Count) { return }
+    if ($G.SamAccountName -ne $Name) {
+        Invoke-Change $G.DistinguishedName "Rename group $($G.SamAccountName) to $Name (sAMAccountName)" {
+            Set-ADGroup -Identity $G -SamAccountName $Name @ad
+        }
+    }
+    $cn = "$(Get-Prop $G 'Name')"
+    if ($cn -cne $Name -and $former -contains $cn) {
+        Invoke-Change $G.DistinguishedName "Rename group CN $cn to $Name" {
+            Rename-ADObject -Identity $G -NewName $Name @ad
+        }
+    }
+    $disp = "$(Get-Prop $G 'DisplayName')"
+    if ($disp -and $former -contains $disp) {
+        Invoke-Change $G.DistinguishedName "Set displayName '$Name' (was $disp)" {
+            Set-ADGroup -Identity $G -DisplayName $Name @ad
+        }
+    }
 }
 
 function Test-DN([string]$DN) {
@@ -303,8 +408,11 @@ function Sync-OU([string]$DN, [string]$Description) {
 }
 
 function Sync-Group([string]$Name, [string]$Description, [string]$Scope, [string]$OUPath) {
+    # Initialize-GroupNames reported it.
+    if (Test-GroupConflict $Name) { return }
     $g = Find-Group $Name
     $target = ConvertTo-OUDN $OUPath
+    if ($g) { Sync-GroupName $g $Name }
     if (-not $g) {
         Invoke-Change "CN=$Name,$target" "Create $Scope group" {
             New-ADGroup -Name $Name -SamAccountName $Name -GroupCategory Security -GroupScope $Scope `
@@ -327,6 +435,11 @@ function Sync-Group([string]$Name, [string]$Description, [string]$Scope, [string
 
 # Makes the direct members of a group exactly $Desired (sAMAccountNames).
 function Sync-Members([string]$Group, [string[]]$Desired) {
+    # A member with a rename conflict could be swapped for the wrong object.
+    if (Test-GroupConflict (@($Group) + $Desired)) {
+        Write-Report "Members of $Group were not changed: $Group or one of its members has a rename conflict (see above)."
+        return
+    }
     $g = Find-Group $Group
     if (-not $g) {
         if ($Desired.Count) {
@@ -334,7 +447,7 @@ function Sync-Members([string]$Group, [string[]]$Desired) {
         }
         return
     }
-    $current = @(Get-ADGroupMember -Identity $g @ad | ForEach-Object { $_.SamAccountName })
+    $current = @(Get-ADGroupMember -Identity $g @ad | ForEach-Object { Get-ManagedName $_ })
     foreach ($m in $Desired | Where-Object { $current -notcontains $_ }) {
         # Under -WhatIf a new user does not exist yet. In a real run a missing
         # member is a user that Sync-User skipped.
@@ -568,7 +681,9 @@ function Sync-Privileged([string[]]$PathsAtStart) {
     $p = $data.privileged
     $tier0 = Find-Group $p.tier0Group
     $da = Get-ADGroup -Identity "Domain Admins" @ad
-    if ($tier0) {
+    if (Test-GroupConflict $p.tier0Group) {
+        Write-Report "$($p.tier0Group) was not checked in Domain Admins: it has a rename conflict (see above)."
+    } elseif ($tier0) {
         $daMembers = @(Get-ADGroupMember -Identity $da @ad | ForEach-Object { $_.SamAccountName })
         if ($daMembers -notcontains $tier0.SamAccountName) {
             Invoke-Change 'Domain Admins' "Add member $($p.tier0Group)" {
@@ -603,6 +718,7 @@ function Sync-Privileged([string[]]$PathsAtStart) {
         $allowed = @($p.allowedDirectMembers.$name)
         foreach ($m in Get-ADGroupMember -Identity $g @ad) {
             if ("$($m.SID)" -eq $builtinSid -and $builtinLeaves -contains $name) { continue }
+            $mName = Get-ManagedName $m
             if ($adminSams -contains $m.SamAccountName -and $allowed -notcontains $m.SamAccountName) {
                 if ($script:removeStanding) {
                     Invoke-Change $name "Remove standing admin $($m.SamAccountName) (JIT is on)" {
@@ -621,7 +737,7 @@ function Sync-Privileged([string[]]$PathsAtStart) {
                 } else {
                     Write-Report "$($m.SamAccountName) is in $name. It stays until every admin account is enabled and had a Domain Admins path before the run."
                 }
-            } elseif ($allowed -notcontains $m.SamAccountName) {
+            } elseif ($allowed -notcontains $mName) {
                 Write-Report "$($m.SamAccountName) is a direct member of $name and is not allowed in org.json."
             }
         }
@@ -696,9 +812,13 @@ function Sync-DefaultPasswordPolicy {
 
 # Makes the subjects of a PSO exactly the groups in $Desired.
 function Sync-PsoSubjects($Pso, [string]$PsoName, [string[]]$Desired) {
+    if (Test-GroupConflict $Desired) {
+        Write-Report "Subjects of $PsoName were not changed: one of them has a rename conflict (see above)."
+        return
+    }
     $current = @()
     if ($Pso) {
-        $current = @(Get-ADFineGrainedPasswordPolicySubject -Identity $Pso @ad | ForEach-Object { $_.SamAccountName })
+        $current = @(Get-ADFineGrainedPasswordPolicySubject -Identity $Pso @ad | ForEach-Object { Get-ManagedName $_ })
     }
     foreach ($s in $Desired | Where-Object { $current -notcontains $_ }) {
         $g = Find-Group $s
@@ -1179,7 +1299,10 @@ function Get-Delegation {
 
 # The objectSid of a principal (a SecurityIdentifier from AD), or $null.
 function Get-PrincipalSid([string]$Sam) {
+    if (Test-GroupConflict $Sam) { return $null }
     $o = Find-Object "SamAccountName -eq '$Sam'"
+    # A managed group that still has a former name (under -WhatIf).
+    if (-not $o) { $o = Find-Group $Sam }
     if (-not $o) { return $null }
     Get-Prop (Get-ADObject -Identity $o.DistinguishedName -Properties objectSid @ad) 'objectSid'
 }
@@ -1224,6 +1347,10 @@ function Get-SidName([string]$Sid) {
 # Adds the missing rules of one template for one principal on one OU, with
 # one Set-Acl. Returns the wanted rules, for the extra-ACE report.
 function Sync-Aces([string]$DN, [string]$Principal, [string]$Template, [string]$Type) {
+    if (Test-GroupConflict $Principal) {
+        Write-Report "$Type $Template for $Principal was not checked on ${DN}: $Principal has a rename conflict (see above)."
+        return
+    }
     $sidObj = Get-PrincipalSid $Principal
     if (-not $sidObj) {
         if ($WhatIfPreference) {
@@ -1366,6 +1493,8 @@ function Test-AdminSDHolder {
 }
 
 function Invoke-Build {
+    # First, so every lookup below knows the renames and the conflicts.
+    Initialize-GroupNames
     $daPathsAtStart = @(Get-DomainAdminPaths)
     $jit = Get-Jit
     $script:jitActive = Test-JitActive
@@ -1425,8 +1554,10 @@ function Get-Destination($obj) {
             return $null
         }
         'group' {
-            if ($data.roleGroups | Where-Object { $_.name -eq $sam }) { return 'Groups/Roles' }
-            if (Get-ResourceGroups | Where-Object { $_.name -eq $sam }) { return 'Groups/Resources' }
+            # Also by a former name: Build renames the group later.
+            $isGroup = { param($g) $g.name -eq $sam -or ($g.PSObject.Properties['formerNames'] -and @($g.formerNames) -contains $sam) }
+            if ($data.roleGroups | Where-Object { & $isGroup $_ }) { return 'Groups/Roles' }
+            if (Get-ResourceGroups | Where-Object { & $isGroup $_ }) { return 'Groups/Resources' }
             if ($oldPath -like 'Security-Groups/*') { return 'Groups/Resources' }
             return $null
         }

@@ -3,7 +3,7 @@
 # Domain Admins grant (ad.yml -t jit-endpoint, ad/TIERING.md section 3).
 #
 #   t0-admin <hours> "<reason>"   grant adm_mayonej Domain Admins for 1-4 hours
-#   t0-admin status               list the members of GG-Domain-Admins-Tier0
+#   t0-admin status               list the members of tier0-admins
 #
 # It logs in with Kerberos as adm_mayonej (Protected Users blocks NTLM).
 # kinit asks for the password. The password goes to kinit only. The ticket
@@ -114,7 +114,7 @@ with RunspacePool(wsman, configuration_name="PatchworkT0") as pool:
     if ps.had_errors:
         sys.exit(1)
     if mode == "status" and not output:
-        print("GG-Domain-Admins-Tier0 has no members.")
+        print("tier0-admins has no members.")
     for obj in output:
         p = props(obj)
         width = max(len(k) for k in p)

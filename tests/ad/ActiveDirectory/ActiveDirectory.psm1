@@ -98,8 +98,11 @@ function Find-Fake($Identity) {
         $o = $script:objects | Where-Object { $_.Id -eq $id }
     } else {
         $s = "$Identity"
-        $o = $script:objects | Where-Object { $_.DN -eq $s -or $_.Sam -eq $s -or ($_.Sid -and $_.Sid -eq $s) -or (Get-RdnValue $_.DN) -eq $s } |
-            Select-Object -First 1
+        # Like AD: a DN, a sAMAccountName or a SID. The RDN is a fallback for
+        # the base objects, and loses to a sAMAccountName (an OU
+        # Service-Accounts and a group service-accounts can both exist).
+        $o = $script:objects | Where-Object { $_.DN -eq $s -or $_.Sam -eq $s -or ($_.Sid -and $_.Sid -eq $s) } | Select-Object -First 1
+        if (-not $o) { $o = $script:objects | Where-Object { (Get-RdnValue $_.DN) -eq $s } | Select-Object -First 1 }
     }
     if (-not $o) { throw "Cannot find an object with identity: '$Identity'" }
     $o
@@ -182,6 +185,23 @@ function Move-ADObject { param($Identity, [string]$TargetPath, [switch]$PassThru
     if ($PassThru) { ConvertTo-Fake $o }
 }
 
+# Changes the RDN. The object, its SID and every link to it stay, like AD.
+function Rename-ADObject { param($Identity, [string]$NewName, $Server)
+    $o = Find-Fake $Identity
+    $parent = Get-ParentOf $o.DN
+    $prefix = ($o.DN -split '=', 2)[0]
+    $newDN = "$prefix=$NewName,$parent"
+    if ($script:objects | Where-Object { $_.DN -eq $newDN -and $_.Id -ne $o.Id }) { throw "Already exists: $newDN" }
+    $oldDN = $o.DN
+    $o.DN = $newDN
+    foreach ($x in $script:objects) {
+        if ($x.Attrs['manager'] -eq $oldDN) { $x.Attrs['manager'] = $newDN }
+        if ($x.Attrs.ContainsKey('msDS-AuthNPolicySiloMembers')) {
+            $x.Attrs['msDS-AuthNPolicySiloMembers'] = @($x.Attrs['msDS-AuthNPolicySiloMembers'] | ForEach-Object { if ($_ -eq $oldDN) { $newDN } else { $_ } })
+        }
+    }
+}
+
 # --- OUs ---------------------------------------------------------------------
 function Get-ADOrganizationalUnit { param([string]$Filter, $SearchBase, $SearchScope, $Properties, $Server)
     Select-Fake $Filter $SearchBase @('organizationalUnit') | ForEach-Object { ConvertTo-Fake $_ }
@@ -253,9 +273,15 @@ function New-ADGroup { param([string]$Name, [string]$SamAccountName, $GroupCateg
     Assert-Parent $Path
     Add-FakeObject "CN=$Name,$Path" 'group' @{ Sam = $SamAccountName; Scope = $GroupScope; Description = $Description } | Out-Null
 }
-function Set-ADGroup { param($Identity, $Description, [string]$GroupScope, $Server)
+function Set-ADGroup { param($Identity, $Description, [string]$GroupScope, [string]$SamAccountName, [string]$DisplayName, $Server)
     $o = Find-Fake $Identity
     if ($PSBoundParameters.ContainsKey('Description')) { $o.Description = $Description }
+    if ($SamAccountName) {
+        # sAMAccountName is one namespace for users, groups and computers.
+        if ($script:objects | Where-Object { $_.Sam -eq $SamAccountName -and $_.Id -ne $o.Id }) { throw "The specified account already exists: $SamAccountName" }
+        $o.Sam = $SamAccountName
+    }
+    if ($PSBoundParameters.ContainsKey('DisplayName')) { $o.Attrs['displayName'] = $DisplayName }
     if ($GroupScope) {
         if ($o.Scope -eq 'Global' -and $GroupScope -eq 'DomainLocal') { throw 'Global cannot change straight to DomainLocal' }
         $o.Scope = $GroupScope

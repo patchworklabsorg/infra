@@ -58,11 +58,11 @@ Terraform sets OU descriptions and group descriptions on the first apply. Each g
 
 | Source | Name |
 |---|---|
-| `ad/org.json` `roleGroups` | `GG-Board`, `GG-President`, `GG-Treasurer`, `GG-Secretary`, `GG-Ganymede-Admins`, `GG-Ganymede-Users`, `GG-HackBoston-Organizers`, `GG-HackathonHelp-Organizers`, `GG-Infra` |
+| `ad/org.json` `roleGroups` | `board`, `president`, `treasurer`, `secretary`, `ganymede-admins`, `ganymede-users`, `hackboston-organizers`, `hackathonhelp-organizers`, `infra` |
 | This root | `board@`, `president@`, `treasurer@`, `secretary@`, `ganymede-admins@`, `ganymede-users@`, `organizers@hackboston.dev`, `organizers@hackathon.help`, `infra@` |
 | `gcp-org/main.tf` | Reads `board@`, `treasurer@`, `ganymede-admins@`, `gcp-admins@`, `infra@`, `organizers@hackboston.dev`, `organizers@hackathon.help` |
 
 - Group addresses in this root must stay equal to the addresses in `gcp-org`. Change both in one pull request.
-- `GG-Domain-Admins-Tier0` and the `lnx-*` host groups are AD only. They have no Workspace group.
+- `tier0-admins` and the `lnx-*` host groups are AD only. They have no Workspace group.
 - The Workspace OUs match the `Users/...` OUs of `ad/org.json`, without the `Users/` prefix. `Purgatory` in Workspace is `Disabled` in AD.
 - The division and department names (Programs, Project Ganymede, Governance, Operations) in `ad/org.json` are user attributes. Weave sets them.

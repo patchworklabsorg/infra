@@ -29,14 +29,20 @@ let
   #
   # weave-ldap.age: the svc-weave-ldap password only (ad/README.md, Weave).
   # Recipients: jsp and the host that runs Weave (alastor now, warp after
-  # the move). Not made yet: an admin sets the password in AD, then adds the
-  # entry here and runs `agenix -e weave-ldap.age`.
+  # the move). To rotate: set a new password in AD, then `agenix -e`.
 in
 {
   # Weave (Patchwork IDP) runtime env. Must contain:
   #   RAILS_MASTER_KEY=...   (decrypts config/credentials)
   #   POSTGRES_PASSWORD=...  (Rails DB password + postgres container init)
   "weave-env.age".publicKeys = [
+    jsp
+    alastor
+  ];
+
+  # svc-weave-ldap password (no newline). Weave reads it from
+  # AD_BIND_PASSWORD_FILE. Set in AD on 2026-10-20.
+  "weave-ldap.age".publicKeys = [
     jsp
     alastor
   ];

@@ -1,7 +1,8 @@
-# Evaluates nixosModules.quilt-alastor on a minimal host and checks the
-# production and staging units and the Traefik routes. No VM: the containers
-# need ghcr, seam and hem.
-#   nix build .#checks.<system>.quilt-alastor
+# Evaluates hosts/batting/quilt.nix on a minimal host and checks the
+# production and staging units. The routes are nginx on batting and
+# edge-alastor on alastor, so there is no Traefik fragment here. No VM: the
+# containers need ghcr, seam and hem.
+#   nix build .#checks.<system>.quilt-batting
 {
   pkgs,
   nixosSystem,
@@ -33,7 +34,6 @@ let
       ];
     }).config;
   units = host.systemd.units;
-  toml = host.environment.etc."traefik/conf.d/quilt.toml".source;
   web = units."quilt-web.service".text;
   worker = units."quilt-worker.service".text;
   stagingWeb = units."quilt-staging-web.service".text;
@@ -60,10 +60,9 @@ let
   };
   failed = lib.attrNames (lib.filterAttrs (_: ok: !ok) checks);
 in
-assert lib.assertMsg (failed == [ ]) "quilt-alastor: ${lib.concatStringsSep ", " failed}";
-# The Traefik fragment and the start script are build outputs, so check them
-# at build time.
-pkgs.runCommand "quilt-alastor" { } ''
+assert lib.assertMsg (failed == [ ]) "quilt-batting: ${lib.concatStringsSep ", " failed}";
+# The start scripts are build outputs, so check them at build time.
+pkgs.runCommand "quilt-batting" { } ''
   # `! grep` does not stop a `set -e` script, so check absence like this.
   absent() {
     if grep -F -- "$1" "$2"; then
@@ -72,11 +71,8 @@ pkgs.runCommand "quilt-alastor" { } ''
     fi
   }
 
-  grep -F 'Host(`quilt.patchworklabs.org`)' ${toml}
-  grep -F 'http://127.0.0.1:3005' ${toml}
-  grep -F 'websecure' ${toml}
-  grep -F 'cloudflare' ${toml}
-  grep -F 'hsts' ${toml}
+  # No Traefik on batting.
+  test ${lib.boolToString (host.environment.etc ? "traefik/conf.d/quilt.toml")} = false
   grep -F -- '-b 127.0.0.1 -p 3005' ${host.systemd.services.quilt-web.serviceConfig.ExecStart}
   grep -F 'good_job start' ${host.systemd.services.quilt-worker.serviceConfig.ExecStart}
 
@@ -88,8 +84,6 @@ pkgs.runCommand "quilt-alastor" { } ''
   absent 'api-sandbox' ${svc.quilt-worker.serviceConfig.ExecStart}
 
   # Staging: own route, port, env file, RAILS_ENV=staging and the sandbox.
-  grep -F 'Host(`quilt-staging.patchworklabs.org`)' ${toml}
-  grep -F 'http://127.0.0.1:3006' ${toml}
   grep -F -- '--name quilt-staging-web' ${svc.quilt-staging-web.serviceConfig.ExecStart}
   grep -F -- '-b 127.0.0.1 -p 3006' ${svc.quilt-staging-web.serviceConfig.ExecStart}
   grep -F -- '--name quilt-staging-worker' ${svc.quilt-staging-worker.serviceConfig.ExecStart}

@@ -1,5 +1,4 @@
-# batting — Quilt host (pve01 VMID 360, 10.100.90.60, 2 GB;
-# VMID and address to be confirmed free before create)
+# batting — Quilt host (pve01 VMID 360, 10.100.90.60, 4 GB)
 #
 # One app per VM. Sudo and the docker group are root here, so only the
 # break-glass admins (modules/common) and lnx-batting-admins get them. Only this
@@ -9,17 +8,13 @@
 #
 # Tailnet tags: tag:patchwork (ssh from admins, port 80 from alastor) and
 # tag:patchwork-quilt. The policy in jaspermayone/infra lets tag:patchwork-quilt
-# reach seam:5432 (prod) only. hem (staging) gets a grant when it joins the tailnet.
-#
-# Bring-up: create the VM (terraform/proxmox), install with nixos-anywhere,
-# tag the node with both tags, then add the host key to secrets/secrets.nix
-# as a recipient of ad-join.age (AD logon) and run `agenix -r`.
-# Quilt itself comes in a later change, with its secrets and its edge route.
-{ ... }:
+# reach seam:5432 (prod) and hem:5433 (staging) only.
+{ config, ... }:
 {
   imports = [
     ../proxmox-vm.nix
     ../../modules/common
+    ./quilt.nix
   ];
 
   networking.hostName = "batting";
@@ -28,15 +23,58 @@
 
   virtualisation.docker.enable = true;
 
+  # The lab hosts do not use MagicDNS (modules/common, --accept-dns=false),
+  # so *.ts.net names do not resolve here. The Quilt env files connect to
+  # seam and hem by tailnet name. The containers use the host network, and
+  # Docker copies this /etc/hosts into each one at start. If seam or hem
+  # joins the tailnet again, its address changes: update it here (and the
+  # pw-seam / pw-hem aliases in jaspermayone/infra tailscale/policy.hujson).
+  networking.hosts = {
+    "100.87.183.57" = [ "seam.wildebeest-stargazer.ts.net" ];
+    "100.67.124.123" = [ "hem.wildebeest-stargazer.ts.net" ];
+  };
+
+  # 4 GB and four Rails processes: zram gives room for a deploy or an image
+  # pull without the OOM killer.
+  zramSwap.enable = true;
+
   services.nginx = {
     enable = true;
-    recommendedProxySettings = true;
-    # Only alastor reaches this, over the tailnet. It already set
-    # X-Forwarded-For and X-Forwarded-Proto; keep them.
+    # Only alastor reaches this, over the tailnet. alastor terminated TLS and
+    # set X-Forwarded-For and X-Forwarded-Proto (https); pass them on as they
+    # are. recommendedProxySettings would set X-Forwarded-Proto to http.
     commonHttpConfig = ''
       set_real_ip_from 100.64.0.0/10;
       real_ip_header X-Forwarded-For;
+      proxy_set_header Host $host;
+      proxy_set_header X-Real-IP $remote_addr;
+      proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+      proxy_set_header X-Forwarded-Proto $http_x_forwarded_proto;
+      proxy_set_header X-Forwarded-Host $host;
     '';
+    virtualHosts = {
+      quilt = {
+        serverName = "quilt.patchworklabs.org";
+        listen = [
+          {
+            addr = "0.0.0.0";
+            port = 80;
+          }
+        ];
+        locations."/".proxyPass = "http://127.0.0.1:${toString config.patchwork.services.quilt.port}";
+      };
+      quilt-staging = {
+        serverName = "quilt-staging.patchworklabs.org";
+        listen = [
+          {
+            addr = "0.0.0.0";
+            port = 80;
+          }
+        ];
+        locations."/".proxyPass =
+          "http://127.0.0.1:${toString config.patchwork.services.quilt.staging.port}";
+      };
+    };
   };
   # nginx is a host service, so the NixOS firewall applies to it (Docker's
   # published ports would bypass it). Open only on the tailnet.

@@ -82,8 +82,15 @@
       # deploy .#<host>. Over the tailnet, as on jaspermayone/infra's lab hosts.
       # Activation restarts sshd and tailscaled, which cuts the connection
       # deploy-rs confirms over, so magic rollback would always time out.
+      # Port 2222 is sshd, not Tailscale SSH (modules/common): the session must
+      # live outside tailscaled. The first deploy of a host that does not have
+      # 2222 yet needs `--ssh-opts "-p 22"`.
       deploy.nodes = nixpkgs.lib.genAttrs hosts (name: {
         hostname = "${name}.${tailnet}";
+        sshOpts = [
+          "-p"
+          "2222"
+        ];
         magicRollback = false;
         autoRollback = false;
         profiles.system = {

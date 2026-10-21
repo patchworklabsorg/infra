@@ -1,18 +1,7 @@
-# For later only. No VM exists yet. If a VM exists in the future, uncomment its
-# import block before the plan. The ID format is <node>/<vmid>.
+# For later only. If a VM exists before its first apply, uncomment its import
+# block before the plan. The ID format is <node>/<vmid>. skein and seam are in
+# the state. warp was created with qm on 2026-10-20 and imported this way.
 #
-# import {
-#   to = proxmox_virtual_environment_vm.nixos["warp"]
-#   id = "pve01/356"
-# }
-# import {
-#   to = proxmox_virtual_environment_vm.nixos["skein"]
-#   id = "pve01/355"
-# }
-# import {
-#   to = proxmox_virtual_environment_vm.nixos["seam"]
-#   id = "pve01/357"
-# }
 # import {
 #   to = proxmox_virtual_environment_vm.nixos["hem"]
 #   id = "pve01/358"

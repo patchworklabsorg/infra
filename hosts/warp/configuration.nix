@@ -1,5 +1,4 @@
-# warp — Patchwork app host (pve01 VMID 356, 10.100.90.56, 6 GB; VMID and
-# address to be confirmed free before create)
+# warp — Patchwork app host (pve01 VMID 356, 10.100.90.56, 6 GB)
 #
 # Runs Weave (prod + staging) and the Patchwork apps that come next. This is
 # the job patchworklabsorg/core's never-built Core VM was meant to do; its
@@ -11,7 +10,10 @@
   imports = [
     ../proxmox-vm.nix
     ../../modules/common
-    ./weave.nix
+    # Off until the Weave cutover from alastor. Two Weave instances must not
+    # run at the same time, and warp is not yet a recipient of the Weave
+    # secrets. See the header of ./weave.nix.
+    # ./weave.nix
   ];
 
   networking.hostName = "warp";
@@ -22,6 +24,8 @@
   virtualisation.docker.enable = true;
   systemd.tmpfiles.rules = [ "d /opt/dots 0775 root admins - -" ];
 
+  # The weave and weave-staging vhosts return 502 until ./weave.nix is on.
+  # Import edge-alastor on alastor only at the Weave cutover.
   services.nginx = {
     enable = true;
     recommendedProxySettings = true;

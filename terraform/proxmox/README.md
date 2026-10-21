@@ -271,7 +271,7 @@ The old resource `proxmox_virtual_environment_download_file.nixos_installer` is 
 
 ## Existing VMs
 
-No VM exists yet. The import blocks in `main.tf` are for later only. If a VM exists, uncomment its `import` block in `main.tf` before the first plan. Then run the plan. The plan must show no destroy. The provider can show small differences in disk or NIC settings. Adjust the map or the resource until the plan is clean.
+skein, seam and warp are in the state. warp was created with `qm` and then imported. Only hem still has a commented `import` block in `main.tf`. If a VM exists before its first apply, uncomment its `import` block before the first plan. Then run the plan. The plan must show no destroy. The provider can show small differences in disk or NIC settings. Adjust the map or the resource until the plan is clean.
 
 The resource has `prevent_destroy`. It ignores the CD-ROM, the boot order, the power state, the description and the tags. You detach the ISO after the install, and Terraform leaves it alone.
 

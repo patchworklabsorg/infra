@@ -12,6 +12,7 @@
   imports = [
     ../proxmox-vm.nix
     ../../modules/common
+    ./redirects-nginx.nix
   ];
 
   networking.hostName = "warp";
@@ -22,7 +23,7 @@
   # No Docker: the docker group is root, and members (dom) must not be root
   # here. A thing that needs containers goes on its own VM.
 
-  # No virtual host yet. Each thing that runs here adds its own.
+  # Each thing that runs here adds its own virtual host.
   services.nginx = {
     enable = true;
     recommendedProxySettings = true;

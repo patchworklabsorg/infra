@@ -14,7 +14,14 @@ let
   # <router name> = { backend = "<host>"; hosts = [ "<fqdn>" ... ]; };
   # Quilt moves to batting and Krater runs on weft. Their routes come with
   # those changes.
-  routes = { };
+  routes = {
+    # Every host in ../warp/redirects.nix. A new path on an existing host
+    # needs no change here.
+    redirects = {
+      backend = "warp";
+      hosts = builtins.attrNames (import ../warp/redirects.nix);
+    };
+  };
 in
 {
   environment.etc."traefik/conf.d/patchwork.toml".source =

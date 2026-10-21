@@ -9,7 +9,7 @@
 #   4722  it was enabled
 #   4724  its password was reset
 #   4728  member added to a privileged global group (Domain Admins,
-#         GG-Domain-Admins-Tier0). A JIT grant also makes this event.
+#         tier0-admins). A JIT grant also makes this event.
 #   4732  member added to Administrators
 #   4756  member added to Enterprise Admins or Schema Admins
 param(

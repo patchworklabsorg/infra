@@ -281,9 +281,138 @@ let
         ) "tiering.serverOU must be in delegation.noDelegation"
       );
 
+  # Group names. Managed groups (roleGroups, resourceGroups) have plain names:
+  # lower case words joined by hyphens, no GG-/DL- prefix. The lnx-<host>-*
+  # host groups keep their template. sAMAccountName is one namespace for
+  # users, groups and computers, and AD compares it without case, so a group
+  # name must not match a user, a host, a built-in group or another group.
+  lower = map lib.toLower;
+  managedGroups = org.roleGroups ++ org.resourceGroups;
+  managedNames = map (g: g.name) managedGroups;
+  hostNames =
+    org.linuxHosts ++ org.retiredHosts ++ (if tiering == null then [ ] else tiering.computers);
+  hostGroupNames = lib.concatMap (
+    h: map (t: builtins.replaceStrings [ "{host}" ] [ h ] t.name) org.hostGroups
+  ) (org.linuxHosts ++ org.retiredHosts);
+  allGroupNames = managedNames ++ hostGroupNames;
+  formerNames = lib.concatMap (g: g.formerNames or [ ]) managedGroups;
+  plainName = n: builtins.match "[a-z0-9]+(-[a-z0-9]+)*" n != null && builtins.stringLength n <= 64;
+  # Built-in and default groups of a Windows Server 2025 domain, lower case.
+  builtinGroups = [
+    "access control assistance operators"
+    "account operators"
+    "administrators"
+    "allowed rodc password replication group"
+    "backup operators"
+    "cert publishers"
+    "certificate service dcom access"
+    "cloneable domain controllers"
+    "cryptographic operators"
+    "denied rodc password replication group"
+    "dhcp administrators"
+    "dhcp users"
+    "distributed com users"
+    "dnsadmins"
+    "dnsupdateproxy"
+    "domain admins"
+    "domain computers"
+    "domain controllers"
+    "domain guests"
+    "domain users"
+    "enterprise admins"
+    "enterprise key admins"
+    "enterprise read-only domain controllers"
+    "event log readers"
+    "group policy creator owners"
+    "guests"
+    "hyper-v administrators"
+    "iis_iusrs"
+    "incoming forest trust builders"
+    "key admins"
+    "network configuration operators"
+    "performance log users"
+    "performance monitor users"
+    "pre-windows 2000 compatible access"
+    "print operators"
+    "protected users"
+    "ras and ias servers"
+    "rds endpoint servers"
+    "rds management servers"
+    "rds remote access servers"
+    "read-only domain controllers"
+    "remote desktop users"
+    "remote management users"
+    "replicator"
+    "schema admins"
+    "server operators"
+    "storage replica administrators"
+    "terminal server license servers"
+    "users"
+    "windows authorization access group"
+    "winrmremotewmiusers__"
+  ];
+  taken =
+    lower sams
+    ++ lower hostNames
+    ++ builtinGroups
+    ++ reservedSams
+    ++ lower org.privileged.groups
+    ++ lower (if tiering == null then [ ] else tiering.jit.standingGroups or [ ]);
+  # Workspace group addresses from terraform/workspace. A user UPN must not
+  # be a group address, and a group must not take the local part of a
+  # sponsored project's address (organizers@ is on two domains).
+  workspaceEmails =
+    map (m: builtins.replaceStrings [ "\${var.primary_domain}" ] [ org.upnSuffix ] (builtins.head m))
+      (
+        builtins.filter builtins.isList (
+          builtins.split ''email[[:space:]]*=[[:space:]]*"([^"]+)"'' (
+            builtins.readFile ../terraform/workspace/main.tf
+          )
+        )
+      );
+  otherDomainLocals = map (e: builtins.head (lib.splitString "@" e)) (
+    builtins.filter (e: !lib.hasSuffix "@${org.upnSuffix}" e) workspaceEmails
+  );
+  groupNameErrors =
+    map (
+      n:
+      "group ${n}: use a plain name, lower case words joined by hyphens (board, tier0-admins), 64 characters or fewer"
+    ) (builtins.filter (n: !plainName n) managedNames)
+    ++ map (n: "group ${n}: lnx- is for the hostGroups templates") (
+      builtins.filter (n: lib.hasPrefix "lnx-" n) managedNames
+    )
+    ++ map (t: "hostGroups: ${t.name} must stay lnx-{host}-<kind>") (
+      builtins.filter (t: !lib.hasPrefix "lnx-{host}-" t.name) org.hostGroups
+    )
+    ++ lib.optional (
+      dupes (lower allGroupNames) != [ ]
+    ) "two groups have the same name (case does not matter): ${toString (dupes (lower allGroupNames))}"
+    ++ map (
+      n: "group ${n} has the name of a user, a host or a built-in group (sAMAccountName is one namespace)"
+    ) (builtins.filter (n: lib.elem (lib.toLower n) taken) allGroupNames)
+    ++ map (n: "group ${n} has the local part of a Workspace address on another domain") (
+      builtins.filter (n: lib.elem (lib.toLower n) (lower otherDomainLocals)) managedNames
+    )
+    ++ map (u: "UPN ${u} is a Workspace group address") (
+      builtins.filter (u: lib.elem (lib.toLower u) (lower workspaceEmails)) upns
+    )
+    ++ lib.concatMap (
+      g:
+      lib.optional (
+        g ? formerNames && !(builtins.isList g.formerNames)
+      ) "${g.name}: formerNames must be a list"
+    ) managedGroups
+    ++ map (n: "formerNames: ${n} is the name of a current group or user") (
+      builtins.filter (n: lib.elem (lib.toLower n) (lower (allGroupNames ++ sams))) formerNames
+    )
+    ++ lib.optional (
+      dupes (lower formerNames) != [ ]
+    ) "formerNames: ${toString (dupes (lower formerNames))} is listed twice";
+
   errors =
     tieringErrors
     ++ delegationErrors
+    ++ groupNameErrors
     ++ map (g: "builtinAdministrator.removeFrom: ${g} is not in privileged.groups") (
       builtins.filter (g: !lib.elem g org.privileged.groups) (org.builtinAdministrator.removeFrom or [ ])
     )

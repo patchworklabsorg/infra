@@ -1,7 +1,7 @@
 @{
     GUID             = '31950ccb-4661-4bba-bc2f-3f8d9d157c4e'
     Author           = 'Patchwork Labs'
-    Description      = 'GG-T0-Eligible: request a JIT Domain Admins grant and list grants. Nothing else.'
+    Description      = 'tier0-eligible: request a JIT Domain Admins grant and list grants. Nothing else.'
     ModulesToImport  = 'PatchworkT0'
     VisibleFunctions = 'Request-T0Admin', 'Get-T0AdminGrant'
 }

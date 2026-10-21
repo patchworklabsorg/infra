@@ -36,8 +36,8 @@ The lab hosts below are NixOS VMs on pve01, VLAN 90 (`patchwork.internal`). alas
 
 | Host | VMID | Address | Memory | Runs |
 |---|---|---|---|---|
-| `warp` | 356 | 10.100.90.56 | 6 GB | Misc: redirects and other low-risk shared things. nginx on `tailscale0:80` for alastor. |
-| `skein` | 355 | 10.100.90.55 | 4 GB | `patchwork_central`, prod. LAN + tailnet. |
+| `warp` | 356 | 10.100.90.56 | 6 GB | Misc: redirects and other low-risk shared things. No Docker. nginx on `tailscale0:80` for alastor. |
+| `skein` | 355 | 10.100.90.55 | 4 GB | `patchwork_central`, prod. Tailnet only. |
 | `seam` | 357 | 10.100.90.57 | 2 GB | `patchwork_central_restricted`, prod. Tailnet only. |
 | `hem` | 358 | 10.100.90.58 | 2 GB | Both staging clusters: central on 5432, restricted on 5433. Quilt staging uses the restricted one. |
 | `batting` | 360 | 10.100.90.60 | 2 GB | Quilt prod + staging (after the move from alastor). nginx on `tailscale0:80` for alastor. |
@@ -60,7 +60,7 @@ flowchart LR
   alastor -- "tailnet, HTTP :80" --> warp["warp: misc"]
   alastor -- "tailnet, HTTP :80" --> batting["batting: Quilt"]
   alastor -- "tailnet, HTTP :80" --> weft["weft: Krater"]
-  weft -- ":5432" --> skein["skein: patchwork_central"]
+  weft -- "tailnet :5432" --> skein["skein: patchwork_central"]
   batting -- "tailnet :5432" --> seam["seam: patchwork_central_restricted"]
   batting -. "staging :5433" .-> hem["hem: :5432 / :5433"]
   weft -. "staging :5432" .-> hem

@@ -19,8 +19,8 @@
   patchwork.banner.role = "misc host";
   patchwork.members = [ "dom" ];
 
-  virtualisation.docker.enable = true;
-  systemd.tmpfiles.rules = [ "d /opt/dots 0775 root admins - -" ];
+  # No Docker: the docker group is root, and members (dom) must not be root
+  # here. A thing that needs containers goes on its own VM.
 
   # No virtual host yet. Each thing that runs here adds its own.
   services.nginx = {

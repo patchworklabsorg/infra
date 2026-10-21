@@ -54,8 +54,8 @@ pkgs.runCommand "weave-alastor" { } ''
     fi
   }
 
-  # Staging: db:prepare, web and worker all get the AD settings.
-  for f in ${prepare "weave-staging-web"} ${svc.weave-staging-web.serviceConfig.ExecStart} ${svc.weave-staging-worker.serviceConfig.ExecStart}; do
+  # Staging: web and worker get the AD settings.
+  for f in ${svc.weave-staging-web.serviceConfig.ExecStart} ${svc.weave-staging-worker.serviceConfig.ExecStart}; do
     grep -F -- "--add-host loom.patchwork.internal:100.75.125.1 " $f
     grep -F -- "--add-host spindle.patchwork.internal:100.108.7.59 " $f
     grep -F -- "--volume /run/weave-staging-ad:/run/weave/ad:ro " $f
@@ -65,6 +65,10 @@ pkgs.runCommand "weave-alastor" { } ''
     grep -F -- "--env 'AD_CA_FILE=/run/weave/ad-ca.pem'" $f
     grep -F -- "--env 'AD_BIND_DN=CN=svc-weave-ldap,OU=Service-Accounts,OU=Patchwork,DC=patchwork,DC=internal'" $f
   done
+
+  # db:prepare does not talk to AD: no mounts, so no bind password.
+  absent '--volume' ${prepare "weave-staging-web"}
+  absent '--add-host' ${prepare "weave-staging-web"}
 
   # The chain in the store is the forest chain: issuing CA and root.
   chain=$(grep -o -- '/nix/store/[^:]*-patchwork.internal-ca-chain.pem' ${svc.weave-staging-web.serviceConfig.ExecStart} | head -1)

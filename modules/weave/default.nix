@@ -71,8 +71,8 @@ let
   #   environmentFile  agenix env file (RAILS_MASTER_KEY, POSTGRES_PASSWORD)
   #   storageVolume    Docker named volume mounted at /rails/storage
   #   extraEnv         extra container env for db:prepare, web and worker
-  #   extraHosts       extra /etc/hosts entries for the same containers
-  #   volumes          extra bind mounts for the same containers
+  #   extraHosts       extra /etc/hosts entries for the web and worker
+  #   volumes          extra bind mounts for the web and worker
   mkInstance =
     {
       name,
@@ -88,7 +88,10 @@ let
     let
       network = name;
       stateDir = "/var/lib/${name}";
-      extraEnvArgs = envArgs extraEnv + runArgs { inherit extraHosts volumes; };
+      extraEnvArgs = envArgs extraEnv;
+      # Web and worker only. db:prepare does not talk to AD, so it does not
+      # get the mounts (the AD bind password is one of them).
+      extraRunArgs = runArgs { inherit extraHosts volumes; };
     in
     {
       # ── Docker network ────────────────────────────────────────────────────────
@@ -274,7 +277,7 @@ let
               --env SOLID_QUEUE_IN_PUMA=true \
               --env RAILS_SERVE_STATIC_FILES=true \
               --env RAILS_LOG_TO_STDOUT=true \
-              ${extraEnvArgs}--volume ${storageVolume}:/rails/storage \
+              ${extraEnvArgs}${extraRunArgs}--volume ${storageVolume}:/rails/storage \
               --restart no \
               "$IMAGE"
           '';
@@ -368,7 +371,7 @@ let
               --env REDIS_URL=redis://${name}-redis:6379/0 \
               --env REDIS_CACHE_URL=redis://${name}-redis:6379/1 \
               --env RAILS_LOG_TO_STDOUT=true \
-              ${extraEnvArgs}--volume ${storageVolume}:/rails/storage \
+              ${extraEnvArgs}${extraRunArgs}--volume ${storageVolume}:/rails/storage \
               --restart no \
               "$IMAGE" \
               ./bin/jobs
@@ -532,8 +535,8 @@ in
           "loom.patchwork.internal" = "100.75.125.1";
         };
         description = ''
-          Extra /etc/hosts entries (`--add-host`) for the staging db:prepare,
-          web and worker containers. Use it for names that the host DNS can not
+          Extra /etc/hosts entries (`--add-host`) for the staging web and
+          worker containers. Use it for names that the host DNS can not
           resolve, for example the AD domain controllers.
         '';
       };
@@ -543,8 +546,8 @@ in
         default = [ ];
         example = [ "/run/weave-staging-ad:/run/weave/ad:ro" ];
         description = ''
-          Extra bind mounts (`--volume src:dst[:opts]`) for the staging
-          db:prepare, web and worker containers.
+          Extra bind mounts (`--volume src:dst[:opts]`) for the staging web
+          and worker containers. Not for db:prepare.
         '';
       };
     };

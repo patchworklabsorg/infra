@@ -1,0 +1,33 @@
+---
+# The Tier 0 jump host. Reach it only over the thimble VPN (ad/TIERING.md),
+# so windows.yml does not install Tailscale on it.
+tailscale_enabled: false
+
+# jump-host.yml: one RDP shortcut per Tier 0 server. mstsc uses Remote
+# Credential Guard (/remoteGuard), because Protected Users blocks the
+# credential delegation that plain CredSSP needs.
+jump_host_rdp_targets:
+  - { name: loom,    fqdn: loom.patchwork.internal,    role: "PDC emulator" }
+  - { name: spindle, fqdn: spindle.patchwork.internal, role: DC }
+  - { name: bobbin,  fqdn: bobbin.patchwork.internal,  role: "Issuing CA" }
+  - { name: shuttle, fqdn: shuttle.patchwork.internal, role: NPS }
+
+# The consoles next to the RDP shortcuts. "file" is in C:\Windows\System32.
+jump_host_tools:
+  - { name: "AD Users and Computers",      file: dsa.msc }
+  - { name: "AD Administrative Center",    file: dsac.exe }
+  - { name: "Group Policy Management",     file: gpmc.msc }
+  - { name: "DNS",                         file: dnsmgmt.msc }
+  - { name: "DHCP",                        file: dhcpmgmt.msc }
+  - { name: "Certification Authority",     file: certsrv.msc }
+  - { name: "Network Policy Server",       file: nps.msc }
+
+# The RSAT features the consoles need. spool-setup.ps1 already installs
+# RSAT-AD-Tools and GPMC.
+jump_host_features:
+  - RSAT-AD-Tools
+  - GPMC
+  - RSAT-DNS-Server
+  - RSAT-DHCP
+  - RSAT-ADCS-Mgmt
+  - RSAT-NPAS

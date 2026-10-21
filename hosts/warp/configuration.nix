@@ -24,6 +24,8 @@
   virtualisation.docker.enable = true;
   systemd.tmpfiles.rules = [ "d /opt/dots 0775 root admins - -" ];
 
+  # The weave and weave-staging vhosts return 502 until ./weave.nix is on.
+  # Import edge-alastor on alastor only at the Weave cutover.
   services.nginx = {
     enable = true;
     recommendedProxySettings = true;

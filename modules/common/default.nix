@@ -147,7 +147,15 @@ in
       # MagicDNS would take /etc/resolv.conf, and the tailnet has no global
       # nameservers, so lab names would stop resolving. DNS comes from
       # lanNameservers. Same setting as saker and the mrm hosts.
-      extraSetFlags = [ "--accept-dns=false", "--ssh" ];
+      #
+      # --ssh: tailscaled answers port 22 on the tailnet (Tailscale SSH). The
+      # ssh rule for tag:patchwork in jaspermayone/infra tailscale/policy.hujson
+      # must be live first, or deploy-rs and ssh over the tailnet are refused.
+      # sshd still answers on the LAN.
+      extraSetFlags = [
+        "--accept-dns=false"
+        "--ssh"
+      ];
     };
 
     nix.settings = {

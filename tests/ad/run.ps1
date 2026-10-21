@@ -297,7 +297,7 @@ Check 'Weave denied on Admin-Accounts, Service-Accounts, Servers/Tier0, Disabled
 Check 'Weave has nothing on the Domain Controllers OU, Admin-Accounts/Tier0, Groups, Servers' (@("OU=Domain Controllers,$dom", "OU=Tier0,OU=Admin-Accounts,$new", "OU=Groups,$new", "OU=Servers,$new", "OU=Users,$new" | Where-Object {
             @(AcesFor $_ 'svc-weave-ldap').Count }).Count -eq 0)
 Check 'Weave ACEs are not reported as extra' ($r.Output -notmatch 'extra ACE[^\n]*svc-weave-ldap')
-Check 'a person with no weaveId is reported' ($r.Output -match 'REPORT\s+adam.sidwa has no weaveId' -and $r.Output -notmatch 'svc-weave-ldap has no weaveId')
+Check 'a person with no weaveId is reported' ($r.Output -match 'REPORT\s+daniel has no weaveId' -and $r.Output -notmatch 'svc-weave-ldap has no weaveId')
 
 $r = Converge Build
 Check 'Build twice: zero changes' ($r.Changes -eq 0 -and $r.Errors -eq 0)
@@ -318,27 +318,27 @@ Check 'delegation drift: extra ACE reported and kept, known ACE not reported' ($
     @(AcesFor "OU=Admin-Accounts,$new" 'board').Count -eq 1 -and $r.Output -notmatch 'extra ACE[^\n]*svc-lnx-join')
 Remove-FakeAces "OU=Admin-Accounts,$new" { $_.IdentityReference.Value -eq (SidOf 'board') }
 
-# weaveId -> employeeID. adam.sidwa gets one. cj asks for an id that a
+# weaveId -> employeeID. daniel gets one. cj asks for an id that a
 # Weave member already holds: reported, not set. Without the key, Build
 # leaves employeeID alone.
 Set-ADUser -Identity 'member1' -Replace @{ employeeID = 'PWL2000000001' }
 $withIds = New-OrgJson { param($o)
-    ($o.users | Where-Object { $_.sam -eq 'adam.sidwa' }) | Add-Member -Force -NotePropertyName weaveId -NotePropertyValue 'PWL1A2B3C4D5E'
+    ($o.users | Where-Object { $_.sam -eq 'daniel' }) | Add-Member -Force -NotePropertyName weaveId -NotePropertyValue 'PWL1A2B3C4D5E'
     ($o.users | Where-Object { $_.sam -eq 'cj' }) | Add-Member -Force -NotePropertyName weaveId -NotePropertyValue 'PWL2000000001'
 }
 $before = Get-FakeADState
 $r = Converge Build -DataFile $withIds -WhatIf
 Check 'weaveId -WhatIf changes nothing and shows the employeeID' ((Get-FakeADState) -eq $before -and
-    $r.Output -match "WOULD\s+Set employeeID='PWL1A2B3C4D5E' : CN=Adam Sidwa")
+    $r.Output -match "WOULD\s+Set employeeID='PWL1A2B3C4D5E' : CN=daniel")
 $r = Converge Build -DataFile $withIds
-Check 'weaveId set as employeeID' ($r.Errors -eq 0 -and (U 'adam.sidwa').employeeID -eq 'PWL1A2B3C4D5E' -and
-    $r.Output -notmatch 'adam.sidwa has no weaveId')
+Check 'weaveId set as employeeID' ($r.Errors -eq 0 -and (U 'daniel').employeeID -eq 'PWL1A2B3C4D5E' -and
+    $r.Output -notmatch 'daniel has no weaveId')
 Check 'weaveId held by another account: reported, not set' ($r.Output -match 'REPORT\s+cj: weaveId PWL2000000001 is the employeeID of member1' -and
     $null -eq (U 'cj').employeeID -and (U 'member1').employeeID -eq 'PWL2000000001')
 $r = Converge Build -DataFile $withIds
 Check 'weaveId: rerun has zero changes' ($r.Changes -eq 0 -and $r.Errors -eq 0)
 $r = Converge Build
-Check 'weaveId absent: employeeID not cleared' ($r.Changes -eq 0 -and (U 'adam.sidwa').employeeID -eq 'PWL1A2B3C4D5E')
+Check 'weaveId absent: employeeID not cleared' ($r.Changes -eq 0 -and (U 'daniel').employeeID -eq 'PWL1A2B3C4D5E')
 
 # A Weave member holds the sam of a new org.json entry. Build must not take
 # it over: no attributes, no groups (infra gives sudo on Tier 1).

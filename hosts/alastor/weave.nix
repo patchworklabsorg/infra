@@ -47,7 +47,6 @@
     traefik = {
       enable = true;
       hosts = [
-        "idp.patchworklabs.org"
         "weave.patchworklabs.org"
         "slack.patchworklabs.org"
       ];

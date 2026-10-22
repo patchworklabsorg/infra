@@ -32,7 +32,7 @@
 # Secrets: one env file (`environmentFile`, an agenix secret), split per container at start into
 # /run/krater/*.env so each container gets only its own keys. The file must contain:
 #   KRATER_DATABASE_URL=postgresql+psycopg://krater:<password>@<central db host>:5432/patchwork_central?sslmode=disable
-#                                             # <password> = the value in central-prod-krater.age
+#                                             # <password> = the value in central-<env>-krater.age
 #   KRATER_SECRET_KEY=...                     # >= 32 chars
 #   KRATER_WEAVE_CLIENT_SECRET=...
 #   KRATER_SLACK_BOT_TOKEN=...

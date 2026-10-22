@@ -24,16 +24,17 @@ let
       backend = "batting";
       hosts = [ "quilt-staging.patchworklabs.org" ];
     };
-    # Krater on weft (../weft/krater.nix): the portal and its S3 gateway.
-    # Not `krater`/`krater-storage`: the names of Krater's own Traefik
-    # fragment, which a host that runs Krater with traefik.enable would add.
-    krater-weft = {
+    # Krater staging on weft (../weft/krater.nix): the portal and its S3
+    # gateway. Krater has no production instance yet. Not `krater`/
+    # `krater-storage`: the names of Krater's own Traefik fragment, which a
+    # host that runs Krater with traefik.enable would add.
+    krater-staging-weft = {
       backend = "weft";
-      hosts = [ "krater.patchworklabs.org" ];
+      hosts = [ "krater-staging.patchworklabs.org" ];
     };
-    krater-storage-weft = {
+    krater-staging-storage-weft = {
       backend = "weft";
-      hosts = [ "krater-storage.patchworklabs.org" ];
+      hosts = [ "krater-staging-storage.patchworklabs.org" ];
     };
     # Every host in ../warp/redirects.nix. A new path on an existing host
     # needs no change here.

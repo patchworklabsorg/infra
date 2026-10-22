@@ -1,7 +1,8 @@
-# Evaluates weft (hosts/weft) with Krater turned on and checks the units, the
-# nginx routes and the alastor edge routes. Krater stays off on the real weft
-# until its Weave client id is set, so this test sets a placeholder id. No VM:
-# the containers need GitHub, skein and the Krater image.
+# Evaluates weft (hosts/weft) with Krater staging turned on and checks the
+# units, the nginx routes and the alastor edge routes. Krater stays off on the
+# real weft until its env file and its Weave client id exist, so this test
+# turns it on with a placeholder id. No VM: the containers need GitHub, hem
+# and the Krater image.
 #   nix build .#checks.<system>.krater-weft
 {
   pkgs,
@@ -46,17 +47,17 @@ let
     "krater is off on weft without a client id" = !off.patchwork.services.krater.enable;
     "no krater unit while off" = !(off.systemd.units ? "krater-web.service");
     "no krater vhost while off" = !(off.services.nginx.virtualHosts ? krater);
-    "krater-env is weft's secret" = off.age.secrets ? krater-env;
+    "no krater secret until the env file exists" = !(off.age.secrets ? krater-staging-env);
     "web unit exists" = units ? "krater-web.service";
     "worker unit exists" = units ? "krater-worker.service";
     "storage unit exists" = units ? "krater-storage.service";
     "build unit exists" = units ? "krater-build.service";
     "no traefik fragment on weft" = !(on.environment.etc ? "traefik/conf.d/krater.toml");
     "portal vhost" =
-      vhosts.krater.serverName == "krater.patchworklabs.org"
+      vhosts.krater.serverName == "krater-staging.patchworklabs.org"
       && vhosts.krater.locations."/".proxyPass == "http://127.0.0.1:3010";
     "storage vhost" =
-      vhosts.krater-storage.serverName == "krater-storage.patchworklabs.org"
+      vhosts.krater-storage.serverName == "krater-staging-storage.patchworklabs.org"
       && vhosts.krater-storage.locations."/".proxyPass == "http://127.0.0.1:3011";
     "storage has no body limit" =
       lib.hasInfix "client_max_body_size 0;"
@@ -66,6 +67,8 @@ let
     "port 80 only on the tailnet" =
       lib.elem 80 on.networking.firewall.interfaces.tailscale0.allowedTCPPorts
       && !(lib.elem 80 on.networking.firewall.allowedTCPPorts);
+    "weave staging issuer" =
+      on.patchwork.services.krater.weave.issuer == "https://weave-staging.patchworklabs.org";
     "trusted proxy count" = on.patchwork.services.krater.extraEnv.KRATER_TRUSTED_PROXY_COUNT == "2";
   };
   failed = lib.attrNames (lib.filterAttrs (_: ok: !ok) checks);
@@ -82,15 +85,15 @@ pkgs.runCommand "krater-weft" { } ''
   }
   # lib.escapeShellArg leaves a name:address with no special characters
   # unquoted.
-  skein="--add-host skein.wildebeest-stargazer.ts.net:100.109.223.51"
+  hem="--add-host hem.wildebeest-stargazer.ts.net:100.67.124.123"
 
-  # The portal, the worker, the database wait and the migrations get skein's
+  # The portal, the worker, the database wait and the migrations get hem's
   # tailnet address. SeaweedFS does not talk to the database.
-  grep -F -- "$skein" ${svc.krater-web.serviceConfig.ExecStart}
-  grep -F -- "$skein" ${svc.krater-worker.serviceConfig.ExecStart}
+  grep -F -- "$hem" ${svc.krater-web.serviceConfig.ExecStart}
+  grep -F -- "$hem" ${svc.krater-worker.serviceConfig.ExecStart}
   for f in ${lib.concatStringsSep " " (lib.filter (lib.hasPrefix "/nix/store/") (lib.toList svc.krater-web.serviceConfig.ExecStartPre))}; do
     if grep -qF 'alembic upgrade head' "$f"; then
-      test "$(grep -cF -- "$skein" "$f")" = 2
+      test "$(grep -cF -- "$hem" "$f")" = 2
       prepare=1
     fi
   done
@@ -102,8 +105,9 @@ pkgs.runCommand "krater-weft" { } ''
   grep -F -- '--publish 127.0.0.1:3011:8333' ${svc.krater-storage.serviceConfig.ExecStart}
 
   # alastor routes both names to weft over the tailnet.
-  grep -F 'Host(`krater.patchworklabs.org`)' ${edgeToml}
-  grep -F 'Host(`krater-storage.patchworklabs.org`)' ${edgeToml}
+  grep -F 'Host(`krater-staging.patchworklabs.org`)' ${edgeToml}
+  grep -F 'Host(`krater-staging-storage.patchworklabs.org`)' ${edgeToml}
+  absent 'Host(`krater.patchworklabs.org`)' ${edgeToml}
   grep -F 'http://weft.wildebeest-stargazer.ts.net' ${edgeToml}
   touch $out
 ''

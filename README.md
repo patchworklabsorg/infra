@@ -12,7 +12,7 @@ Declarative infrastructure for Patchwork Labs: every Patchwork host, the NixOS m
 | `hosts/installer.nix` | The installer ISO: NixOS minimal with the admin SSH keys on root. |
 | `bin/install-host` | Plans and applies the VM, reads its address, runs nixos-anywhere. |
 | `bin/new-quilt-staging-secrets` | Writes the two Quilt staging secrets with a new random password and `SECRET_KEY_BASE`. Prints no value. |
-| `bin/new-krater-secrets` | Writes Krater's two production secrets with a new random database password and keys. Prints no value. |
+| `bin/new-krater-secrets` | Writes Krater's two secrets for one environment (`staging` or `production`) with a new random database password and keys. Prints no value. |
 | `hosts/central-db-schema.nix` | Apps and shared schemas of the central databases. |
 | `hosts/alastor/` | Modules that `jaspermayone/infra` imports for alastor. |
 | `modules/common/` | Accounts, SSH, sudo, Tailscale, Nix. Every host imports it. `keys.nix` holds the SSH keys. |
@@ -21,7 +21,7 @@ Declarative infrastructure for Patchwork Labs: every Patchwork host, the NixOS m
 | `modules/weave/` | The Weave service module. |
 | `modules/quilt/` | The Quilt service module. |
 | `modules/krater/` | The Krater service module (portal, worker, screenshot storage; Krater Compute off by default). Exported as `nixosModules.krater`. |
-| `hosts/weft/krater.nix` | Krater on weft: instance settings and secrets. Krater stays off until its Weave client id is set. |
+| `hosts/weft/krater.nix` | Krater staging on weft: instance settings and secrets. Krater stays off until its env file and its Weave client id exist. |
 | `tests/` | NixOS VM tests. |
 | `secrets/` | agenix secrets. `secrets.nix` lists the recipients of each file. |
 | `ansible/` | Ansible for the Windows hosts and AD: `windows.yml`, `ad.yml`. See `ansible/README.md`. |
@@ -161,13 +161,13 @@ alastor also rebuilds itself at 04:00 from `jaspermayone/infra` `main`. It uses 
 
 ## Krater on weft
 
-Krater runs on weft, its own VM, so the people who run Krater cannot read the other apps' secrets. alastor routes `krater.patchworklabs.org` and `krater-storage.patchworklabs.org` to nginx on weft over the tailnet (`nixosModules.edge-alastor`).
+Only Krater staging runs today, on weft. Krater has no production instance yet. weft is its own VM, so the people who run Krater cannot read the other apps' secrets. alastor routes `krater-staging.patchworklabs.org` and `krater-staging-storage.patchworklabs.org` to nginx on weft over the tailnet (`nixosModules.edge-alastor`).
 
 Krater has no registry image. `krater-build` fetches one commit of `patchworklabsorg/krater` and builds it on weft with the repo's own Dockerfile. A deploy writes the commit to `/var/lib/krater/source-rev`, then runs `systemctl start krater-build` (the running site keeps serving) and `systemctl restart krater-web`. So Krater releases do not need a change here. Only the module and its settings do.
 
-Krater's database is its schema `krater` in `patchwork_central` (skein), like the other central apps. The module runs no Postgres of its own, and skein's nightly dump covers it. weft reaches skein over the tailnet (`tag:patchwork-krater` to skein:5432).
+Krater staging's database is its schema `krater` in `patchwork_central` on hem (port 5432), like the other central apps. The module runs no Postgres of its own. weft reaches hem over the tailnet (`tag:patchwork-krater` to hem:5432). Sign-in is Weave staging.
 
-Before weft runs Krater: DNS for its two hostnames (`krater`, `krater-storage`, proxied to alastor), the Weave client id in `hosts/weft/krater.nix`, the secrets `krater-env.age` and `central-prod-krater.age` (`bin/new-krater-secrets` writes both), and skein deployed with Krater's role. Krater's compute stays off at first, so `krater-vast-key.age` is not needed yet. Krater's `docs/dev/production.md` has the full checklist.
+Before Krater staging runs: `bin/new-krater-secrets staging` (writes `krater-staging-env.age` and `central-staging-krater.age`), hem deployed with Krater's role password, Krater's app in Weave staging (client id in `hosts/weft/krater.nix`, client secret and Slack values in `krater-staging-env.age`), and DNS for its two hostnames (`krater-staging`, `krater-staging-storage`, proxied to alastor). Krater's compute stays off, so no Vast key is needed. Krater's `docs/dev/production.md` has the full checklist.
 
 ## Quilt on batting
 

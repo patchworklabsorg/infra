@@ -88,9 +88,9 @@ variable "vms" {
     }
     weft = {
       vmid      = 361
-      memory_mb = 2048
+      memory_mb = 4096
       cores     = 2
-      disk_gb   = 20
+      disk_gb   = 40
       ip        = "10.100.90.61"
     }
   }

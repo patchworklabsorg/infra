@@ -8,7 +8,11 @@
 #
 # Tailnet tags: tag:patchwork (ssh from admins, port 80 from alastor) and
 # tag:patchwork-krater. The policy in jaspermayone/infra lets tag:patchwork-krater
-# reach skein:5432 (prod) only. hem (staging) gets a grant when it joins the tailnet.
+# reach skein:5432 (prod) and hem:5432 (staging). Only Krater staging runs
+# here today (./krater.nix).
+#
+# Built on 2026-10-22 with `qm create`, `tofu import` and nixos-anywhere. Its
+# host key is a recipient of ad-join.age (AD logon).
 { config, lib, ... }:
 let
   krater = config.patchwork.services.krater;

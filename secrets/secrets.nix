@@ -183,5 +183,6 @@ in
     warp
     hem
     batting
+    weft
   ];
 }

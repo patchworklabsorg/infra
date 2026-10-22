@@ -39,7 +39,9 @@
 
       # Lab VMs on pve01, VLAN 90. See README for the address plan.
       hosts = [
-        "warp" # apps: Weave prod + staging, future apps
+        "warp" # misc: redirects and other low-risk shared things
+        "batting" # Quilt
+        "weft" # Krater
         "skein" # patchwork_central, prod
         "seam" # patchwork_central_restricted, prod
         "hem" # both staging clusters
@@ -51,6 +53,9 @@
           modules = [
             agenix.nixosModules.default
             disko.nixosModules.disko
+            # On by default for the lab hosts. Not in nixosModules, so alastor
+            # does not get it.
+            ./modules/banner
             ./hosts/${name}/configuration.nix
           ];
         };
@@ -59,22 +64,17 @@
       nixosModules = {
         # The Weave service module alone, with no instance settings.
         weave = ./modules/weave;
-        # Weave as it runs on alastor today: instance settings, deploy key,
-        # Traefik routes and agenix secrets. Retire once Weave runs on warp.
+        # Weave on alastor: instance settings, deploy key, Traefik routes and
+        # agenix secrets. Weave stays on alastor.
         weave-alastor = ./hosts/alastor/weave.nix;
-        # alastor as the public edge for apps on lab hosts. Replaces
-        # weave-alastor on alastor after the move to warp.
+        # alastor as the public edge for apps on the lab app VMs. Import it
+        # next to weave-alastor.
         edge-alastor = ./hosts/alastor/edge.nix;
         # The Quilt service module alone, with no instance settings.
         quilt = ./modules/quilt;
-        # Quilt on alastor: instance settings, Traefik route and agenix
-        # secrets. Needs alastor's Tailscale to reach seam.
-        quilt-alastor = ./hosts/alastor/quilt.nix;
-        # The Krater service module alone, with no instance settings.
+        # The Krater service module alone, with no instance settings. weft
+        # imports it through hosts/weft/krater.nix.
         krater = ./modules/krater;
-        # Krater as it runs on alastor: instance settings, Traefik routes and
-        # agenix secrets. Not imported by alastor yet.
-        krater-alastor = ./hosts/alastor/krater.nix;
       };
 
       nixosConfigurations = nixpkgs.lib.genAttrs hosts mkHost;
@@ -82,8 +82,15 @@
       # deploy .#<host>. Over the tailnet, as on jaspermayone/infra's lab hosts.
       # Activation restarts sshd and tailscaled, which cuts the connection
       # deploy-rs confirms over, so magic rollback would always time out.
+      # Port 2222 is sshd, not Tailscale SSH (modules/common): the session must
+      # live outside tailscaled. The first deploy of a host that does not have
+      # 2222 yet needs `--ssh-opts "-p 22"`.
       deploy.nodes = nixpkgs.lib.genAttrs hosts (name: {
         hostname = "${name}.${tailnet}";
+        sshOpts = [
+          "-p"
+          "2222"
+        ];
         magicRollback = false;
         autoRollback = false;
         profiles.system = {
@@ -134,10 +141,23 @@
               }
               // nixpkgs.lib.optionalAttrs pkgs.stdenv.isLinux {
                 central-db = import ./tests/central-db.nix { inherit pkgs; };
-                quilt-alastor = import ./tests/quilt-alastor.nix {
+                banner = import ./tests/banner.nix {
                   inherit pkgs;
                   inherit (nixpkgs.lib) nixosSystem;
-                  module = self.nixosModules.quilt-alastor;
+                  hosts = self.nixosConfigurations;
+                  inherit (self) nixosModules;
+                  agenixModule = agenix.nixosModules.default;
+                };
+                quilt-batting = import ./tests/quilt-batting.nix {
+                  inherit pkgs;
+                  inherit (nixpkgs.lib) nixosSystem;
+                  module = ./hosts/batting/quilt.nix;
+                  agenixModule = agenix.nixosModules.default;
+                };
+                weave-alastor = import ./tests/weave-alastor.nix {
+                  inherit pkgs;
+                  inherit (nixpkgs.lib) nixosSystem;
+                  module = self.nixosModules.weave-alastor;
                   agenixModule = agenix.nixosModules.default;
                 };
               }

@@ -1,26 +1,35 @@
-# alastor as the public edge for Patchwork apps on lab hosts. Exported as
-# nixosModules.edge-alastor. alastor terminates TLS and proxies plain HTTP
-# over the tailnet to nginx on the app host. Same pattern as saker/Sentry in
+# alastor as the public edge for Patchwork apps on the lab app VMs. Exported
+# as nixosModules.edge-alastor. alastor terminates TLS and proxies plain HTTP
+# over the tailnet to nginx on the app's VM. Same pattern as saker/Sentry in
 # jaspermayone/infra.
 #
-# Import this INSTEAD of nixosModules.weave-alastor once Weave runs on warp.
-# The router names stay `idp` and `weave-staging`.
+# Weave stays on alastor (nixosModules.weave-alastor), so it has no route
+# here. Import this module next to weave-alastor. One VM per app: add a route
+# when the app runs on its VM, and remove the app's own alastor module in the
+# same change in jaspermayone/infra.
 { lib, pkgs, ... }:
 let
   tailnet = "wildebeest-stargazer.ts.net";
 
+  # <router name> = { backend = "<host>"; hosts = [ "<fqdn>" ... ]; };
+  # Krater on weft gets its route with that change.
   routes = {
-    idp = {
-      backend = "warp";
-      hosts = [
-        "idp.patchworklabs.org"
-        "weave.patchworklabs.org"
-        "slack.patchworklabs.org"
-      ];
+    # Not `quilt`/`quilt-staging`: those were the router names of the old
+    # Traefik fragment on alastor (quilt.toml), and the same name in two
+    # files of the file provider collides.
+    quilt-batting = {
+      backend = "batting";
+      hosts = [ "quilt.patchworklabs.org" ];
     };
-    weave-staging = {
+    quilt-staging-batting = {
+      backend = "batting";
+      hosts = [ "quilt-staging.patchworklabs.org" ];
+    };
+    # Every host in ../warp/redirects.nix. A new path on an existing host
+    # needs no change here.
+    redirects = {
       backend = "warp";
-      hosts = [ "weave-staging.patchworklabs.org" ];
+      hosts = builtins.attrNames (import ../warp/redirects.nix);
     };
   };
 in

@@ -41,6 +41,19 @@ class SplitSecrets(unittest.TestCase):
         self.assertIn("interfaces_wireguard_wg0_private_key", self.s)
         self.assertIn("system_login_radius_server_10_100_90_14_key", self.s)
 
+    def test_radius_key_name_for_the_ikev2_vpn(self):
+        out = vyos_split_secrets(
+            "set vpn ipsec remote-access radius server 10.100.90.14 key 'radius-test'\n")
+        self.assertEqual(out["secrets"], {
+            "vpn_ipsec_remote_access_radius_server_10_100_90_14_key": "radius-test"})
+
+    def test_acme_chain_ca_is_left_out(self):
+        out = vyos_split_secrets(
+            "set pki ca AUTOCHAIN_vpn-le certificate 'MIIBfake'\n"
+            "set pki ca my-root certificate 'MIIBkept'\n")
+        self.assertNotIn("AUTOCHAIN_vpn-le", out["template"])
+        self.assertIn("set pki ca my-root certificate 'MIIBkept'", out["template"])
+
     def test_template_renders_back_to_the_input(self):
         try:
             import jinja2

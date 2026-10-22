@@ -23,6 +23,7 @@ in
 
   networking.hostName = "seam";
   patchwork.lanAddress = "10.100.90.57";
+  patchwork.banner.role = "restricted central db";
 
   patchwork.centralDb = {
     enable = true;

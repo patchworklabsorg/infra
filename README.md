@@ -39,10 +39,12 @@ The lab hosts below are NixOS VMs on pve01, VLAN 90 (`patchwork.internal`). alas
 
 | Host | VMID | Address | Memory | Runs |
 |---|---|---|---|---|
-| `warp` | 356 | 10.100.90.56 | 6 GB | Weave prod + staging, future apps. nginx on `tailscale0:80` for alastor. |
-| `skein` | 355 | 10.100.90.55 | 4 GB | `patchwork_central`, prod. LAN + tailnet. |
+| `warp` | 356 | 10.100.90.56 | 6 GB | Misc: redirects and other low-risk shared things. No Docker. nginx on `tailscale0:80` for alastor. |
+| `skein` | 355 | 10.100.90.55 | 4 GB | `patchwork_central`, prod. Tailnet only. |
 | `seam` | 357 | 10.100.90.57 | 2 GB | `patchwork_central_restricted`, prod. Tailnet only. |
 | `hem` | 358 | 10.100.90.58 | 2 GB | Both staging clusters: central on 5432, restricted on 5433. Quilt staging uses the restricted one. |
+| `batting` | 360 | 10.100.90.60 | 4 GB | Quilt prod + staging. nginx on `tailscale0:80` for alastor. |
+| `weft` | 361 | 10.100.90.61 | 2 GB | Krater prod + staging. nginx on `tailscale0:80` for alastor. |
 
 The Windows hosts are managed by Ansible (`ansible/`):
 
@@ -53,15 +55,18 @@ The Windows hosts are managed by Ansible (`ansible/`):
 | `bobbin` | 312 | 10.100.90.12 | Issuing CA |
 | `shuttle` | 314 | 10.100.90.14 | NPS / RADIUS |
 
-VMIDs 356-358 and their addresses are proposed. Confirm that they are free before you create the VMs. pve01 had 121 of 125.8 GiB committed on 2026-08-25, so free about 14 GiB first.
+VMIDs 358, 360 and 361 and their addresses are proposed. Confirm that they are free before you create the VMs. On 2026-10-21 pve01 had about 25 GiB available. hem, batting and weft need 8 GiB together, with no ballooning.
 
 ```mermaid
 flowchart LR
-  internet((Internet)) --> alastor["alastor (Traefik, TLS)"]
-  alastor -- "tailnet, HTTP :80" --> warp
-  warp -- "LAN :5432" --> skein["skein: patchwork_central"]
-  warp -- "tailnet :5432" --> seam["seam: patchwork_central_restricted"]
-  warp -. staging .-> hem["hem: :5432 / :5433"]
+  internet((Internet)) --> alastor["alastor (Traefik, TLS, Weave)"]
+  alastor -- "tailnet, HTTP :80" --> warp["warp: misc"]
+  alastor -- "tailnet, HTTP :80" --> batting["batting: Quilt"]
+  alastor -- "tailnet, HTTP :80" --> weft["weft: Krater"]
+  weft -- "tailnet :5432" --> skein["skein: patchwork_central"]
+  batting -- "tailnet :5432" --> seam["seam: patchwork_central_restricted"]
+  batting -. "staging :5433" .-> hem["hem: :5432 / :5433"]
+  weft -. "staging :5432" .-> hem
 ```
 
 ## Login
@@ -72,7 +77,7 @@ Every host joins the `patchwork.internal` AD forest (`modules/ad-join`), with th
 - Members of `lnx-<host>-admins` get sudo with their AD password.
 - The local accounts in `modules/common` are the break-glass way in.
 
-Staff reach the lab over the thimble VPN (AD login through NPS on shuttle) or over Tailscale.
+Staff reach the lab over the thimble VPN or over Tailscale. thimble has WireGuard (one key per device) and, after the rollout in `ansible/README.md` ("VPN"), IKEv2 with AD login: NPS on shuttle checks the password and the `vpn-users` group. Use the daily account. Admin accounts in Protected Users cannot log in to the VPN.
 
 Before a host is installed:
 
@@ -81,6 +86,22 @@ Before a host is installed:
 3. After the install, add the host key to `secrets/ad-join.age` and run `agenix -r`. `ad-join.service` then joins on the next boot or deploy.
 
 loom and spindle must run. They are the DNS servers, the KDCs and the time source of every host.
+
+## Login banners
+
+The lab hosts show a sewing-theme banner, in the style of thimble's. One banner shows before the SSH login. One shows after it. `modules/banner` makes both.
+
+The banner is on by default. `flake.nix` adds the module to every host in `hosts`, so a new host gets it with no change. alastor does not get it, because `modules/banner` is not in `nixosModules`.
+
+Give a new host its role in `hosts/<host>/configuration.nix`. Without a role, the banners show only the host name.
+
+```nix
+patchwork.banner.role = "app host"; # short, lower case
+```
+
+To turn the banner off for a host, set `patchwork.banner.enable = false;`.
+
+The host name comes from `networking.hostName`. The option `patchwork.banner.art` replaces the art after login. Check the result with `nix eval --raw .#nixosConfigurations.<host>.config.users.motd`. The check `banner` tests the seam banner and the default.
 
 ## Install a host
 
@@ -113,7 +134,7 @@ This repo is public. Nothing here depends on `jaspermayone/infra`, which is priv
 flowchart LR
   pinfra["patchworklabsorg/infra (this repo)"]
   jinfra["jaspermayone/infra (private)"]
-  pinfra -- "nixosModules.weave-alastor, quilt-alastor" --> jinfra
+  pinfra -- "nixosModules.weave-alastor, edge-alastor" --> jinfra
   jinfra -- "deploy-rs" --> alastor
   pinfra -- "deploy-rs" --> lab["warp, skein, seam, hem"]
 ```
@@ -138,17 +159,19 @@ To change Weave on alastor:
 
 alastor also rebuilds itself at 04:00 from `jaspermayone/infra` `main`. It uses the revision in that repo's `flake.lock`, so a merge here does nothing on alastor until step 2.
 
-## Krater on alastor
+## Krater on weft
 
-Krater has no registry image. `krater-build` fetches one commit of `patchworklabsorg/krater` and builds it on the host with the repo's own Dockerfile. A deploy writes the commit to `/var/lib/krater/source-rev`, then runs `systemctl start krater-build` (the running site keeps serving) and `systemctl restart krater-web`. So Krater releases don't need a change here; only the module and its settings do.
+Krater runs on weft, its own VM, so the people who run Krater cannot read the other apps' secrets. alastor routes `krater.patchworklabs.org` and `krater-storage.patchworklabs.org` to nginx on weft over the tailnet (`nixosModules.edge-alastor`).
 
-Krater's database is its schema `krater` in `patchwork_central` (skein), like Weave's and Quilt's central databases; the module runs no Postgres of its own, and skein's nightly dump covers it.
+Krater has no registry image. `krater-build` fetches one commit of `patchworklabsorg/krater` and builds it on weft with the repo's own Dockerfile. A deploy writes the commit to `/var/lib/krater/source-rev`, then runs `systemctl start krater-build` (the running site keeps serving) and `systemctl restart krater-web`. So Krater releases do not need a change here. Only the module and its settings do.
 
-Before alastor imports `nixosModules.krater-alastor`: DNS for its two hostnames (`krater`, `krater-storage`), the Weave client id in `hosts/alastor/krater.nix`, the secrets `krater-env.age` and `central-prod-krater.age` (`bin/new-krater-secrets` writes both), and skein deployed with Krater's role. Krater's compute stays off at first, so `krater-vast-key.age` isn't needed yet. Krater's `docs/dev/production.md` has the full checklist.
+Krater's database is its schema `krater` in `patchwork_central` (skein), like the other central apps. The module runs no Postgres of its own, and skein's nightly dump covers it. weft reaches skein over the tailnet (`tag:patchwork-krater` to skein:5432).
 
-## Quilt on alastor
+Before weft runs Krater: DNS for its two hostnames (`krater`, `krater-storage`, proxied to alastor), the Weave client id in `hosts/weft/krater.nix`, the secrets `krater-env.age` and `central-prod-krater.age` (`bin/new-krater-secrets` writes both), and skein deployed with Krater's role. Krater's compute stays off at first, so `krater-vast-key.age` is not needed yet. Krater's `docs/dev/production.md` has the full checklist.
 
-[Quilt](https://github.com/patchworklabsorg/quilt) runs on alastor as two Docker containers, like Weave. `hosts/alastor/quilt.nix` is the instance, exported as `nixosModules.quilt-alastor`. `modules/quilt` is the service module. The contract with the app is `docs/deploy.md` in the quilt repo.
+## Quilt on batting
+
+[Quilt](https://github.com/patchworklabsorg/quilt) runs on batting as two Docker containers, like Weave. `hosts/batting/quilt.nix` is the instance. `modules/quilt` is the service module. nginx on batting fronts the ports, and alastor routes `quilt.patchworklabs.org` and `quilt-staging.patchworklabs.org` to batting (`nixosModules.edge-alastor`). The contract with the app is `docs/deploy.md` in the quilt repo.
 
 | Item | Value |
 |---|---|
@@ -156,26 +179,27 @@ Before alastor imports `nixosModules.krater-alastor`: DNS for its two hostnames 
 | Units | `quilt-web` (`./bin/rails server` on `127.0.0.1:3005`, migrates on start) and `quilt-worker` (`bundle exec good_job start`) |
 | Image | `ghcr.io/patchworklabsorg/quilt:main` (option `image`). Pin it to `:<sha>` for a known build. |
 | Database | `patchwork_central_restricted` on seam, role and schema `quilt`, over the tailnet |
-| Secrets | `quilt-env.age`, `quilt-ghcr-token.age` (alastor), `restricted-prod-quilt.age` (seam) |
+| Secrets | `quilt-env.age`, `quilt-ghcr-token.age` (batting), `restricted-prod-quilt.age` (seam) |
 
 ```mermaid
 flowchart LR
   internet((Internet)) --> traefik["alastor: Traefik"]
-  traefik -- "127.0.0.1:3005" --> web[quilt-web]
+  traefik -- "tailnet :80" --> nginx["batting: nginx"]
+  nginx -- "127.0.0.1:3005" --> web[quilt-web]
   worker[quilt-worker] -- "waits for /up" --> web
   web -- "tailnet :5432" --> seam["seam: patchwork_central_restricted, schema quilt"]
   worker -- "tailnet :5432" --> seam
 ```
 
-Both containers use the host network, so they reach `seam.wildebeest-stargazer.ts.net` through alastor's Tailscale. The worker waits until `GET /up` on the web server answers. The web server answers only after the migrations ran.
+Both containers use the host network, so they reach `seam.wildebeest-stargazer.ts.net` through batting's Tailscale (`tag:patchwork-quilt`). The worker waits until `GET /up` on the web server answers. The web server answers only after the migrations ran.
 
 `RESTRICTED_DATABASE_URL` in `quilt-env.age` holds the database password. It must be the same password as in `restricted-prod-quilt.age`, which seam sets on the role `quilt`.
 
-To deploy a new `main` image, run `sudo systemctl restart quilt-web` on alastor. That restarts the worker too. To change the module, follow the same steps as for Weave above.
+To deploy a new `main` image, run `sudo systemctl restart quilt-web` on batting. That restarts the worker too. To change the module, follow the same steps as for Weave above.
 
 ## Quilt staging
 
-Quilt staging is a second instance on alastor, next to production. It uses the Mercury sandbox, Weave staging and the restricted staging cluster on hem. It can never move real money: with `RAILS_ENV=staging`, Quilt refuses to boot unless `MERCURY_API_BASE` is the sandbox URL (patchworklabsorg/quilt#35). The option is `staging` in `modules/quilt`. `hosts/alastor/quilt.nix` turns it on.
+Quilt staging is a second instance on batting, next to production. It uses the Mercury sandbox, Weave staging and the restricted staging cluster on hem. It can never move real money: with `RAILS_ENV=staging`, Quilt refuses to boot unless `MERCURY_API_BASE` is the sandbox URL (patchworklabsorg/quilt#35). The option is `staging` in `modules/quilt`. `hosts/batting/quilt.nix` turns it on.
 
 | Item | Production | Staging |
 |---|---|---|
@@ -194,7 +218,8 @@ Quilt staging is a second instance on alastor, next to production. It uses the M
 ```mermaid
 flowchart LR
   internet((Internet)) --> traefik["alastor: Traefik"]
-  traefik -- "127.0.0.1:3006" --> web[quilt-staging-web]
+  traefik -- "tailnet :80" --> nginx["batting: nginx"]
+  nginx -- "127.0.0.1:3006" --> web[quilt-staging-web]
   worker[quilt-staging-worker] -- "waits for /up" --> web
   web -- "tailnet :5433" --> hem["hem: restricted-staging container, schema quilt"]
   worker -- "tailnet :5433" --> hem
@@ -212,7 +237,7 @@ RESTRICTED_DATABASE_URL=postgres://quilt:<password>@hem.wildebeest-stargazer.ts.
 
 `<password>` must be the value in `restricted-staging-quilt.age`. hem decrypts that file to `/run/central-db-passwords/patchwork_central_restricted/quilt` and binds the directory into the `restricted-staging` container, where `central-db-setup` sets the password on the role `quilt`. `hosts/hem/configuration.nix` explains why hem does not use `/run/agenix` for this. hem has no server TLS. Tailscale encrypts the path, so the URL uses `sslmode=disable`.
 
-To deploy a new `main` image to staging, run `sudo systemctl restart quilt-staging-web` on alastor. That restarts the staging worker too.
+To deploy a new `main` image to staging, run `sudo systemctl restart quilt-staging-web` on batting. That restarts the staging worker too.
 
 ### Go live
 
@@ -223,7 +248,7 @@ Do the steps in this order.
 3. Prepare AD for hem. Run `cd ansible && ansible-playbook ad.yml -t host-groups`. Add the A record for hem in AD DNS. See "Login".
 4. Create the VM: `cd terraform/proxmox && tofu apply -target='proxmox_virtual_environment_vm.nixos["hem"]'`. Read the address with `tofu output ipv4_addresses`.
 5. Install hem: `nixos-anywhere --flake .#hem --build-on remote --target-host root@<ip>`.
-6. Join hem to the tailnet. Make sure that the tailnet policy lets alastor reach `hem:5433`.
+6. Join hem to the tailnet. Make sure that the tailnet policy lets batting (`tag:patchwork-quilt`) reach `hem:5433`.
 7. Get the host key: `ssh-keyscan -t ed25519 10.100.90.58`. Add it as `hem` in `secrets/secrets.nix`. Add `hem` to `restricted-staging-quilt.age` and `ad-join.age`. Remove the TODO.
 8. Create the secrets: `nix develop -c bin/new-quilt-staging-secrets`. The script writes `restricted-staging-quilt.age` and `quilt-staging-env.age` with a random password and `SECRET_KEY_BASE`. It leaves the Weave client and the Mercury tokens empty.
 9. In Weave staging (`https://weave-staging.patchworklabs.org`), register Quilt as a confidential app:
@@ -234,12 +259,12 @@ Do the steps in this order.
 11. Add the values: `cd secrets && agenix -e quilt-staging-env.age`. Set `WEAVE_CLIENT_ID`, `WEAVE_CLIENT_SECRET` and `MERCURY_API_TOKEN`. Keep `QUILT_TOPUPS=off`.
 12. Re-key: `cd secrets && agenix -r`. Commit the `.age` files and merge.
 13. Deploy hem: `deploy .#hem`. In the container, make sure that `central-db-setup` succeeded and does not log "no password file for quilt": `sudo nixos-container run restricted-staging -- journalctl -u central-db-setup`.
-14. From alastor, test the connection: `psql "<RESTRICTED_DATABASE_URL>" -c 'SHOW search_path'`. The result must be `quilt`.
+14. From batting, test the connection: `psql "<RESTRICTED_DATABASE_URL>" -c 'SHOW search_path'`. The result must be `quilt`.
 15. Merge the DNS record `quilt-staging` (A `129.213.163.213`, proxied): patchworklabsorg/dns#11.
-16. In `jaspermayone/infra`, run `nix flake update patchwork-infra` and deploy alastor.
-17. On alastor, check `systemctl status quilt-staging-web quilt-staging-worker` and `curl -i http://127.0.0.1:3006/up`. Then sign in at `https://quilt-staging.patchworklabs.org`.
+16. Deploy batting (`deploy .#batting`). alastor routes `quilt-staging` to batting (`edge-alastor`).
+17. On batting, check `systemctl status quilt-staging-web quilt-staging-worker` and `curl -i http://127.0.0.1:3006/up`. Then sign in at `https://quilt-staging.patchworklabs.org`.
 
-To test top-ups on staging, add a sandbox `MERCURY_WRITE_TOKEN` with alastor's IP on its allowlist, and set `QUILT_TOPUPS` to `approval_only`.
+To test top-ups on staging, add a sandbox `MERCURY_WRITE_TOKEN` with batting's public IP on its allowlist, and set `QUILT_TOPUPS` to `approval_only`.
 
 ## Commands
 

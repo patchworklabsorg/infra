@@ -1,0 +1,9 @@
+---
+# bobbin (issuing CA) and shuttle (NPS). Tier 0 (ad/TIERING.md).
+#
+# windows.yml joins them to the tailnet with this tag. The tailnet policy
+# (jaspermayone/infra, tailscale/policy.hujson) has no grant with this tag as
+# src or dst, so nothing reaches them over the tailnet and they reach
+# nothing. Without a tag they would match autogroup:member.
+tailscale_advertise_tags:
+  - tag:patchwork-t0

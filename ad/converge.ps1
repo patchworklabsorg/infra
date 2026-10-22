@@ -53,7 +53,9 @@
 
     The delegation block gives the domain local groups in delegation.grants
     their rights on OUs (helpdesk on the people OUs, computer admin on
-    Servers and Computers), and puts explicit deny ACEs on the OUs in
+    Servers and Computers). A grant can also name one service account
+    ("principal"): svc-weave-ldap gets the Weave rights on the people OUs
+    and on Users/Members. It puts explicit deny ACEs on the OUs in
     delegation.deny (Admin-Accounts, Service-Accounts, Servers/Tier0). ACEs
     are added only when missing. Extra ACEs are reported, never removed. It
     also reports the AdminSDHolder state (adminCount=1 accounts, extra ACEs).
@@ -61,6 +63,17 @@
     Build moves an object only down, into a child OU of the OU it is in now
     (Admin-Accounts -> Admin-Accounts/Tier0, Servers -> Servers/Tier0 for
     the Tier 0 member servers in tiering.computers). Other moves are Migrate.
+
+    "weaveId" on a person is the Weave public id (PWL..., the OIDC sub).
+    Build writes it to employeeID. A person without one is reported. A
+    weaveId that another account already holds is reported and not set.
+
+    A group with "formerNames" is renamed, never made again: Build finds it
+    by its name, else by a former name, and changes its sAMAccountName, its
+    CN and (when it holds a former name) its displayName. The SID stays, so
+    members, ACEs, PSO links and other references stay. When the name and a
+    former name both exist, Build reports it and does not touch that group
+    or anything that names it.
 
     It never touches the contents of an OU marked "managed": false
     (Users/Members, which Weave owns) or the members of a group marked
@@ -163,7 +176,11 @@ function Find-Object([string]$Filter, [string[]]$Properties = @()) {
 function Find-User([string]$Sam) {
     Get-ADUser -Filter "SamAccountName -eq '$Sam'" @ad -Properties `
         company, division, department, title, givenName, sn, displayName, manager, `
-        userPrincipalName, mail, Enabled, ProtectedFromAccidentalDeletion
+        userPrincipalName, mail, employeeID, Enabled, ProtectedFromAccidentalDeletion
+}
+
+function Find-UserByEmployeeId([string]$Id) {
+    Get-ADUser -Filter "employeeID -eq '$Id'" @ad
 }
 
 function Find-UserByUpn([string]$Upn) {
@@ -207,16 +224,131 @@ function Get-WantedUpn($u) {
     $null
 }
 
+# The group with this exact sAMAccountName, or $null.
+function Find-GroupExact([string]$Name) {
+    Get-ADGroup -Filter "SamAccountName -eq '$Name'" @ad -Properties Description, DisplayName, ProtectedFromAccidentalDeletion
+}
+
+# --- Group renames -------------------------------------------------------------
+# A managed group can list "formerNames". Build finds the group by its name
+# first, then by a former name, and renames the group it found. A rename
+# keeps the object, so the SID, the members, the ACEs, the PSO links and the
+# silo references stay. Under -WhatIf the group keeps its old name, so every
+# lookup below also follows the former names.
+#
+# When a group exists under its name AND under a former name (or under two
+# former names), the script cannot know which object is right. It reports
+# the conflict and does not touch that group, its members, or any group,
+# PSO or ACE that names it.
+
+# name -> former names, for every managed group that has them.
+$script:formerNames = @{}
+foreach ($fg in @($data.roleGroups) + @($data.resourceGroups)) {
+    if ($fg.PSObject.Properties['formerNames'] -and @($fg.formerNames).Count) {
+        $script:formerNames[$fg.name] = @($fg.formerNames)
+    }
+}
+# ObjectGUID -> managed name, for groups found under a former name.
+$script:renamedGuids = @{}
+# Managed names with a rename conflict.
+$script:groupConflicts = @()
+
+# The group for a managed name: by the name, else by a former name. $null
+# for a name with a conflict, so nothing is done to either object.
 function Find-Group([string]$Name) {
-    Get-ADGroup -Filter "SamAccountName -eq '$Name'" @ad -Properties Description, ProtectedFromAccidentalDeletion
+    if ($script:groupConflicts -contains $Name) { return $null }
+    $g = Find-GroupExact $Name
+    if ($g -or -not $script:formerNames.ContainsKey($Name)) { return $g }
+    foreach ($old in $script:formerNames[$Name]) {
+        $g = Find-GroupExact $old
+        if ($g) { return $g }
+    }
+    $null
+}
+
+# The name org.json uses for an AD principal: the managed name of a group
+# that still has a former name (under -WhatIf), else its sAMAccountName.
+function Get-ManagedName($Principal) {
+    $guid = "$(Get-Prop $Principal 'ObjectGUID')"
+    if ($guid -and $script:renamedGuids.ContainsKey($guid)) { return $script:renamedGuids[$guid] }
+    $Principal.SamAccountName
+}
+
+# True when one of the names has a rename conflict.
+function Test-GroupConflict([string[]]$Names) {
+    [bool]@($Names | Where-Object { $script:groupConflicts -contains $_ }).Count
+}
+
+# Finds the conflicts and the pending renames. Build calls this first, before
+# any other lookup.
+function Initialize-GroupNames {
+    foreach ($name in @($script:formerNames.Keys | Sort-Object)) {
+        $found = @()
+        $current = Find-GroupExact $name
+        if ($current) { $found += $current }
+        # sAMAccountName is one namespace. A user or computer with the new
+        # name would get the group's ACEs and memberships.
+        $other = @(Find-Object "SamAccountName -eq '$name'" | Where-Object { $_.ObjectClass -ne 'group' })
+        if ($other.Count) {
+            $script:groupConflicts += $name
+            Write-Report "Group ${name}: a $($other[0].ObjectClass) has this sAMAccountName ($($other[0].DistinguishedName)). Nothing was renamed or changed for $name, or for the groups, PSOs and ACEs that name it. Rename that object by hand, then run Build again."
+            continue
+        }
+        foreach ($old in $script:formerNames[$name]) {
+            $g = Find-GroupExact $old
+            if ($g -and -not ($found | Where-Object { "$($_.ObjectGUID)" -eq "$($g.ObjectGUID)" })) { $found += $g }
+        }
+        if ($found.Count -gt 1) {
+            $script:groupConflicts += $name
+            $list = ($found | ForEach-Object { "$($_.SamAccountName) ($($_.DistinguishedName))" }) -join ', '
+            Write-Report "Group $name exists more than once: $list. Nothing was renamed or changed for $name, or for the groups, PSOs and ACEs that name it. Delete or rename the wrong object by hand, then run Build again."
+        } elseif ($found.Count -eq 1 -and $found[0].SamAccountName -ne $name) {
+            $script:renamedGuids["$($found[0].ObjectGUID)"] = $name
+        }
+    }
+}
+
+# Renames a group that org.json lists under another name: sAMAccountName,
+# then the CN (Rename-ADObject), then displayName when it holds a former
+# name. Each part is its own change, so a run that stops half way is
+# finished by the next run.
+function Sync-GroupName($G, [string]$Name) {
+    $former = @(if ($script:formerNames.ContainsKey($Name)) { $script:formerNames[$Name] })
+    if (-not $former.Count) { return }
+    if ($G.SamAccountName -ne $Name) {
+        Invoke-Change $G.DistinguishedName "Rename group $($G.SamAccountName) to $Name (sAMAccountName)" {
+            Set-ADGroup -Identity $G -SamAccountName $Name @ad
+        }
+    }
+    $cn = "$(Get-Prop $G 'Name')"
+    if ($cn -cne $Name -and $former -contains $cn) {
+        Invoke-Change $G.DistinguishedName "Rename group CN $cn to $Name" {
+            Rename-ADObject -Identity $G -NewName $Name @ad
+        }
+    }
+    $disp = "$(Get-Prop $G 'DisplayName')"
+    if ($disp -and $former -contains $disp) {
+        Invoke-Change $G.DistinguishedName "Set displayName '$Name' (was $disp)" {
+            # By GUID: a CN rename above changed the DN of $G.
+            Set-ADGroup -Identity $G.ObjectGUID -DisplayName $Name @ad
+        }
+    }
 }
 
 function Test-DN([string]$DN) {
     [bool](Find-Object "distinguishedName -eq '$DN'")
 }
 
-$unmanagedOUs = @($data.ous | Where-Object { $_.PSObject.Properties['managed'] -and -not $_.managed } |
-        ForEach-Object { ConvertTo-OUDN $_.path })
+$unmanagedPaths = @($data.ous | Where-Object { $_.PSObject.Properties['managed'] -and -not $_.managed } |
+        ForEach-Object { $_.path })
+# The OUs another system owns, and the old-tree OUs that Migrate maps to them
+# (Patchwork-Objects/Members -> Users/Members).
+$unmanagedOUs = @($unmanagedPaths | ForEach-Object { ConvertTo-OUDN $_ }) + @($data.migration.ouMap |
+        Where-Object { $_.from -and $unmanagedPaths -contains $_.to } | ForEach-Object { ConvertTo-OUDN $_.from $oldRootDN })
+# The service accounts that own those OUs ("owner"). An account they created
+# has them as its owner, and an owner can change the ACL of the account.
+$unmanagedOwners = @($data.ous | Where-Object { $_.PSObject.Properties['managed'] -and -not $_.managed -and $_.PSObject.Properties['owner'] } |
+        ForEach-Object { $_.owner })
 
 function Test-InUnmanagedOU([string]$DN) {
     foreach ($ou in $unmanagedOUs) { if ($DN -like "*,$ou") { return $true } }
@@ -285,8 +417,17 @@ function Sync-OU([string]$DN, [string]$Description) {
 }
 
 function Sync-Group([string]$Name, [string]$Description, [string]$Scope, [string]$OUPath) {
+    # Initialize-GroupNames reported it.
+    if (Test-GroupConflict $Name) { return }
     $g = Find-Group $Name
     $target = ConvertTo-OUDN $OUPath
+    if ($g) {
+        Sync-GroupName $g $Name
+        # Read it again by GUID: a rename changed its name and DN.
+        if (-not $WhatIfPreference) {
+            $g = Get-ADGroup -Identity $g.ObjectGUID -Properties Description, DisplayName, ProtectedFromAccidentalDeletion @ad
+        }
+    }
     if (-not $g) {
         Invoke-Change "CN=$Name,$target" "Create $Scope group" {
             New-ADGroup -Name $Name -SamAccountName $Name -GroupCategory Security -GroupScope $Scope `
@@ -309,6 +450,11 @@ function Sync-Group([string]$Name, [string]$Description, [string]$Scope, [string
 
 # Makes the direct members of a group exactly $Desired (sAMAccountNames).
 function Sync-Members([string]$Group, [string[]]$Desired) {
+    # A member with a rename conflict could be swapped for the wrong object.
+    if (Test-GroupConflict (@($Group) + $Desired)) {
+        Write-Report "Members of $Group were not changed: $Group or one of its members has a rename conflict (see above)."
+        return
+    }
     $g = Find-Group $Group
     if (-not $g) {
         if ($Desired.Count) {
@@ -316,15 +462,25 @@ function Sync-Members([string]$Group, [string[]]$Desired) {
         }
         return
     }
-    $current = @(Get-ADGroupMember -Identity $g @ad | ForEach-Object { $_.SamAccountName })
+    $current = @(Get-ADGroupMember -Identity $g @ad | ForEach-Object { Get-ManagedName $_ })
     foreach ($m in $Desired | Where-Object { $current -notcontains $_ }) {
         # Under -WhatIf a new user does not exist yet. In a real run a missing
         # member is a user that Sync-User skipped.
-        if (-not $WhatIfPreference -and -not (Find-User $m) -and -not (Find-Group $m)) {
+        $mu = Find-User $m
+        if (-not $WhatIfPreference -and -not $mu -and -not (Find-Group $m)) {
             Write-Report "$m does not exist, so it was not added to $Group. Read the reports for $m above."
             continue
         }
-        Invoke-Change $Group "Add member $m" { Add-ADGroupMember -Identity $g -Members $m @ad }
+        if ($mu -and (Test-InUnmanagedOU $mu.DistinguishedName)) {
+            Write-Report "$m is $($mu.DistinguishedName), in an OU that another system owns, so it was not added to $Group."
+            continue
+        }
+        Invoke-Change $Group "Add member $m" {
+            # The resolved object, not the name: a managed group goes by
+            # Find-Group, so a user with the same name is never added.
+            $mObj = if ($script:formerNames.ContainsKey($m)) { Find-Group $m } else { $m }
+            Add-ADGroupMember -Identity $g -Members $mObj @ad
+        }
     }
     foreach ($m in $current | Where-Object { $Desired -notcontains $_ }) {
         Invoke-Change $Group "Remove member $m" {
@@ -361,6 +517,22 @@ function Sync-User($u) {
             @('displayName', 'displayName'), @('mail', 'mail'))) {
         if (Test-Field $u $pair[0]) { $want[$pair[1]] = $u.($pair[0]) }
     }
+    # The Weave link. Only a person has one. Weave sets employeeID itself
+    # for the members it creates in Users/Members.
+    if ($u.kind -eq 'person') {
+        if (Test-Field $u 'weaveId') {
+            $want.employeeID = $u.weaveId
+            if ($u.weaveId) {
+                $holder = Find-UserByEmployeeId $u.weaveId
+                if ($holder -and (-not $existing -or "$($holder.ObjectGUID)" -ne "$($existing.ObjectGUID)")) {
+                    Write-Report "$($u.sam): weaveId $($u.weaveId) is the employeeID of $($holder.SamAccountName) ($($holder.DistinguishedName)). employeeID was not set. Fix org.json or the accounts."
+                    $want.Remove('employeeID')
+                }
+            }
+        } else {
+            Write-Report "$($u.sam) has no weaveId. Weave cannot link this account. Add the Weave public id (PWL...) to org.json."
+        }
+    }
     if (-not $want.Contains('displayName') -and $want.Contains('givenName') -and $want.Contains('sn')) {
         $want.displayName = "$($want.givenName) $($want.sn)"
     }
@@ -374,6 +546,15 @@ function Sync-User($u) {
             }
         } else { $null }
     }
+
+    # An account in an OU that another system owns (a Weave member) is never
+    # taken over by a name match. Weave picks member names, so a member could
+    # otherwise get the name of a future entry and, with it, its groups.
+    if ($existing -and (Test-InUnmanagedOU $existing.DistinguishedName)) {
+        Write-Report "$($u.sam) is $($existing.DistinguishedName), in an OU that another system owns. Nothing changed for this user. Pick another sam, or move the account out by hand and set its owner to Domain Admins."
+        return
+    }
+    if ($existing) { Test-ForeignOwner $existing $u.sam }
 
     if (-not $existing) {
         if (-not $create) {
@@ -431,6 +612,19 @@ function Sync-User($u) {
     }
 
     Sync-Placement $existing $target $u.sam
+}
+
+# Reports a managed account whose owner is the service account of an
+# unmanaged OU (a Weave member that became staff). The owner can change the
+# ACL of the account, so it can give itself any right on it.
+function Test-ForeignOwner($Obj, [string]$Label) {
+    if (-not $unmanagedOwners.Count) { return }
+    $owner = "$((Get-Acl -Path (Get-AclPath $Obj.DistinguishedName)).Owner)"
+    foreach ($o in $unmanagedOwners) {
+        if ($owner -eq $o -or $owner -like "*\$o") {
+            Write-Report "$Label is owned by $owner. The owner can change its ACL. Set the owner to Domain Admins: dsacls `"$($Obj.DistinguishedName)`" /takeownership, as a Domain Admin."
+        }
+    }
 }
 
 # True when $Child is an OU below $Parent, and $Parent is in the new tree.
@@ -507,7 +701,9 @@ function Sync-Privileged([string[]]$PathsAtStart) {
     $p = $data.privileged
     $tier0 = Find-Group $p.tier0Group
     $da = Get-ADGroup -Identity "Domain Admins" @ad
-    if ($tier0) {
+    if (Test-GroupConflict $p.tier0Group) {
+        Write-Report "$($p.tier0Group) was not checked in Domain Admins: it has a rename conflict (see above)."
+    } elseif ($tier0) {
         $daMembers = @(Get-ADGroupMember -Identity $da @ad | ForEach-Object { $_.SamAccountName })
         if ($daMembers -notcontains $tier0.SamAccountName) {
             Invoke-Change 'Domain Admins' "Add member $($p.tier0Group)" {
@@ -542,6 +738,7 @@ function Sync-Privileged([string[]]$PathsAtStart) {
         $allowed = @($p.allowedDirectMembers.$name)
         foreach ($m in Get-ADGroupMember -Identity $g @ad) {
             if ("$($m.SID)" -eq $builtinSid -and $builtinLeaves -contains $name) { continue }
+            $mName = Get-ManagedName $m
             if ($adminSams -contains $m.SamAccountName -and $allowed -notcontains $m.SamAccountName) {
                 if ($script:removeStanding) {
                     Invoke-Change $name "Remove standing admin $($m.SamAccountName) (JIT is on)" {
@@ -560,7 +757,7 @@ function Sync-Privileged([string[]]$PathsAtStart) {
                 } else {
                     Write-Report "$($m.SamAccountName) is in $name. It stays until every admin account is enabled and had a Domain Admins path before the run."
                 }
-            } elseif ($allowed -notcontains $m.SamAccountName) {
+            } elseif ($allowed -notcontains $mName) {
                 Write-Report "$($m.SamAccountName) is a direct member of $name and is not allowed in org.json."
             }
         }
@@ -635,9 +832,13 @@ function Sync-DefaultPasswordPolicy {
 
 # Makes the subjects of a PSO exactly the groups in $Desired.
 function Sync-PsoSubjects($Pso, [string]$PsoName, [string[]]$Desired) {
+    if (Test-GroupConflict $Desired) {
+        Write-Report "Subjects of $PsoName were not changed: one of them has a rename conflict (see above)."
+        return
+    }
     $current = @()
     if ($Pso) {
-        $current = @(Get-ADFineGrainedPasswordPolicySubject -Identity $Pso @ad | ForEach-Object { $_.SamAccountName })
+        $current = @(Get-ADFineGrainedPasswordPolicySubject -Identity $Pso @ad | ForEach-Object { Get-ManagedName $_ })
     }
     foreach ($s in $Desired | Where-Object { $current -notcontains $_ }) {
         $g = Find-Group $s
@@ -1030,6 +1231,14 @@ $guids = @{
     resetPassword = [guid]'00299570-246d-11d0-a768-00aa006e0529'  # User-Force-Change-Password
     lockoutTime   = [guid]'28630ebf-41d5-11d1-a9c1-0000f80367c1'  # attribute lockoutTime
     pwdLastSet    = [guid]'bf967a0a-0de6-11d0-a285-00aa003049e2'  # attribute pwdLastSet
+    changePassword     = [guid]'ab721a53-1e2f-11d0-9819-00aa0040529b'  # User-Change-Password
+    userAccountControl = [guid]'bf967a68-0de6-11d0-a285-00aa003049e2'  # attribute userAccountControl
+    employeeID         = [guid]'bf967962-0de6-11d0-a285-00aa003049e2'  # attribute employeeID
+    givenName          = [guid]'f0f8ff8e-1191-11d0-a060-00aa006c33ed'  # attribute givenName
+    sn                 = [guid]'bf967a41-0de6-11d0-a285-00aa003049e2'  # attribute sn
+    displayName        = [guid]'bf967953-0de6-11d0-a285-00aa003049e2'  # attribute displayName
+    mail               = [guid]'bf967961-0de6-11d0-a285-00aa003049e2'  # attribute mail
+    userPrincipalName  = [guid]'28630ebb-41d5-11d1-a9c1-0000f80367c1'  # attribute userPrincipalName
     none          = [guid]::Empty
 }
 
@@ -1050,6 +1259,34 @@ $rightsTemplates = @{
         @{ label = 'reset password'; rights = @('ExtendedRight'); objectType = 'resetPassword'; inheritance = 'Descendents'; inheritedObjectType = 'user' }
         @{ label = 'unlock (lockoutTime)'; rights = @('ReadProperty', 'WriteProperty'); objectType = 'lockoutTime'; inheritance = 'Descendents'; inheritedObjectType = 'user' }
         @{ label = 'change at next logon (pwdLastSet)'; rights = @('ReadProperty', 'WriteProperty'); objectType = 'pwdLastSet'; inheritance = 'Descendents'; inheritedObjectType = 'user' }
+        @{ label = 'read all'; rights = @('GenericRead'); objectType = 'none'; inheritance = 'Descendents'; inheritedObjectType = 'user' }
+    )
+    # Weave on the people that converge.ps1 manages: set a new password
+    # (reset), change it, unlock (a reset does not unlock), and read all.
+    # Weave writes no other attribute here. converge.ps1 owns the
+    # attributes, employeeID too.
+    'weave-password' = @(
+        @{ label = 'reset password'; rights = @('ExtendedRight'); objectType = 'resetPassword'; inheritance = 'Descendents'; inheritedObjectType = 'user' }
+        @{ label = 'change password'; rights = @('ExtendedRight'); objectType = 'changePassword'; inheritance = 'Descendents'; inheritedObjectType = 'user' }
+        @{ label = 'unlock (lockoutTime)'; rights = @('ReadProperty', 'WriteProperty'); objectType = 'lockoutTime'; inheritance = 'Descendents'; inheritedObjectType = 'user' }
+        @{ label = 'read all'; rights = @('GenericRead'); objectType = 'none'; inheritance = 'Descendents'; inheritedObjectType = 'user' }
+    )
+    # Weave on Users/Members, which it owns: create user objects, set and
+    # change passwords, enable, disable and unlock, and write the attributes
+    # it manages. No delete: Weave disables a member.
+    'weave-members'  = @(
+        @{ label = 'create users'; rights = @('CreateChild'); objectType = 'user'; inheritance = 'All'; inheritedObjectType = 'none' }
+        @{ label = 'reset password'; rights = @('ExtendedRight'); objectType = 'resetPassword'; inheritance = 'Descendents'; inheritedObjectType = 'user' }
+        @{ label = 'change password'; rights = @('ExtendedRight'); objectType = 'changePassword'; inheritance = 'Descendents'; inheritedObjectType = 'user' }
+        @{ label = 'pwdLastSet'; rights = @('ReadProperty', 'WriteProperty'); objectType = 'pwdLastSet'; inheritance = 'Descendents'; inheritedObjectType = 'user' }
+        @{ label = 'unlock (lockoutTime)'; rights = @('ReadProperty', 'WriteProperty'); objectType = 'lockoutTime'; inheritance = 'Descendents'; inheritedObjectType = 'user' }
+        @{ label = 'enable and disable (userAccountControl)'; rights = @('ReadProperty', 'WriteProperty'); objectType = 'userAccountControl'; inheritance = 'Descendents'; inheritedObjectType = 'user' }
+        @{ label = 'employeeID'; rights = @('ReadProperty', 'WriteProperty'); objectType = 'employeeID'; inheritance = 'Descendents'; inheritedObjectType = 'user' }
+        @{ label = 'givenName'; rights = @('ReadProperty', 'WriteProperty'); objectType = 'givenName'; inheritance = 'Descendents'; inheritedObjectType = 'user' }
+        @{ label = 'sn'; rights = @('ReadProperty', 'WriteProperty'); objectType = 'sn'; inheritance = 'Descendents'; inheritedObjectType = 'user' }
+        @{ label = 'displayName'; rights = @('ReadProperty', 'WriteProperty'); objectType = 'displayName'; inheritance = 'Descendents'; inheritedObjectType = 'user' }
+        @{ label = 'mail'; rights = @('ReadProperty', 'WriteProperty'); objectType = 'mail'; inheritance = 'Descendents'; inheritedObjectType = 'user' }
+        @{ label = 'userPrincipalName'; rights = @('ReadProperty', 'WriteProperty'); objectType = 'userPrincipalName'; inheritance = 'Descendents'; inheritedObjectType = 'user' }
         @{ label = 'read all'; rights = @('GenericRead'); objectType = 'none'; inheritance = 'Descendents'; inheritedObjectType = 'user' }
     )
     # Create and delete computer objects in the OU and its child OUs, and full
@@ -1082,7 +1319,10 @@ function Get-Delegation {
 
 # The objectSid of a principal (a SecurityIdentifier from AD), or $null.
 function Get-PrincipalSid([string]$Sam) {
-    $o = Find-Object "SamAccountName -eq '$Sam'"
+    if (Test-GroupConflict $Sam) { return $null }
+    # A managed group with former names: only Find-Group, so a user or a
+    # computer with the same name never gets the group's ACEs.
+    $o = if ($script:formerNames.ContainsKey($Sam)) { Find-Group $Sam } else { Find-Object "SamAccountName -eq '$Sam'" }
     if (-not $o) { return $null }
     Get-Prop (Get-ADObject -Identity $o.DistinguishedName -Properties objectSid @ad) 'objectSid'
 }
@@ -1127,6 +1367,10 @@ function Get-SidName([string]$Sid) {
 # Adds the missing rules of one template for one principal on one OU, with
 # one Set-Acl. Returns the wanted rules, for the extra-ACE report.
 function Sync-Aces([string]$DN, [string]$Principal, [string]$Template, [string]$Type) {
+    if (Test-GroupConflict $Principal) {
+        Write-Report "$Type $Template for $Principal was not checked on ${DN}: $Principal has a rename conflict (see above)."
+        return
+    }
     $sidObj = Get-PrincipalSid $Principal
     if (-not $sidObj) {
         if ($WhatIfPreference) {
@@ -1178,7 +1422,8 @@ function Write-ExtraAceReport([string]$DN, [object[]]$Wanted, [string[]]$KnownSi
         if ($defaults -contains $sid -or $KnownSids -contains $sid) { continue }
         $mask = [int]$ace.ActiveDirectoryRights
         if (($mask -band (-bnot $adRights.GenericRead)) -eq 0) { continue }
-        $same = @($Wanted | Where-Object { Test-SameAceKey $ace $_ })
+        # $Wanted is $null when every principal on the OU was skipped.
+        $same = @($Wanted | Where-Object { $null -ne $_ -and (Test-SameAceKey $ace $_) })
         $allowed = 0
         foreach ($w in $same) { $allowed = $allowed -bor $w.Mask }
         if ($same.Count -and ($mask -band (-bnot $allowed)) -eq 0) { continue }
@@ -1192,7 +1437,10 @@ function Sync-Delegation {
     $wantedByOU = @{}
     $pairs = @()
     foreach ($g in @($del.grants)) {
-        foreach ($ou in @($g.ous)) { $pairs += , @((ConvertTo-OUDN $ou), $g.group, $g.rights, 'Allow') }
+        # A grant names a domain local group (AGDLP), or one service account
+        # ("principal") whose rights belong to that one integration.
+        $who = if (Test-Field $g 'group') { $g.group } else { $g.principal }
+        foreach ($ou in @($g.ous)) { $pairs += , @((ConvertTo-OUDN $ou), $who, $g.rights, 'Allow') }
     }
     foreach ($d in @($del.deny)) {
         foreach ($ou in @($d.ous)) {
@@ -1266,6 +1514,8 @@ function Test-AdminSDHolder {
 }
 
 function Invoke-Build {
+    # First, so every lookup below knows the renames and the conflicts.
+    Initialize-GroupNames
     $daPathsAtStart = @(Get-DomainAdminPaths)
     $jit = Get-Jit
     $script:jitActive = Test-JitActive
@@ -1325,8 +1575,10 @@ function Get-Destination($obj) {
             return $null
         }
         'group' {
-            if ($data.roleGroups | Where-Object { $_.name -eq $sam }) { return 'Groups/Roles' }
-            if (Get-ResourceGroups | Where-Object { $_.name -eq $sam }) { return 'Groups/Resources' }
+            # Also by a former name: Build renames the group later.
+            $isGroup = { param($g) $g.name -eq $sam -or ($g.PSObject.Properties['formerNames'] -and @($g.formerNames) -contains $sam) }
+            if ($data.roleGroups | Where-Object { & $isGroup $_ }) { return 'Groups/Roles' }
+            if (Get-ResourceGroups | Where-Object { & $isGroup $_ }) { return 'Groups/Resources' }
             if ($oldPath -like 'Security-Groups/*') { return 'Groups/Resources' }
             return $null
         }

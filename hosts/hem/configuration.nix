@@ -1,5 +1,4 @@
-# hem — both staging clusters (pve01 VMID 358, 10.100.90.58, 2 GB; VMID and
-# address to be confirmed free before create)
+# hem — both staging clusters (pve01 VMID 358, 10.100.90.58, 2 GB)
 #
 # patchwork_central on 5432 and patchwork_central_restricted on 5433, each in
 # its own NixOS container, so they are two clusters with separate data
@@ -40,11 +39,8 @@ let
     central-staging = {
       database = "patchwork_central";
       port = 5432;
-      # Same reach as prod: central from the LAN and the tailnet.
-      allowedCIDRs = [
-        "10.100.90.0/24"
-        "100.64.0.0/10"
-      ];
+      # Same reach as prod: tailnet only.
+      allowedCIDRs = [ "100.64.0.0/10" ];
       schema = schemas.central;
       passwordFiles = passwordFilesFor "central-staging" schemas.central;
       secretPrefix = "central-staging";
@@ -111,6 +107,7 @@ in
 
   networking.hostName = "hem";
   patchwork.lanAddress = "10.100.90.58";
+  patchwork.banner.role = "staging db";
 
   containers = lib.mapAttrs (_: container) clusters;
 
@@ -133,7 +130,6 @@ in
   ++ map (c: "d ${passwordRoot}/${c.database} 0755 root root -") (builtins.attrValues clusters);
 
   networking.firewall.interfaces = {
-    ens18.allowedTCPPorts = [ 5432 ];
     tailscale0.allowedTCPPorts = [
       5432
       5433

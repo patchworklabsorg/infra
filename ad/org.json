@@ -18,7 +18,8 @@
     { "path": "Users/Sponsored-Projects", "description": "Fiscally sponsored projects" },
     { "path": "Users/Sponsored-Projects/HackBoston", "description": "HackBoston (hackboston.dev)", "upnSuffix": "hackboston.dev" },
     { "path": "Users/Sponsored-Projects/hackathon.help", "description": "hackathon.help", "upnSuffix": "hackathon.help" },
-    { "path": "Users/Members", "description": "Community members. Weave creates and changes these; converge.ps1 does not.", "managed": false },
+    { "path": "Users/Members", "description": "Community members. Weave (svc-weave-ldap) creates and changes these; converge.ps1 does not.", "managed": false,
+      "owner": "svc-weave-ldap" },
     { "path": "Service-Accounts", "description": "Non-human accounts for integrations" },
     { "path": "Disabled", "description": "Suspended users, all access off (Workspace: Purgatory)" },
     { "path": "Admin-Accounts", "description": "Admin accounts, separate from daily accounts. Only Domain Admins has rights here." },
@@ -34,13 +35,13 @@
   ],
 
   "users": [
-    { "sam": "mayonej", "upn": "jasper", "kind": "person", "ou": "Users/Staff", "givenName": "Jasper", "surname": "Mayone",
+    { "sam": "mayonej", "upn": "jasper", "kind": "person", "weaveId": "PWL7A1CE1F3CB", "ou": "Users/Staff", "givenName": "Jasper", "surname": "Mayone",
       "division": "Programs", "department": "Programs", "title": "Founder & Director of Programs", "manager": null },
-    { "sam": "adam.sidwa", "kind": "person", "ou": "Users/Staff", "givenName": "Adam", "surname": "Sidwa",
+    { "sam": "adam.sidwa", "kind": "person", "weaveId": "PWL8724F96B89", "ou": "Users/Staff", "givenName": "Adam", "surname": "Sidwa",
       "division": "Programs", "department": "Project Ganymede", "title": "Project Ganymede Administrator", "manager": "mayonej" },
-    { "sam": "klukask", "upn": "kieran", "kind": "person", "ou": "Users/Board-Only", "givenName": "Kieran", "surname": "Klukas",
+    { "sam": "klukask", "upn": "kieran", "kind": "person", "weaveId": "PWL0667B785FD", "ou": "Users/Board-Only", "givenName": "Kieran", "surname": "Klukas",
       "division": "Operations", "department": "Governance", "title": "Treasurer & Secretary", "manager": null },
-    { "sam": "petrarcad", "upn": "dominic", "kind": "person", "ou": "Users/Board-Only", "givenName": "Dominic", "surname": "Petrarca",
+    { "sam": "petrarcad", "upn": "dominic", "kind": "person", "weaveId": "PWL908148D41E", "ou": "Users/Board-Only", "givenName": "Dominic", "surname": "Petrarca",
       "division": "Operations", "department": "Governance", "title": "Director", "manager": null },
     { "sam": "cj", "kind": "person", "ou": "Users/Sponsored-Projects/HackBoston",
       "division": "Sponsored Projects", "department": "HackBoston", "title": "Organizer", "manager": null },
@@ -56,6 +57,9 @@
     { "sam": "svc-lnx-join", "kind": "service", "ou": "Service-Accounts", "create": false },
     { "sam": "svc-dhcp-dns", "kind": "service", "ou": "Service-Accounts", "create": false },
     { "sam": "svc-pve-ldap", "kind": "service", "ou": "Service-Accounts", "create": false },
+    { "sam": "svc-weave-ldap", "kind": "service", "ou": "Service-Accounts",
+      "company": "Patchwork Labs inc.", "division": "Operations", "department": "Infrastructure",
+      "title": "Weave LDAP service account (password reset, Users/Members)", "manager": null },
 
     { "sam": "adm_mayonej", "kind": "admin", "ou": "Admin-Accounts/Tier0", "givenName": "Jasper", "surname": "Mayone",
       "displayName": "Jasper Mayone (Admin)", "title": "Tier 0 administrator", "manager": null },
@@ -66,39 +70,42 @@
   ],
 
   "roleGroups": [
-    { "name": "GG-Board", "description": "Board of Directors", "members": ["mayonej", "klukask", "petrarcad"] },
-    { "name": "GG-President", "description": "President", "members": ["mayonej"] },
-    { "name": "GG-Treasurer", "description": "Treasurer", "members": ["klukask"] },
-    { "name": "GG-Secretary", "description": "Secretary", "members": ["klukask"] },
-    { "name": "GG-Ganymede-Admins", "description": "Project Ganymede admins", "members": ["mayonej", "adam.sidwa"] },
-    { "name": "GG-Ganymede-Users", "description": "Project Ganymede users", "members": [], "manageMembers": false },
-    { "name": "GG-HackBoston-Organizers", "description": "HackBoston organizers", "members": ["cj", "daniel", "logan", "mayonej"] },
-    { "name": "GG-HackathonHelp-Organizers", "description": "hackathon.help organizers", "members": ["wei"] },
-    { "name": "GG-Infra", "description": "Infrastructure", "members": ["mayonej"] },
-    { "name": "GG-All-Staff", "description": "Every person in org.json: staff, board, organizers. Gets PSO-Staff.",
+    { "name": "board", "formerNames": ["GG-Board"], "description": "Board of Directors", "members": ["mayonej", "klukask", "petrarcad"] },
+    { "name": "president", "formerNames": ["GG-President"], "description": "President", "members": ["mayonej"] },
+    { "name": "treasurer", "formerNames": ["GG-Treasurer"], "description": "Treasurer", "members": ["klukask"] },
+    { "name": "secretary", "formerNames": ["GG-Secretary"], "description": "Secretary", "members": ["klukask"] },
+    { "name": "ganymede-admins", "formerNames": ["GG-Ganymede-Admins"], "description": "Project Ganymede admins", "members": ["mayonej", "adam.sidwa"] },
+    { "name": "ganymede-users", "formerNames": ["GG-Ganymede-Users"], "description": "Project Ganymede users", "members": [], "manageMembers": false },
+    { "name": "hackboston-organizers", "formerNames": ["GG-HackBoston-Organizers"], "description": "HackBoston organizers", "members": ["cj", "daniel", "logan", "mayonej"] },
+    { "name": "hackathonhelp-organizers", "formerNames": ["GG-HackathonHelp-Organizers"], "description": "hackathon.help organizers", "members": ["wei"] },
+    { "name": "infra", "formerNames": ["GG-Infra"], "description": "Infrastructure", "members": ["mayonej"] },
+    { "name": "all-staff", "formerNames": ["GG-All-Staff"], "description": "Every person in org.json: staff, board, organizers. Gets PSO-Staff.",
       "members": ["mayonej", "adam.sidwa", "klukask", "petrarcad", "cj", "daniel", "logan", "wei"] },
-    { "name": "GG-Service-Accounts", "description": "Service accounts. Gets PSO-Service.",
-      "members": ["svc-service", "svc-lnx-join", "svc-dhcp-dns", "svc-pve-ldap", "svc-ansible"] },
-    { "name": "GG-Domain-Admins-Tier0", "description": "Tier 0 admin accounts. Member of Domain Admins. Gets PSO-Tier0.", "members": ["adm_mayonej"] },
-    { "name": "GG-T0-Eligible", "description": "Tier 0 accounts that can request a JIT Domain Admins grant (PatchworkT0 JEA endpoint). Gets PSO-Tier0.",
+    { "name": "service-accounts", "formerNames": ["GG-Service-Accounts"], "description": "Service accounts. Gets PSO-Service.",
+      "members": ["svc-service", "svc-lnx-join", "svc-dhcp-dns", "svc-pve-ldap", "svc-weave-ldap", "svc-ansible"] },
+    { "name": "tier0-admins", "formerNames": ["GG-Domain-Admins-Tier0"], "description": "Tier 0 admin accounts. Member of Domain Admins. Gets PSO-Tier0.", "members": ["adm_mayonej"] },
+    { "name": "tier0-eligible", "formerNames": ["GG-T0-Eligible"], "description": "Tier 0 accounts that can request a JIT Domain Admins grant (PatchworkT0 JEA endpoint). Gets PSO-Tier0.",
       "members": ["adm_mayonej"] },
-    { "name": "GG-T1-Admins", "description": "Tier 1 server admins. Computer objects in Servers and Computers, and the helpdesk rights. Tier 1 admin accounts only.",
+    { "name": "tier1-admins", "formerNames": ["GG-T1-Admins"], "description": "Tier 1 server admins. Computer objects in Servers and Computers, and the helpdesk rights. Tier 1 admin accounts only.",
       "members": [] },
-    { "name": "GG-T2-Helpdesk", "description": "Tier 2 helpdesk. Reset, unlock and force a password change for people in Users/Staff, Board-Only, Sponsored-Projects.",
+    { "name": "tier2-helpdesk", "formerNames": ["GG-T2-Helpdesk"], "description": "Tier 2 helpdesk. Reset, unlock and force a password change for people in Users/Staff, Board-Only, Sponsored-Projects.",
       "members": [] }
   ],
 
-  "linuxHosts": ["hem", "seam", "skein", "warp"],
+  "linuxHosts": ["batting", "hem", "seam", "skein", "warp", "weft"],
   "retiredHosts": ["sampler", "swatch"],
   "hostGroups": [
-    { "name": "lnx-{host}-users", "description": "Linux logon on {host}", "members": ["GG-Infra"] },
-    { "name": "lnx-{host}-admins", "description": "Linux sudo on {host}", "members": ["GG-Infra"] }
+    { "name": "lnx-{host}-users", "description": "Linux logon on {host}", "members": ["infra"] },
+    { "name": "lnx-{host}-admins", "description": "Linux sudo on {host}", "members": ["infra"] }
   ],
   "resourceGroups": [
-    { "name": "DL-Users-PasswordReset", "description": "Reset password, unlock, change at next logon: Users/Staff, Board-Only, Sponsored-Projects",
-      "members": ["GG-T2-Helpdesk", "GG-T1-Admins"] },
-    { "name": "DL-Servers-ComputerAdmin", "description": "Full control of computer objects: Servers and Computers, not Servers/Tier0 or Domain Controllers",
-      "members": ["GG-T1-Admins"] }
+    { "name": "password-reset", "formerNames": ["DL-Users-PasswordReset"], "description": "Reset password, unlock, change at next logon: Users/Staff, Board-Only, Sponsored-Projects",
+      "members": ["tier2-helpdesk", "tier1-admins"] },
+    { "name": "server-computer-admin", "formerNames": ["DL-Servers-ComputerAdmin"], "description": "Full control of computer objects: Servers and Computers, not Servers/Tier0 or Domain Controllers",
+      "members": ["tier1-admins"] },
+    { "name": "vpn-users", "description": "Log in to the IKEv2 VPN on thimble. The NPS policy on shuttle checks this group.",
+      "allowUserMembers": true,
+      "members": ["mayonej"] }
   ],
 
   "passwordPolicy": {
@@ -107,14 +114,14 @@
       "lockoutThreshold": 10, "lockoutDurationMinutes": 15, "lockoutObservationWindowMinutes": 15
     },
     "psos": [
-      { "name": "PSO-Tier0", "precedence": 10, "description": "Tier 0 admin accounts", "appliesTo": ["GG-Domain-Admins-Tier0", "GG-T0-Eligible"],
+      { "name": "PSO-Tier0", "precedence": 10, "description": "Tier 0 admin accounts", "appliesTo": ["tier0-admins", "tier0-eligible"],
         "minPasswordLength": 20, "maxPasswordAgeDays": 0, "passwordHistoryCount": 24, "complexityEnabled": true,
         "lockoutThreshold": 5, "lockoutDurationMinutes": 30, "lockoutObservationWindowMinutes": 30 },
       { "name": "PSO-Service", "precedence": 20, "description": "Service accounts. No lockout, so a bad password cannot stop a service.",
-        "appliesTo": ["GG-Service-Accounts"],
+        "appliesTo": ["service-accounts"],
         "minPasswordLength": 32, "maxPasswordAgeDays": 0, "passwordHistoryCount": 24, "complexityEnabled": true,
         "lockoutThreshold": 0, "lockoutDurationMinutes": 15, "lockoutObservationWindowMinutes": 15 },
-      { "name": "PSO-Staff", "precedence": 30, "description": "Staff, board and organizers", "appliesTo": ["GG-All-Staff"],
+      { "name": "PSO-Staff", "precedence": 30, "description": "Staff, board and organizers", "appliesTo": ["all-staff"],
         "minPasswordLength": 14, "maxPasswordAgeDays": 0, "passwordHistoryCount": 24, "complexityEnabled": true,
         "lockoutThreshold": 10, "lockoutDurationMinutes": 15, "lockoutObservationWindowMinutes": 15 }
     ]
@@ -123,10 +130,10 @@
   "builtinAdministrator": { "enabled": false, "removeFrom": ["Enterprise Admins", "Schema Admins"] },
 
   "privileged": {
-    "tier0Group": "GG-Domain-Admins-Tier0",
+    "tier0Group": "tier0-admins",
     "groups": ["Domain Admins", "Enterprise Admins", "Schema Admins", "Administrators"],
     "allowedDirectMembers": {
-      "Domain Admins": ["Administrator", "svc-ansible", "GG-Domain-Admins-Tier0"],
+      "Domain Admins": ["Administrator", "svc-ansible", "tier0-admins"],
       "Enterprise Admins": [],
       "Schema Admins": [],
       "Administrators": ["Administrator", "Domain Admins", "Enterprise Admins"]
@@ -145,23 +152,27 @@
     "users": ["adm_mayonej"],
     "computers": ["LOOM", "SPINDLE", "BOBBIN", "SHUTTLE", "SPOOL"],
     "serverOU": "Servers/Tier0",
-    "jit": { "enabled": false, "removeStanding": false, "group": "GG-Domain-Admins-Tier0", "eligible": "GG-T0-Eligible",
+    "jit": { "enabled": false, "removeStanding": false, "group": "tier0-admins", "eligible": "tier0-eligible",
       "defaultHours": 1, "maxHours": 4, "standingGroups": ["DnsAdmins", "DHCP Administrators"] }
   },
 
   "delegation": {
     "description": "Rights below Domain Admins. See ad/README.md, Delegation.",
     "grants": [
-      { "group": "DL-Users-PasswordReset", "rights": "user-helpdesk",
+      { "group": "password-reset", "rights": "user-helpdesk",
         "ous": ["Users/Staff", "Users/Board-Only", "Users/Sponsored-Projects"] },
-      { "group": "DL-Servers-ComputerAdmin", "rights": "computer-admin", "ous": ["Servers", "Computers"] }
+      { "group": "server-computer-admin", "rights": "computer-admin", "ous": ["Servers", "Computers"] },
+      { "principal": "svc-weave-ldap", "rights": "weave-password",
+        "ous": ["Users/Staff", "Users/Board-Only", "Users/Sponsored-Projects"] },
+      { "principal": "svc-weave-ldap", "rights": "weave-members", "ous": ["Users/Members"] }
     ],
     "deny": [
-      { "ous": ["Admin-Accounts", "Service-Accounts"], "principals": ["DL-Users-PasswordReset", "DL-Servers-ComputerAdmin"] },
-      { "ous": ["Servers/Tier0"], "principals": ["DL-Users-PasswordReset", "DL-Servers-ComputerAdmin", "svc-lnx-join"] }
+      { "ous": ["Admin-Accounts", "Service-Accounts"], "principals": ["password-reset", "server-computer-admin", "svc-weave-ldap"] },
+      { "ous": ["Servers/Tier0"], "principals": ["password-reset", "server-computer-admin", "svc-lnx-join", "svc-weave-ldap"] },
+      { "ous": ["Disabled"], "principals": ["svc-weave-ldap"] }
     ],
     "noDelegation": ["Admin-Accounts", "Admin-Accounts/Tier0", "Admin-Accounts/Tier1", "Admin-Accounts/Tier2",
-      "Service-Accounts", "Servers/Tier0", "Users/Members", "Disabled"],
+      "Service-Accounts", "Servers/Tier0", "Disabled"],
     "knownAces": [
       { "principal": "svc-lnx-join", "ous": ["Servers", "Computers"], "why": "ansible/ad.yml -t join-delegation" }
     ],

@@ -27,7 +27,7 @@ This design covers the `patchwork.internal` forest:
 | 10 | `krbtgt` | Approved: two resets, 10 hours or more apart. |
 | 11 | AD Recycle Bin | Approved and **done** on 2026-10-14. `EnabledScopes` = `CN=Partitions,CN=Configuration,DC=patchwork,DC=internal`. |
 
-Also done on 2026-10-14: the real `converge.ps1` Build ran. It made the `OU=Patchwork` tree, the `GG-*` groups and the fine-grained password policies (PSOs), and it disabled the built-in `Administrator`. Some live facts below are from before that run. The notes in the tables say which.
+Also done on 2026-10-14: the real `converge.ps1` Build ran. It made the `OU=Patchwork` tree, the role and access groups (then named `GG-*` and `DL-*`, renamed to plain names later, see `README.md`) and the fine-grained password policies (PSOs), and it disabled the built-in `Administrator`. Some live facts below are from before that run. The notes in the tables say which.
 
 ## Facts read from the live forest
 
@@ -64,7 +64,7 @@ These facts come from read-only `Get-*` queries against loom on 2026-10-14, befo
 | Group Policy Creator Owners | `Administrator` |
 | Cert Publishers | `BOBBIN$` |
 | Account, Backup, Server, Print Operators | empty |
-| `GG-Domain-Admins-Tier0` | did not exist at query time. The converge Build made it later the same night. |
+| `tier0-admins` | did not exist at query time. The converge Build made it later the same night. |
 
 ### Privileged accounts
 
@@ -86,7 +86,7 @@ The repo and the forest use different names today. This document uses the **live
 | `mayonej` | `jasper` |
 | `OU=Patchwork-Objects` tree (objects not yet moved) | `OU=Patchwork` tree (built 2026-10-14, objects move at Migrate) |
 
-Another change moves `adm_mayonej` into `GG-Domain-Admins-Tier0` and adds fine-grained password policies. This document does not touch `org.json` or `converge.ps1`. The sections below say what those files must change later.
+Another change moves `adm_mayonej` into `tier0-admins` and adds fine-grained password policies. This document does not touch `org.json` or `converge.ps1`. The sections below say what those files must change later.
 
 ## 1. Tier model
 
@@ -95,7 +95,7 @@ The rule: an account of tier N logs on only to assets of tier N. A higher tier c
 | Tier | Assets | Accounts |
 |---|---|---|
 | **0** | loom, spindle (DCs). bobbin (issuing CA). pattern (offline root CA). shuttle (NPS). The Proxmox hosts that run these VMs. The proposed Tier 0 jump host. remus, as long as it holds the `svc-ansible` password. | `adm_mayonej`, `svc-ansible`, `Administrator` (disabled), DSRM (LAPS-DSRM) |
-| **1** | warp, skein, seam, hem (NixOS). thimble (VyOS edge). App servers. | `lnx-<host>-admins` members. `svc-lnx-join`, `svc-pve-ldap`, `svc-dhcp-dns`. No dedicated Tier 1 person account yet. |
+| **1** | warp, batting, weft, skein, seam, hem (NixOS). thimble (VyOS edge). App servers. Weave and the host that runs it (alastor). | `lnx-<host>-admins` members. `svc-lnx-join`, `svc-pve-ldap`, `svc-dhcp-dns`, `svc-weave-ldap`. No dedicated Tier 1 person account yet. |
 | **2** | Staff workstations (`Computers` OU). VPN sessions. | Daily accounts: `mayonej`, staff, members |
 
 ```mermaid
@@ -113,15 +113,16 @@ flowchart TB
     bg["Administrator (disabled, break-glass)"]
   end
   subgraph T1["Tier 1: servers"]
-    nix["warp, skein, seam, hem"]
+    nix["warp, batting, weft, skein, seam, hem"]
     thimble["thimble VPN edge"]
+    weave["Weave on alastor, svc-weave-ldap"]
   end
   subgraph T2["Tier 2: people"]
     daily["mayonej and staff"]
     ws["workstations, VPN clients"]
   end
   T0 -->|controls| T1 -->|controls| T2
-  daily -. "sudo via GG-Infra (accepted, see below)" .-> nix
+  daily -. "sudo via infra (accepted, see below)" .-> nix
 ```
 
 ### bobbin: Tier 0 (approved)
@@ -133,7 +134,10 @@ bobbin is an enterprise CA. A CA that the forest trusts for smart card logon can
 shuttle is in Tier 0.
 
 - `svc-ansible`, a Domain Admin, logs on to shuttle over WinRM. Any host where a Tier 0 credential logs on is a Tier 0 host.
-- shuttle checks every staff VPN login. An attacker on shuttle can let any device into the lab network and can collect MS-CHAPv2 responses of every VPN user.
+- shuttle checks every staff IKEv2 VPN login when the VPN is live (stage 4 in `ansible/README.md`, "VPN"). The NPS policy "Patchwork IKEv2 VPN" allows members of `vpn-users` (domain local, `Groups/Resources`). Then an attacker on shuttle can let any device into the lab network and can collect MS-CHAPv2 responses of every VPN user. Until stage 4, thimble uses WireGuard keys only and does not ask shuttle.
+- Accounts in Protected Users (for example `adm_mayonej`) cannot log in to the VPN: Protected Users blocks NTLM, and MS-CHAPv2 needs it. People connect with their daily account. Do not add an admin account to `vpn-users` (`nix flake check` refuses it).
+- The IKEv2 VPN needs only a password. WireGuard needs a device key. While thimble masquerades (phase 1), every VPN client arrives at the servers as 10.100.92.20, the same address as WireGuard and the Ansible control node. Firewall rules that allow "the VPN address" (WinRM, RDP to spool) then also allow every IKEv2 user. A Tier 2 helpdesk reset of a daily account (`password-reset`) can thus give the network position of the admin. Accepted for now, with `vpn-users` held to `mayonej`. Remove the NAT (phase 2 in `ansible/README.md`, "VPN") before more people get IKEv2, and limit those rules per address.
+- UDP 500 and 4500 are open to the internet, so anyone can try passwords of `vpn-users` members through NPS. The NPS account lockout (`MaxDenials` 5, below the AD lockout of 10) stops the attempts before AD locks the account.
 - A separate Tier 1 management identity for one server costs more than this org can maintain.
 
 The other choice is Tier 1 with a separate Tier 1 Ansible account. That removes Domain Admin logons from shuttle. It is a good change if more Windows member servers come later.
@@ -144,9 +148,31 @@ A Proxmox administrator can read the disk of a DC VM and take `ntds.dit`. The Pr
 
 ### Tier 1 and Tier 2 today
 
-- Delegated rights below Domain Admins: `GG-T1-Admins` (computer objects in `Servers` and `Computers`, and the helpdesk rights) and `GG-T2-Helpdesk` (reset, unlock, change at next logon in the people OUs). Both are empty. No group except Domain Admins has rights on `Admin-Accounts` or `Servers/Tier0`. See "Delegation" in `README.md`.
-- `GG-Infra` gives the daily account sudo on the NixOS hosts. That is a Tier 2 account that administers Tier 1. Accept it for now. The NixOS hosts hold no Tier 0 credentials, and no Tier 0 account is in `GG-Infra`. Later, add a Tier 1 account (`mayonej.t1`) if more people get sudo.
+- Delegated rights below Domain Admins: `tier1-admins` (computer objects in `Servers` and `Computers`, and the helpdesk rights) and `tier2-helpdesk` (reset, unlock, change at next logon in the people OUs). Both are empty. No group except Domain Admins has rights on `Admin-Accounts` or `Servers/Tier0`. See "Delegation" in `README.md`.
+- `infra` gives the daily account sudo on the NixOS hosts. That is a Tier 2 account that administers Tier 1. Accept it for now. The NixOS hosts hold no Tier 0 credentials, and no Tier 0 account is in `infra`. Later, add a Tier 1 account (`mayonej.t1`) if more people get sudo.
 - `Tier0-Admin-Protection` denies Domain Admins local and RDP logon on Staff-Computers. Keep it. Link it to the new `Computers` OU at Migrate (Migrate copies links). Add a second GPO for member servers that are Tier 1, when such Windows servers exist.
+
+### Weave and alastor: Tier 1 (sensitive)
+
+`svc-weave-ldap` can reset the password of, and unlock, each person in `Users/Staff`, `Users/Board-Only`, `Users/Sponsored-Projects` and `Users/Members` (see "Weave" in `README.md`). It controls Tier 2. So by the rule above, Weave is Tier 1, and so is everything that controls Weave:
+
+- alastor, the host that runs Weave today. Root on alastor can read `weave-ldap.age` after agenix decrypts it. alastor also terminates public traffic for many other services. A break-in through any of them is a break-in into Weave.
+- The Weave code and its deploy path: write access to `patchworklabsorg/weave`, its CI, and the `weave-deploy` SSH key.
+- The admins of Weave, and the recipients of `weave-ldap.age` (`jsp`, `alastor`).
+- Weave is also the sign-in for Google Workspace, so Weave already controls the Google identity of each person.
+
+Weave can reach Tier 1 through one path: a reset of `mayonej`, whose `infra` membership gives sudo on the NixOS hosts. The same path exists for helpdesk (see "Tier 1 and Tier 2 today"). Today `mayonej` has `adminCount=1`, so no inherited right reaches it, Weave included. After a Domain Admin clears `adminCount`, Weave can reset it.
+
+`mayonej` is linked to Weave (`weaveId` in `org.json`). Weave therefore sees the AD password of an `infra` member at each sign-in, because it checks the password with an LDAPS bind. A compromise of Weave or alastor can capture that password. Accepted on purpose. Never reuse the Weave admin password, and keep Tier 0 work on `adm_mayonej`, which has no `weaveId`.
+
+Weave has no path to Tier 0. The denies on `Admin-Accounts`, `Service-Accounts` and `Servers/Tier0`, and AdminSDHolder on protected accounts, keep it out. A Tier 0 account must never get a `weaveId`, and must never sign in through Weave.
+
+Rules:
+
+- Treat alastor as sensitive. Keep the agenix recipients of `weave-ldap.age` to `jsp` and the Weave host.
+- Weave stays on alastor. It is the only Patchwork app there. Every other app gets its own VM.
+- Rotate the `svc-weave-ldap` password when somebody leaves the Weave admins or the recipient list.
+- Watch the DC security log for password resets (event 4724) by `svc-weave-ldap` on accounts outside the people OUs. There must be none.
 
 ## 2. Authentication policy silo for Tier 0
 
@@ -206,7 +232,7 @@ remus cannot armor. So `adm_mayonej` must never type its password into remus for
 
 - A Windows Server 2025 VM on the Tier 0 Proxmox host, joined, in `T0-Silo`. It holds RSAT, GPMC, the AD module and the JIT client.
 - It is on the server VLAN. Its firewall and thimble allow RDP to it only from Jasper's VPN address.
-- Name: `spool`. It is free: no AD object, no DNS record in `patchwork.internal`, and no host in either infra repo uses it.
+- Name: `spool`. Built 2026-10-20: `terraform/proxmox/windows.tf`, offline domain join into `Servers/Tier0`, `ansible/jump-host.yml` for the consoles and the RDP shortcuts.
 
 #### What NLA is
 
@@ -231,7 +257,7 @@ sequenceDiagram
   participant K as KDC (loom/spindle)
   participant S as DC / bobbin / shuttle
   R->>T: WireGuard tunnel (daily identity)
-  R->>J: RDP, NLA off, firewall allows only Jasper's VPN address
+  R->>J: RDP, NLA off, firewall allows only the VPN
   J->>K: AS-REQ for adm_mayonej, armored with the jump host's ticket
   K-->>J: TGT, 240 min, non-renewable (device is in T0-Silo)
   J->>S: PowerShell remoting / RSAT with Kerberos
@@ -259,10 +285,10 @@ A Linux control node can armor with its machine keytab (MIT `kinit -T`). Test in
 
 Compensating controls for step 5a:
 
-- The WinRM firewall rule allows only Jasper's VPN address (`Enable-AnsibleWinRM.ps1 -RemoteAddress`). Today the scope is the control node subnet. Make it one address.
+- The WinRM firewall rule allows only Jasper's VPN address (`Enable-AnsibleWinRM.ps1 -RemoteAddress`). Today the scope is the control node subnet. Make it one address. This needs the thimble NAT removed first: with NAT, every VPN client arrives as 10.100.92.20.
 - A GPO denies `svc-ansible` local logon, RDP logon, batch and service logon on every host.
 - Keep AES only and "not delegatable" (`-t svc-posture`, already live).
-- Alert on any logon of `svc-ansible` (4624, 4776) from an address other than the VPN address. Alert on any group change that it makes outside an Ansible run.
+- Alert on any logon of `svc-ansible` (4624, 4776) from an address other than the VPN address (one address per person only after the NAT is removed). Alert on any group change that it makes outside an Ansible run.
 - Rotate the password on a schedule and after any remus incident.
 
 ## 3. PAM and just-in-time admin
@@ -281,17 +307,17 @@ Use the AD PAM feature (a) and put a small request flow on top of it, modeled on
 
 | GCP PAM (`pam.tf`, `tf`) | AD JIT (proposed) |
 |---|---|
-| Entitlement `org-admin`, max 1 h | Entitlement `t0-da`: membership of `GG-Domain-Admins-Tier0`, default 1 h, max 4 h |
+| Entitlement `org-admin`, max 1 h | Entitlement `t0-da`: membership of `tier0-admins`, default 1 h, max 4 h |
 | Entitlement `infra-admin`, max 4 h | Entitlement `t0-ea`: membership of `Enterprise Admins`, max 1 h, rarely used |
-| Eligible principals: the admins group | Eligible: a new group `GG-T0-Eligible` with `adm_mayonej` |
+| Eligible principals: the admins group | Eligible: a new group `tier0-eligible` with `adm_mayonej` |
 | Justification required, no approval | Justification required, no approval. One admin cannot approve their own request. |
 | Email to `security@`, audit sink | A Windows event on the DC, and an email to `security@patchworklabs.org` |
 | `tf apply` asks for a grant, reuses an open grant | `Request-T0Admin` asks for a grant, reuses an open TTL membership |
 
-Why a JEA endpoint: `GG-Domain-Admins-Tier0` is nested in Domain Admins. AdminSDHolder (SDProp) resets the ACL of protected groups every 60 minutes. A delegated "write members" right on the group disappears. So the request must run as a principal that already has the right. A Just Enough Administration (JEA) endpoint on loom and spindle does that:
+Why a JEA endpoint: `tier0-admins` is nested in Domain Admins. AdminSDHolder (SDProp) resets the ACL of protected groups every 60 minutes. A delegated "write members" right on the group disappears. So the request must run as a principal that already has the right. A Just Enough Administration (JEA) endpoint on loom and spindle does that:
 
 - It runs as a virtual account on the DC.
-- Only `GG-T0-Eligible` can connect, and only with Kerberos from `spool` (the silo).
+- Only `tier0-eligible` can connect, and only with Kerberos from `spool` (the silo).
 - It exposes one function: `Request-T0Admin -Entitlement t0-da -Minutes 60 -Reason "..."`. The function checks the limits, calls `Add-ADGroupMember -MemberTimeToLive`, writes an event to a custom `Patchwork-JIT` log, and sends the notification.
 
 ```mermaid
@@ -301,8 +327,8 @@ sequenceDiagram
   participant D as AD (PAM feature on)
   participant N as security@ / event log
   A->>E: Request-T0Admin -Minutes 60 -Reason "patch GPO"
-  E->>E: check caller in GG-T0-Eligible, minutes <= 240
-  E->>D: Add-ADGroupMember GG-Domain-Admins-Tier0 adm_mayonej -MemberTimeToLive 01:00
+  E->>E: check caller in tier0-eligible, minutes <= 240
+  E->>D: Add-ADGroupMember tier0-admins adm_mayonej -MemberTimeToLive 01:00
   E->>N: event 1000 + email to security@patchworklabs.org
   A->>A: klist purge, new logon: TGT capped at TTL
   D-->>D: TTL ends: DC removes member, tickets expire
@@ -317,7 +343,7 @@ A worked example. Jasper must change a GPO on a Tuesday evening.
 1. Jasper connects to the thimble VPN from remus with the daily account.
 2. Jasper opens RDP to `spool` and logs on as `adm_mayonej`. The account is in Protected Users and in `T0-Silo`, but it has no Domain Admin rights now.
 3. In PowerShell on `spool`: `Request-T0Admin -Entitlement t0-da -Minutes 60 -Reason "Change Client-Baseline firewall rule"`.
-4. The JEA endpoint on loom adds `adm_mayonej` to `GG-Domain-Admins-Tier0` with a TTL of 1 hour. It writes an event and sends an email to `security@patchworklabs.org`.
+4. The JEA endpoint on loom adds `adm_mayonej` to `tier0-admins` with a TTL of 1 hour. It writes an event and sends an email to `security@patchworklabs.org`.
 5. Jasper logs off and on again (or runs `klist purge`). The new TGT carries Domain Admins. The KDC caps it at the time left in the grant.
 6. Jasper opens GPMC and makes the change.
 7. After 1 hour the DC removes the membership. The tickets expire at the same time. Nothing must be cleaned up.
@@ -337,7 +363,7 @@ Short answer: enabling the feature alone cannot. The risk starts only when stand
 
 The fallbacks if JIT breaks after standing Domain Admin is gone:
 
-1. **`svc-ansible`** keeps standing Domain Admin. From remus, Ansible can add `adm_mayonej` back to `GG-Domain-Admins-Tier0` with no TTL.
+1. **`svc-ansible`** keeps standing Domain Admin. From remus, Ansible can add `adm_mayonej` back to `tier0-admins` with no TTL.
 2. **The built-in `Administrator`**. It is disabled, and nobody knows its password. Any Domain Admin path (a JIT grant or `svc-ansible`) can reset its password and enable it. The silo always exempts it.
 3. **DSRM on each DC**. LAPS manages the DSRM password (`LAPS-DSRM`). Boot a DC into Directory Services Restore Mode from the Proxmox console and use it. This is the last resort.
 
@@ -347,8 +373,8 @@ A lockout needs all three to fail at the same time: the JEA endpoint, the `svc-a
 
 `Sync-Members` makes the group members match `org.json`. It would remove JIT members, or add `adm_mayonej` back as standing. Before JIT goes live:
 
-- `GG-Domain-Admins-Tier0`: set `"members": []` and `"manageMembers": false`, or add a new flag that tells `Sync-Members` to leave TTL members alone.
-- Add `GG-T0-Eligible` with `adm_mayonej`.
+- `tier0-admins`: set `"members": []` and `"manageMembers": false`, or add a new flag that tells `Sync-Members` to leave TTL members alone.
+- Add `tier0-eligible` with `adm_mayonej`.
 - `privileged.allowedDirectMembers`: remove `adm_mayonej` from Enterprise Admins. Report TTL members as "JIT", not as a finding.
 - Remove standing `DnsAdmins` and `DHCP Administrators` from `adm_mayonej`. `DnsAdmins` is a known path to Domain Admin, so it belongs inside the grant.
 
@@ -357,7 +383,7 @@ A lockout needs all three to fail at the same time: the JEA endpoint, the `svc-a
 Items 2, 3 and 4 are approved (see the decisions table). Item 1 is open.
 
 1. **Enable the Privileged Access Management optional feature in the forest. You cannot disable it after this.** Not approved yet. Command: `Enable-ADOptionalFeature 'Privileged Access Management Feature' -Scope ForestOrConfigurationSet -Target patchwork.internal`.
-2. Remove `adm_mayonej` from standing Domain Admins (through `GG-Domain-Admins-Tier0`), Enterprise Admins, DnsAdmins and DHCP Administrators.
+2. Remove `adm_mayonej` from standing Domain Admins (through `tier0-admins`), Enterprise Admins, DnsAdmins and DHCP Administrators.
 3. The maximum grant length (proposed: 1 h default, 4 h max for `t0-da`, 1 h for `t0-ea`).
 4. The notification target for grants and break-glass use. Decided: `security@patchworklabs.org`.
 
@@ -413,7 +439,7 @@ The GPO values were not readable with `Get-GPRegistryValue` in this check. Check
 |---|---|
 | Backup directory | Active Directory |
 | Password encryption | Enabled |
-| Authorized decryptor | `GG-Domain-Admins-Tier0` for Tier 0 hosts. A Tier 1 group for Tier 1 Windows hosts, when they exist. |
+| Authorized decryptor | `tier0-admins` for Tier 0 hosts. A Tier 1 group for Tier 1 Windows hosts, when they exist. |
 | Password age | 30 days (live) |
 | Complexity and length | Large letters, small letters, numbers, specials. 20 characters or more. |
 | Post-authentication action | Reset the password and log off, 8 h grace |
@@ -443,7 +469,7 @@ flowchart LR
 
 - Enable `Microsoft-Windows-Authentication/AuthenticationPolicyFailures-DomainController` and `ProtectedUserFailures-DomainController` on both DCs.
 - Audit policy on the DCs: Kerberos Authentication Service and Kerberos Service Ticket Operations, success and failure. Credential Validation, success and failure. Today failures are not logged.
-- Build `spool`, the jump host. Join it. Do not add it to the silo yet.
+- Build `spool`, the jump host. Join it. Done 2026-10-20. `converge.ps1` also put `SPOOL$` in `T0-Silo`, which is still in audit mode, so the silo blocks nothing.
 - Check that `adm_mayonej` can log on to the jump host and run RSAT with Kerberos.
 - Rollback: disable the logs. No risk.
 
@@ -480,11 +506,11 @@ flowchart LR
 ### Phase 4: JIT
 
 - **Enable the PAM optional feature. This cannot be undone.**
-- Deploy the JEA endpoint on loom and spindle. Create `GG-T0-Eligible`.
+- Deploy the JEA endpoint on loom and spindle. Create `tier0-eligible`.
 - Merge the `org.json` and `converge.ps1` changes from section 3 first, so a converge run does not undo JIT.
-- Request one grant. Check that the membership has a TTL: `Get-ADGroup GG-Domain-Admins-Tier0 -Properties member -ShowMemberTimeToLive`.
+- Request one grant. Check that the membership has a TTL: `Get-ADGroup tier0-admins -Properties member -ShowMemberTimeToLive`.
 - Then remove the standing memberships of `adm_mayonej`.
-- Rollback: add `adm_mayonej` back to `GG-Domain-Admins-Tier0` without a TTL. The feature stays on, which is harmless.
+- Rollback: add `adm_mayonej` back to `tier0-admins` without a TTL. The feature stays on, which is harmless.
 
 ### Phase 5: svc-ansible
 
@@ -502,7 +528,7 @@ flowchart LR
 | Piece | Owner | Why |
 |---|---|---|
 | `T0-Silo`, `T0-User`, `T0-Computer`, `T0-Service`, silo members | `converge.ps1`, from a new `tiering` block in `org.json` | It already owns the privileged groups and reports on them. Directory objects belong there. |
-| `GG-T0-Eligible`, TTL-aware `GG-Domain-Admins-Tier0` | `converge.ps1` | Same as above. It must report TTL members as JIT, not remove them. |
+| `tier0-eligible`, TTL-aware `tier0-admins` | `converge.ps1` | Same as above. It must report TTL members as JIT, not remove them. |
 | PAM optional feature | By hand, once | One irreversible command. Do not put it in a script that runs again. |
 | JEA endpoint and `Request-T0Admin` | Ansible, new tag `ad.yml -t jit-endpoint` | It installs files and a session configuration on each DC. |
 | Authentication logs on the DCs | Ansible, new tag `ad.yml -t authn-log` | The same pattern as `-t dns-log`. |
@@ -524,7 +550,7 @@ A sketch of the `org.json` block for the later PR:
   "servicePolicy": { "name": "T0-Service", "tgtMinutes": 60, "deviceInSilo": false },
   "users": ["adm_mayonej"],
   "computers": ["LOOM", "SPINDLE", "BOBBIN", "SHUTTLE", "SPOOL"],
-  "jit": { "group": "GG-Domain-Admins-Tier0", "eligible": "GG-T0-Eligible", "maxMinutes": 240 }
+  "jit": { "group": "tier0-admins", "eligible": "tier0-eligible", "maxMinutes": 240 }
 }
 ```
 

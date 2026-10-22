@@ -5,9 +5,15 @@
 # by modules/ad-join. Keep its lnx-skein-* groups and its computer object; the
 # new join resets the computer password. Before the install: remove skein from
 # the Ansible linux.yml run, so Ansible does not configure it too.
-{ config, ... }:
+{ config, lib, ... }:
 let
   schema = (import ../central-db-schema.nix).central;
+
+  # secrets/central-prod-<app>.age for each app that has one. An app without a
+  # file gets a role that cannot log in yet (modules/central-db).
+  passwordFiles = lib.filterAttrs (_: builtins.pathExists) (
+    lib.mapAttrs (app: _: ../../secrets/central-prod-${app}.age) schema.apps
+  );
 in
 {
   imports = [
@@ -18,25 +24,33 @@ in
 
   networking.hostName = "skein";
   patchwork.lanAddress = "10.100.90.55";
+  patchwork.banner.role = "central db";
 
   patchwork.centralDb = {
     enable = true;
     database = "patchwork_central";
     inherit (schema) apps sharedSchemas;
-    # Apps in the lab (warp) connect over the LAN; everything else over the
-    # tailnet.
-    allowedCIDRs = [
-      "10.100.90.0/24"
-      "100.64.0.0/10"
-    ];
-    firewallInterfaces = [
-      "ens18"
-      "tailscale0"
-    ];
+    # Tailnet only, as on seam. On the LAN every VLAN 90 host could reach
+    # the port. On the tailnet the policy in jaspermayone/infra picks the
+    # clients: tag:patchwork-krater (weft). Weave uses its own database.
+    allowedCIDRs = [ "100.64.0.0/10" ];
+    firewallInterfaces = [ "tailscale0" ];
   };
 
-  # One secret per app: secrets/central-prod-<app>.age, the password only.
-  # age.secrets = lib.genAttrs ... is added when the host key exists.
+  # Each password lands at <passwordDir>/<app>, where central-db-setup reads it
+  # as postgres. skein's host key must be a recipient (secrets/secrets.nix).
+  age.secrets = lib.mapAttrs' (
+    app: file:
+    lib.nameValuePair "central-prod-${app}" {
+      inherit file;
+      path = "${config.patchwork.centralDb.passwordDir}/${app}";
+      owner = "postgres";
+      mode = "400";
+    }
+  ) passwordFiles;
+
+  # Set the password again when its secret changes.
+  systemd.services.central-db-setup.restartTriggers = builtins.attrValues passwordFiles;
 
   system.stateVersion = "26.05";
 }

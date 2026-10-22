@@ -1,26 +1,16 @@
-# Quilt on alastor. Exported as nixosModules.quilt-alastor.
+# Quilt on batting: the instance settings and the agenix secrets. nginx on
+# batting (./configuration.nix) fronts the ports, and alastor routes the
+# public names here over the tailnet (nixosModules.edge-alastor).
 #
-# alastor is jaspermayone's VPS and is built from jaspermayone/infra, which
-# imports this module through its `patchwork-infra` flake input. Everything
-# Patchwork-specific about the deployment lives here: the instance settings,
-# the Traefik route and the agenix secrets.
-#
-# What the importing host must provide:
-#   - the agenix NixOS module (`age.*` options)
-#   - Docker (the module runs its containers through it)
-#   - Traefik with the file provider on /etc/traefik/conf.d and a `cloudflare`
-#     cert resolver and `hsts` middleware (infra's modules/traefik)
-#   - Tailscale, so the host reaches seam.wildebeest-stargazer.ts.net:5432
-#     (production) and hem.wildebeest-stargazer.ts.net:5433 (staging)
-#
-# To change any of this: merge here, then in infra run
-#   nix flake update patchwork-infra
-# and deploy alastor.
+# Network: the containers use the host network, and batting reaches
+# seam.wildebeest-stargazer.ts.net:5432 (production) and
+# hem.wildebeest-stargazer.ts.net:5433 (staging) over the tailnet, through
+# the tag:patchwork-quilt grants in jaspermayone/infra tailscale/policy.hujson.
 { config, ... }:
 {
   imports = [ ../../modules/quilt ];
 
-  # Recipients are in ../../secrets/secrets.nix (jsp + alastor's host key).
+  # Recipients are in ../../secrets/secrets.nix (jsp + batting's host key).
   age.secrets = {
     # Every variable in docs/deploy.md of patchworklabsorg/quilt. The
     # password in RESTRICTED_DATABASE_URL must equal restricted-prod-quilt.age.
@@ -54,11 +44,6 @@
     environmentFile = config.age.secrets.quilt-env.path;
     registryCredentialsFile = config.age.secrets.quilt-ghcr-token.path;
 
-    traefik = {
-      enable = true;
-      hosts = [ "quilt.patchworklabs.org" ];
-    };
-
     # quilt-staging.patchworklabs.org: quilt-staging-web and
     # quilt-staging-worker on 127.0.0.1:3006, with RAILS_ENV=staging. Quilt
     # refuses to boot in staging unless MERCURY_API_BASE is the sandbox, so
@@ -70,7 +55,6 @@
       image = "ghcr.io/patchworklabsorg/quilt:main";
       port = 3006;
       environmentFile = config.age.secrets.quilt-staging-env.path;
-      hosts = [ "quilt-staging.patchworklabs.org" ];
       # Not secret, so they live here and not in the env file. extraEnv
       # overrides the env file, so nobody can point staging at the live
       # Mercury API or at production Weave from the env file.

@@ -13,8 +13,10 @@ let
   alastor = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIFwkC1CiWpLB10NNVaJwu4LSyiL0wM7ExI1VoKqIsgeG root@alastor-vnic";
   skein = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIMyAEZuxPllSL4clx7Si8tvMfdSLv+v4/z19nz75oHtl";
   seam = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIIpDr8Ilx3Nh4VOgDK4y54OTbt/ax2bExU+fv+aWSAB6";
-  # warp, hem: add each key after its install, then add the host to the
-  # files it needs and run `agenix -r`.
+  warp = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIJoRstg6i9nq60YNVyKvlhsURUHnNGPXcR5eV6P6hmXH";
+  hem = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIHFHZ/2Q8x+Z9toPli2yQZpQ4e8dBMOqDAFyAFaxgsIE";
+  batting = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIEN68vw2ir+q4fMQV8WBJvH7WDG4D2uFjChwkkA93LJC";
+  weft = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIAbzni2Be82ORFcHSPVr7OPpfs80Py04JtwyCKc4L28X";
   #
   # Central DB passwords, one file per app and environment, password only:
   #   central-prod-<app>.age        recipients: jsp, skein
@@ -24,14 +26,26 @@ let
   # The app host that connects needs the same file, so add it as a recipient.
   #
   # ad-join.age: the svc-lnx-join password only (vault key
-  # vault_ad_join_password_patchwork). Recipients: jsp and every host.
+  # vault_ad_join_password_patchwork). Recipients: jsp and every lab host.
   # modules/ad-join uses it when the file exists.
+  #
+  # weave-ldap.age: the svc-weave-ldap password only (ad/README.md, Weave).
+  # Recipients: jsp and alastor, the host that runs Weave. To rotate: set a new password in AD, then `agenix -e`.
 in
 {
   # Weave (Patchwork IDP) runtime env. Must contain:
   #   RAILS_MASTER_KEY=...   (decrypts config/credentials)
   #   POSTGRES_PASSWORD=...  (Rails DB password + postgres container init)
   "weave-env.age".publicKeys = [
+    jsp
+    alastor
+  ];
+
+  # svc-weave-ldap password (no newline). Set in AD on 2026-10-20.
+  # Weave reads it from AD_BIND_PASSWORD_FILE (patchworklabsorg/weave#218).
+  # Not wired into modules/weave yet. Give the container a copy outside
+  # /run/agenix, as modules/central-db does.
+  "weave-ldap.age".publicKeys = [
     jsp
     alastor
   ];
@@ -51,10 +65,10 @@ in
   # writes both files.
   "krater-env.age".publicKeys = [
     jsp
-    alastor
+    weft
   ];
 
-  # Quilt (quilt.patchworklabs.org on alastor) runtime env. Must contain the
+  # Quilt (quilt.patchworklabs.org on batting) runtime env. Must contain the
   # variables in docs/deploy.md of patchworklabsorg/quilt:
   #   RESTRICTED_DATABASE_URL=postgres://quilt:<password>@seam.wildebeest-stargazer.ts.net:5432/patchwork_central_restricted?sslmode=disable
   #     (<password> is the value in restricted-prod-quilt.age)
@@ -66,7 +80,7 @@ in
   #   QUILT_TOPUPS=off
   "quilt-env.age".publicKeys = [
     jsp
-    alastor
+    batting
   ];
 
   # Krater's role password in patchwork_central (skein). Password only. The
@@ -77,21 +91,21 @@ in
   ];
 
   # The Vast.ai API key Krater Compute rents with: the bare key, nothing else
-  # in the file. Only Krater's worker reads it. Not used on alastor while
+  # in the file. Only Krater's worker reads it. Not used on weft while
   # Krater's compute is off.
   "krater-vast-key.age".publicKeys = [
     jsp
-    alastor
+    weft
   ];
 
   # Krater's project-secrets keys: Fernet keys, one per line, newest first.
   # Only Krater's portal reads it. Losing it loses every stored project secret.
   "krater-project-secrets-key.age".publicKeys = [
     jsp
-    alastor
+    weft
   ];
 
-  # Quilt staging (quilt-staging.patchworklabs.org on alastor, RAILS_ENV=staging)
+  # Quilt staging (quilt-staging.patchworklabs.org on batting, RAILS_ENV=staging)
   # runtime env. bin/new-quilt-staging-secrets writes it. Same variables as
   # quilt-env.age, with staging values:
   #   RESTRICTED_DATABASE_URL=postgres://quilt:<password>@hem.wildebeest-stargazer.ts.net:5433/patchwork_central_restricted?sslmode=disable
@@ -102,17 +116,29 @@ in
   #   MERCURY_WRITE_TOKEN=   (a sandbox token; may be blank while QUILT_TOPUPS=off)
   #   QUILT_TOPUPS=off
   # MERCURY_API_BASE (the sandbox) and WEAVE_ISSUER (Weave staging) are set in
-  # hosts/alastor/quilt.nix and override this file.
+  # hosts/batting/quilt.nix and override this file.
   "quilt-staging-env.age".publicKeys = [
     jsp
-    alastor
+    batting
   ];
 
   # GitHub classic PAT with read:packages only, for ghcr.io/patchworklabsorg/quilt
   # (a private package). The token only, no newline needed.
   "quilt-ghcr-token.age".publicKeys = [
     jsp
-    alastor
+    batting
+  ];
+
+  # App role passwords in patchwork_central (skein). Password only. Add the
+  # host that runs the app as a recipient when the app connects, and put the
+  # same password in that app's env file.
+  "central-prod-weave.age".publicKeys = [
+    jsp
+    skein
+  ];
+  "central-prod-selvage.age".publicKeys = [
+    jsp
+    skein
   ];
 
   # Quilt's role password in patchwork_central_restricted (seam). Password
@@ -126,9 +152,24 @@ in
   # Quilt's role password in patchwork_central_restricted on hem:5433 (the
   # restricted staging cluster). Password only. hem decrypts it into the
   # restricted-staging container (hosts/hem/configuration.nix). alastor does
-  # not get this file: the same password is in quilt-staging-env.age.
-  # TODO: add hem after its install, then `agenix -r`.
-  "restricted-staging-quilt.age".publicKeys = [ jsp ];
+  # not get this file: the same password is in quilt-staging-env.age, so a
+  # rotation must change both files.
+  "restricted-staging-quilt.age".publicKeys = [
+    jsp
+    hem
+  ];
+
+  # App role passwords in patchwork_central on hem:5432 (the central staging
+  # cluster). Password only. hem decrypts them into the central-staging
+  # container. Add the host that runs the app when the app connects.
+  "central-staging-weave.age".publicKeys = [
+    jsp
+    hem
+  ];
+  "central-staging-selvage.age".publicKeys = [
+    jsp
+    hem
+  ];
 
   # svc-lnx-join password only (modules/ad-join, ansible/sync-join-password.yml).
   # Add each lab host key after its install, then `agenix -r`.
@@ -136,5 +177,8 @@ in
     jsp
     skein
     seam
+    warp
+    hem
+    batting
   ];
 }

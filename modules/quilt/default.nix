@@ -1,8 +1,8 @@
 # modules/quilt/default.nix
 # Quilt: Patchwork Labs funding and records (Rails). Two Docker containers from
 # one image: web and worker. Exported by this flake as nixosModules.quilt; the
-# host that runs it imports nixosModules.quilt-alastor
-# (hosts/alastor/quilt.nix), which sets the instance options below.
+# host that runs it imports hosts/batting/quilt.nix, which sets the instance
+# options below.
 #
 # The contract with the app is docs/deploy.md in patchworklabsorg/quilt.
 #
@@ -18,7 +18,7 @@
 # Network: both containers use the host network (`--network host`). seam is
 # reachable only over the tailnet, and the host resolves its MagicDNS name and
 # routes 100.64.0.0/10. A Docker bridge does not reliably resolve *.ts.net
-# names. So the web server binds 127.0.0.1:<port> itself, and Traefik proxies
+# names. So the web server binds 127.0.0.1:<port> itself, and a proxy on the host (nginx on batting) proxies
 # to that address.
 #
 # Units:
@@ -187,7 +187,7 @@ in
     port = lib.mkOption {
       type = lib.types.port;
       default = 3005;
-      description = "Loopback port the web server binds to. Traefik proxies to it.";
+      description = "Loopback port the web server binds to. The host's reverse proxy proxies to it.";
     };
 
     image = lib.mkOption {

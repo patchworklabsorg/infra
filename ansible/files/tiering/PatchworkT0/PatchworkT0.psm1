@@ -1,7 +1,7 @@
 # Just-in-time Tier 0 admin. Runs inside the PatchworkT0 JEA endpoint on
 # each DC. The endpoint runs as a virtual account, which is in Domain Admins
-# on a DC, so it can change GG-Domain-Admins-Tier0 after AdminSDHolder
-# removes every delegated right on that group. Only GG-T0-Eligible can
+# on a DC, so it can change tier0-admins after AdminSDHolder
+# removes every delegated right on that group. Only tier0-eligible can
 # connect (RoleDefinitions in PatchworkT0.pssc).
 #
 # A grant is a membership with a time to live (the AD Privileged Access
@@ -55,7 +55,7 @@ function Assert-T0Pam {
 .SYNOPSIS
     Makes the caller a Domain Admin for 1 to 4 hours.
 .DESCRIPTION
-    Adds the caller to GG-Domain-Admins-Tier0 with a time to live. Writes
+    Adds the caller to tier0-admins with a time to live. Writes
     event 1000 (source Patchwork-JIT) to the Application log of this DC. It
     sends a mail to security@ only when mail is enabled (Mailed is then True). An open grant is reused, not extended.
     After the grant, run "klist purge" or log on again: only a new TGT
@@ -126,7 +126,7 @@ this grant, remove it now: Remove-ADGroupMember $($cfg.group) $sam
 
 <#
 .SYNOPSIS
-    Lists the members of GG-Domain-Admins-Tier0 and the time left for each grant.
+    Lists the members of tier0-admins and the time left for each grant.
 #>
 function Get-T0AdminGrant {
     [CmdletBinding()]

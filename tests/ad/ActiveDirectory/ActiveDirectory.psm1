@@ -42,7 +42,7 @@ function New-PolicyDefaults {
 }
 
 $userAttrs = 'company', 'division', 'department', 'title', 'givenName', 'sn', 'displayName',
-'manager', 'userPrincipalName', 'mail'
+'manager', 'userPrincipalName', 'mail', 'employeeID'
 
 function Reset-FakeAD {
     $script:objects.Clear()
@@ -80,7 +80,7 @@ function Add-FakeObject([string]$DN, [string]$Class, [hashtable]$Extra = @{}) {
         Id = [guid]::NewGuid(); DN = $DN; Class = $Class; Sam = $null; Sid = $null; Enabled = $true
         Scope = $null; Protected = $false; Description = $null; Attrs = @{}
         Members = [System.Collections.Generic.List[guid]]::new(); Ttl = @{}
-        Acl = [System.Collections.Generic.List[object]]::new()
+        Acl = [System.Collections.Generic.List[object]]::new(); Owner = $null
     }
     foreach ($k in $Extra.Keys) { $o.$k = $Extra[$k] }
     if (-not $o.Sid -and $Class -in 'user', 'group', 'computer') { $o.Sid = "$script:domainSid-$($script:nextRid)"; $script:nextRid++ }
@@ -93,13 +93,23 @@ function Get-RdnValue([string]$DN) { (($DN -split '(?<!\\),', 2)[0] -split '=', 
 
 function Find-Fake($Identity) {
     if ($null -eq $Identity) { throw 'Identity is null' }
-    if ($Identity -is [psobject] -and $Identity.PSObject.Properties['ObjectGUID']) {
+    if ($Identity -is [guid]) {
+        $o = $script:objects | Where-Object { $_.Id -eq $Identity }
+    } elseif ($Identity -is [psobject] -and $Identity.PSObject.Properties['ObjectGUID']) {
+        # Like the AD module: an object from a search is found by the DN it
+        # had then. After a rename or a move, use the GUID or -PassThru.
         $id = $Identity.ObjectGUID
         $o = $script:objects | Where-Object { $_.Id -eq $id }
+        if ($o -and $Identity.PSObject.Properties['DistinguishedName'] -and $Identity.DistinguishedName -and $o.DN -ne $Identity.DistinguishedName) {
+            throw "Directory object not found (stale DN): '$($Identity.DistinguishedName)'"
+        }
     } else {
         $s = "$Identity"
-        $o = $script:objects | Where-Object { $_.DN -eq $s -or $_.Sam -eq $s -or ($_.Sid -and $_.Sid -eq $s) -or (Get-RdnValue $_.DN) -eq $s } |
-            Select-Object -First 1
+        # Like AD: a DN, a sAMAccountName or a SID. The RDN is a fallback for
+        # the base objects, and loses to a sAMAccountName (an OU
+        # Service-Accounts and a group service-accounts can both exist).
+        $o = $script:objects | Where-Object { $_.DN -eq $s -or $_.Sam -eq $s -or ($_.Sid -and $_.Sid -eq $s) } | Select-Object -First 1
+        if (-not $o) { $o = $script:objects | Where-Object { (Get-RdnValue $_.DN) -eq $s } | Select-Object -First 1 }
     }
     if (-not $o) { throw "Cannot find an object with identity: '$Identity'" }
     $o
@@ -126,6 +136,7 @@ function Select-Fake([string]$Filter, [string]$SearchBase, [string[]]$Classes) {
         'SamAccountName' { { param($o) $o.Sam } }
         'distinguishedName' { { param($o) $o.DN } }
         'UserPrincipalName' { { param($o) $o.Attrs['userPrincipalName'] } }
+        'employeeID' { { param($o) $o.Attrs['employeeID'] } }
         'objectClass' { { param($o) $o.Class } }
         'Name' { { param($o) Get-RdnValue $o.DN } }
         'objectSid' { { param($o) $o.Sid } }
@@ -179,6 +190,23 @@ function Move-ADObject { param($Identity, [string]$TargetPath, [switch]$PassThru
         }
     }
     if ($PassThru) { ConvertTo-Fake $o }
+}
+
+# Changes the RDN. The object, its SID and every link to it stay, like AD.
+function Rename-ADObject { param($Identity, [string]$NewName, $Server)
+    $o = Find-Fake $Identity
+    $parent = Get-ParentOf $o.DN
+    $prefix = ($o.DN -split '=', 2)[0]
+    $newDN = "$prefix=$NewName,$parent"
+    if ($script:objects | Where-Object { $_.DN -eq $newDN -and $_.Id -ne $o.Id }) { throw "Already exists: $newDN" }
+    $oldDN = $o.DN
+    $o.DN = $newDN
+    foreach ($x in $script:objects) {
+        if ($x.Attrs['manager'] -eq $oldDN) { $x.Attrs['manager'] = $newDN }
+        if ($x.Attrs.ContainsKey('msDS-AuthNPolicySiloMembers')) {
+            $x.Attrs['msDS-AuthNPolicySiloMembers'] = @($x.Attrs['msDS-AuthNPolicySiloMembers'] | ForEach-Object { if ($_ -eq $oldDN) { $newDN } else { $_ } })
+        }
+    }
 }
 
 # --- OUs ---------------------------------------------------------------------
@@ -252,9 +280,15 @@ function New-ADGroup { param([string]$Name, [string]$SamAccountName, $GroupCateg
     Assert-Parent $Path
     Add-FakeObject "CN=$Name,$Path" 'group' @{ Sam = $SamAccountName; Scope = $GroupScope; Description = $Description } | Out-Null
 }
-function Set-ADGroup { param($Identity, $Description, [string]$GroupScope, $Server)
+function Set-ADGroup { param($Identity, $Description, [string]$GroupScope, [string]$SamAccountName, [string]$DisplayName, $Server)
     $o = Find-Fake $Identity
     if ($PSBoundParameters.ContainsKey('Description')) { $o.Description = $Description }
+    if ($SamAccountName) {
+        # sAMAccountName is one namespace for users, groups and computers.
+        if ($script:objects | Where-Object { $_.Sam -eq $SamAccountName -and $_.Id -ne $o.Id }) { throw "The specified account already exists: $SamAccountName" }
+        $o.Sam = $SamAccountName
+    }
+    if ($PSBoundParameters.ContainsKey('DisplayName')) { $o.Attrs['displayName'] = $DisplayName }
     if ($GroupScope) {
         if ($o.Scope -eq 'Global' -and $GroupScope -eq 'DomainLocal') { throw 'Global cannot change straight to DomainLocal' }
         $o.Scope = $GroupScope
@@ -528,7 +562,8 @@ function Get-FakeAces([string]$DN) { @((Find-Fake $DN).Acl) }
 function Get-Acl { param([string]$Path)
     if ($Path -notmatch '^AD:\\(.+)$') { throw "Fake AD supports only AD:\<dn> paths: $Path" }
     $o = Find-Fake $Matches[1]
-    $sd = [pscustomobject]@{ Path = $Path; Rules = [System.Collections.Generic.List[object]]::new() }
+    $owner = if ($o.PSObject.Properties['Owner'] -and $o.Owner) { $o.Owner } else { 'PATCHWORK\Domain Admins' }
+    $sd = [pscustomobject]@{ Path = $Path; Owner = $owner; Rules = [System.Collections.Generic.List[object]]::new() }
     foreach ($a in $o.Acl) { $sd.Rules.Add($a) }
     $sd | Add-Member -MemberType ScriptMethod -Name GetAccessRules -Value {
         param($IncludeExplicit, $IncludeInherited, $TargetType)

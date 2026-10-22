@@ -73,13 +73,114 @@
       else: `Get-Service Tailscale`.
   when: tailscale_status.rc != 0
 
+# Every Patchwork host on the tailnet carries a tag. An untagged node is
+# owned by the user who made the auth key, matches autogroup:member, and the
+# tailnet policy gives that group much more access (ansible/README.md,
+# "Tailscale tags").
+- name: Refuse a host with no tag
+  ansible.builtin.fail:
+    msg: >-
+      {{ inventory_hostname }} has no tailscale_advertise_tags. Set them in the
+      group_vars of its group, or set tailscale_allow_untagged: true for it.
+  when:
+    - tailscale_advertise_tags | length == 0
+    - not (tailscale_allow_untagged | bool)
+
+# With no key, the login below is skipped and the play ends green, but the
+# node stays off the tailnet. This happened twice: once with the wrong
+# variable name (tailscale_authkey), once with an empty $TSKEY.
+- name: Fail when the node needs a login and no auth key is set
+  ansible.builtin.fail:
+    msg: |
+      {{ inventory_hostname }} is not logged in to the tailnet ({{ (tailscale_status.stdout | from_json).BackendState }}),
+      and tailscale_auth_key is empty, so this run cannot log it in.
+
+      Give the key with the exact variable name, and check that it is set:
+
+        read -s TSKEY; [ -n "$TSKEY" ] && echo set
+        ansible-playbook windows.yml -l {{ inventory_hostname }} -e "tailscale_auth_key=$TSKEY"
+
+      To keep a host off the tailnet, set tailscale_enabled: false for it.
+  when:
+    - tailscale_auth_key | length == 0
+    - (tailscale_status.stdout | from_json).BackendState in ['NeedsLogin', 'NoState']
+
 # --unattended keeps the tunnel up with no user logged in (server mode).
 # --accept-dns=false: these boxes ARE the DNS / rely on AD DNS.
+# --accept-routes=false: no grant has a Patchwork tag as src, so a route
+# through the tailnet would only black-hole traffic that the LAN carries.
+# failed_when: false, so the next task can show the error without the key.
 - name: Authenticate to tailnet
   ansible.windows.win_command: >-
     "C:\Program Files\Tailscale\tailscale.exe" up
-    --auth-key={{ tailscale_auth_key }} --accept-dns=false --unattended
+    --auth-key={{ tailscale_auth_key }} --accept-dns=false --accept-routes=false --unattended
+    {% if tailscale_advertise_tags | length > 0 %}--advertise-tags={{ tailscale_advertise_tags | join(',') }}{% endif %}
+  register: tailscale_up
+  failed_when: false
   when:
     - tailscale_auth_key | length > 0
     - (tailscale_status.stdout | from_json).BackendState == 'NeedsLogin'
   no_log: true
+
+- name: Fail when the login failed
+  ansible.builtin.fail:
+    msg: |
+      `tailscale up` failed on {{ inventory_hostname }} (rc={{ tailscale_up.rc }}):
+
+        {{ ((tailscale_up.stderr | default('')) ~ (tailscale_up.stdout | default(''))) | regex_replace('tskey-[A-Za-z0-9_-]+', 'tskey-REDACTED') | trim }}
+
+      "requested tags ... are invalid or not permitted" means one of two things.
+      The tag is not in tagOwners of the live tailnet policy yet (merge and
+      apply jaspermayone/infra tailscale/policy.hujson first), or the auth key
+      does not belong to a tailnet admin.
+  when:
+    - tailscale_up is not skipped
+    - tailscale_up.rc != 0
+
+# Read the state again after a login, so the tag check below also covers a
+# node that has just joined.
+- name: Read the login state after the login
+  ansible.windows.win_command: '"C:\Program Files\Tailscale\tailscale.exe" status --json'
+  register: tailscale_status_after
+  changed_when: false
+  when: tailscale_up is not skipped
+
+# `tailscale up` above runs only at the first login. A node that is already
+# logged in keeps the tags it has. So refuse a node whose tags are not the
+# wanted tags, and say how to fix it. Any state other than NeedsLogin or
+# NoState means the node has an identity (Running, Stopped, Starting,
+# NeedsMachineAuth). This does not re-authenticate the node: that would drop
+# its sessions.
+- name: Fail when a node does not have exactly the wanted tags
+  ansible.builtin.fail:
+    msg: |
+      {{ inventory_hostname }} is on the tailnet with the wrong tags.
+      Wanted: {{ tailscale_advertise_tags | join(', ') or 'no tags' }}.
+      It has: {{ tailscale_self_tags | join(', ') or 'no tags' }}.
+
+      Tag it from the node, in an admin shell (this re-authenticates it):
+
+        tailscale up --auth-key=<a new auth key> --advertise-tags={{ tailscale_advertise_tags | join(",") }} --force-reauth --unattended --accept-dns=false
+
+      Or in the admin console, Machines, Edit ACL tags. Then run this play again.
+  vars:
+    tailscale_state: "{{ ((tailscale_status_after if tailscale_status_after is not skipped else tailscale_status).stdout) | from_json }}"
+    tailscale_self_tags: "{{ (tailscale_state.Self | default({}, true)).Tags | default([], true) }}"
+  when:
+    - tailscale_state.BackendState not in ['NeedsLogin', 'NoState']
+    - (tailscale_advertise_tags | sort) != (tailscale_self_tags | sort)
+
+# A DC registers the addresses of its adapters in AD DNS. The tailnet address
+# must not get there: the lab hosts would then resolve loom to a 100.x
+# address that no grant lets them reach. Turn off DNS registration on the
+# Tailscale adapter. The adapter is named "Tailscale" by the installer.
+- name: The Tailscale adapter does not register in DNS
+  ansible.windows.win_powershell:
+    script: |
+      $Ansible.Changed = $false
+      $c = Get-DnsClient -InterfaceAlias 'Tailscale' -ErrorAction SilentlyContinue
+      if (-not $c) { $Ansible.Result = 'no Tailscale adapter'; return }
+      if ($c.RegisterThisConnectionsAddress) {
+        Set-DnsClient -InterfaceAlias 'Tailscale' -RegisterThisConnectionsAddress $false
+        $Ansible.Changed = $true
+      }

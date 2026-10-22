@@ -1,0 +1,205 @@
+set interfaces ethernet eth0 address '10.100.92.20/24'
+set interfaces ethernet eth0 description 'pwvpn (VLAN 92)'
+set interfaces ethernet eth0 hw-id 'bc:24:11:bb:2a:94'
+set interfaces loopback lo
+set interfaces wireguard wg0 address '10.100.79.1/24'
+set interfaces wireguard wg0 address 'fd00:100:79::1/64'
+set interfaces wireguard wg0 description 'wg-clients'
+set interfaces wireguard wg0 peer minerva-pw allowed-ips '10.100.79.2/32'
+set interfaces wireguard wg0 peer minerva-pw allowed-ips 'fd00:100:79::2/128'
+set interfaces wireguard wg0 peer minerva-pw public-key 'NvTRCTEKyghdDvm2mYN2+tVptfITK+Sye57tNBQZbW8='
+set interfaces wireguard wg0 peer remus allowed-ips '10.100.79.3/32'
+set interfaces wireguard wg0 peer remus allowed-ips 'fd00:100:79::3/128'
+set interfaces wireguard wg0 peer remus public-key 'aZdbvZnlKocV6cFpoxrkqgbIUE9IhBxamyfmfX4anCY='
+set interfaces wireguard wg0 port '51822'
+set interfaces wireguard wg0 private-key '{{ vyos_secrets["interfaces_wireguard_wg0_private_key"] | replace("'", "'\\''") }}'
+set nat source rule 100 description 'wg-clients-pw full-tunnel'
+set nat source rule 100 outbound-interface name 'eth0'
+set nat source rule 100 source address '10.100.79.0/24'
+set nat source rule 100 translation address 'masquerade'
+set nat66 source rule 100 outbound-interface name 'eth0'
+set nat66 source rule 100 source prefix 'fd00:100:79::/64'
+set nat66 source rule 100 translation address 'masquerade'
+set protocols static route 0.0.0.0/0 next-hop 10.100.92.1
+set service ntp allow-client address '127.0.0.0/8'
+set service ntp allow-client address '169.254.0.0/16'
+set service ntp allow-client address '10.0.0.0/8'
+set service ntp allow-client address '172.16.0.0/12'
+set service ntp allow-client address '192.168.0.0/16'
+set service ntp allow-client address '::1/128'
+set service ntp allow-client address 'fe80::/10'
+set service ntp allow-client address 'fc00::/7'
+set service ntp server time1.vyos.net
+set service ntp server time2.vyos.net
+set service ntp server time3.vyos.net
+set service ssh port '22'
+set system config-management commit-revisions '100'
+set system console device ttyS0 speed '115200'
+set system host-name 'thimble'
+set system login banner post-login '\\\n         \\  o o o\n     .----\\------.\n     | +  o\\ |   |\n     |-----+\\----|\n     |   | | \\ L |\n     `--.  | |\\--`\n         `-`  \\\n               \\\n    T H I M B L E\n    patchwork . pw-vpn edge\n\n'
+set system login banner pre-login '.-------.\n   |=======|\n   |  | |  |\n   `-------`\n   thimble . patchwork vpn\n\n'
+set system login user vyos authentication encrypted-password '{{ vyos_secrets["system_login_user_vyos_authentication_encrypted_password"] | replace("'", "'\\''") }}'
+set system login user vyos authentication public-keys jasper-laptop key '{{ vyos_secrets["system_login_user_vyos_authentication_public_keys_jasper_laptop_key"] | replace("'", "'\\''") }}'
+set system login user vyos authentication public-keys jasper-laptop type 'ssh-ed25519'
+set system name-server '10.100.90.10'
+set system name-server '10.100.90.11'
+set system option reboot-on-upgrade-failure '5'
+set system syslog local facility all level 'info'
+set system syslog local facility local7 level 'debug'
+{# ===================================================================== #}
+{# IKEv2 remote-access VPN with AD login (NPS on shuttle).              #}
+{# vyos_ikev2_stage (inventory/host_vars/thimble.yml) turns the parts on #}
+{# in order. README.md, "VPN", has the steps and the rollback.           #}
+{#   0  nothing (the router before this change)                          #}
+{#   1  firewall: groups, rules, default-action accept, log rule 999     #}
+{#   2  ACME certificate vpn-le from the Let's Encrypt STAGING CA        #}
+{#   3  the same certificate from production, and the LE chain CAs    #}
+{#   4  IKEv2: IKE/ESP groups, pool ra-v4, RADIUS, pw-ikev2, NAT 110     #}
+{#   5  input default-action drop (do it by hand with commit-confirm)    #}
+{# Do not run `vyos.yml -t pull` before stage 5: pull writes the router  #}
+{# config over this file and the stages that are not applied are lost.   #}
+{# ===================================================================== #}
+{% set ikev2_stage = vyos_ikev2_stage | default(0) | int %}
+{% if ikev2_stage >= 1 %}
+set firewall group network-group PW-NETS description 'Patchwork networks that VPN clients can reach'
+set firewall group network-group PW-NETS network '10.100.90.0/24'
+set firewall group network-group PW-NETS network '10.100.91.0/24'
+set firewall group network-group PW-NETS network '10.100.92.0/24'
+set firewall group network-group SSH-SOURCES description 'Networks that can open SSH to thimble'
+set firewall group network-group SSH-SOURCES network '10.100.79.0/24'
+set firewall group network-group SSH-SOURCES network '10.100.90.0/24'
+set firewall group network-group SSH-SOURCES network '10.100.93.0/24'
+set firewall ipv4 forward filter default-action 'accept'
+set firewall ipv4 forward filter rule 10 action 'accept'
+set firewall ipv4 forward filter rule 10 description 'Replies'
+set firewall ipv4 forward filter rule 10 state 'established'
+set firewall ipv4 forward filter rule 10 state 'related'
+set firewall ipv4 forward filter rule 20 action 'accept'
+set firewall ipv4 forward filter rule 20 description 'IKEv2 pool to the Patchwork networks'
+set firewall ipv4 forward filter rule 20 destination group network-group 'PW-NETS'
+set firewall ipv4 forward filter rule 20 ipsec match-ipsec-in
+set firewall ipv4 forward filter rule 20 source address '10.100.93.0/24'
+set firewall ipv4 forward filter rule 30 action 'drop'
+set firewall ipv4 forward filter rule 30 description 'IKEv2 pool to all other networks'
+set firewall ipv4 forward filter rule 30 source address '10.100.93.0/24'
+set firewall ipv4 input filter default-action '{{ "drop" if ikev2_stage >= 5 else "accept" }}'
+set firewall ipv4 input filter rule 10 action 'accept'
+set firewall ipv4 input filter rule 10 description 'Replies'
+set firewall ipv4 input filter rule 10 state 'established'
+set firewall ipv4 input filter rule 10 state 'related'
+set firewall ipv4 input filter rule 20 action 'accept'
+set firewall ipv4 input filter rule 20 description 'Loopback'
+set firewall ipv4 input filter rule 20 inbound-interface name 'lo'
+set firewall ipv4 input filter rule 30 action 'accept'
+set firewall ipv4 input filter rule 30 description 'ICMP'
+set firewall ipv4 input filter rule 30 protocol 'icmp'
+set firewall ipv4 input filter rule 40 action 'accept'
+set firewall ipv4 input filter rule 40 description 'SSH from the VPN pools and the server VLAN'
+set firewall ipv4 input filter rule 40 destination port '22'
+set firewall ipv4 input filter rule 40 protocol 'tcp'
+set firewall ipv4 input filter rule 40 source group network-group 'SSH-SOURCES'
+set firewall ipv4 input filter rule 50 action 'accept'
+set firewall ipv4 input filter rule 50 description 'WireGuard'
+set firewall ipv4 input filter rule 50 destination port '51822'
+set firewall ipv4 input filter rule 50 protocol 'udp'
+set firewall ipv4 input filter rule 60 action 'accept'
+set firewall ipv4 input filter rule 60 description 'IKE and NAT-T'
+set firewall ipv4 input filter rule 60 destination port '500,4500'
+set firewall ipv4 input filter rule 60 protocol 'udp'
+set firewall ipv4 input filter rule 70 action 'accept'
+set firewall ipv4 input filter rule 70 description 'ESP'
+set firewall ipv4 input filter rule 70 protocol 'esp'
+set firewall ipv4 input filter rule 80 action 'accept'
+set firewall ipv4 input filter rule 80 description 'ACME HTTP-01 for vpn-le'
+set firewall ipv4 input filter rule 80 destination address '10.100.92.20'
+set firewall ipv4 input filter rule 80 destination port '80'
+set firewall ipv4 input filter rule 80 protocol 'tcp'
+{% if ikev2_stage < 5 %}
+set firewall ipv4 input filter rule 999 action 'accept'
+set firewall ipv4 input filter rule 999 description 'Stage 5 drops this traffic. Read the log first.'
+set firewall ipv4 input filter rule 999 log
+{% else %}
+delete firewall ipv4 input filter rule 999
+{% endif %}
+{% endif %}
+{% if ikev2_stage >= 2 %}
+set pki certificate vpn-le acme domain-name 'vpn.patchworklabs.org'
+set pki certificate vpn-le acme email 'security@patchworklabs.org'
+set pki certificate vpn-le acme listen-address '10.100.92.20'
+set pki certificate vpn-le acme rsa-key-size '2048'
+{% if ikev2_stage == 2 %}
+set pki certificate vpn-le acme url 'https://acme-staging-v02.api.letsencrypt.org/directory'
+{% else %}
+set pki certificate vpn-le acme url 'https://acme-v02.api.letsencrypt.org/directory'
+{% endif %}
+{% endif %}
+{% if ikev2_stage >= 3 %}
+{# The Let's Encrypt chain for vpn-le, from letsencrypt.org/certificates  #}
+{# (2026-10-20): ISRG Root X1, Root YR signed by ISRG Root X1, and the    #}
+{# RSA intermediates YR1, YR2 (active) and YR3 (backup). strongSwan sends #}
+{# the intermediates from these files. With the issuer in the config, pki #}
+{# adds no AUTOCHAIN_vpn-le, which a renewal does not update. Stage 2     #}
+{# leaves one with the staging issuer, so stage 3 deletes it.             #}
+{# README.md, "VPN", has the fingerprints and what to do when Let's       #}
+{# Encrypt adds an intermediate.                                          #}
+set pki ca ISRG-Root-X1 certificate 'MIIFazCCA1OgAwIBAgIRAIIQz7DSQONZRGPgu2OCiwAwDQYJKoZIhvcNAQELBQAwTzELMAkGA1UEBhMCVVMxKTAnBgNVBAoTIEludGVybmV0IFNlY3VyaXR5IFJlc2VhcmNoIEdyb3VwMRUwEwYDVQQDEwxJU1JHIFJvb3QgWDEwHhcNMTUwNjA0MTEwNDM4WhcNMzUwNjA0MTEwNDM4WjBPMQswCQYDVQQGEwJVUzEpMCcGA1UEChMgSW50ZXJuZXQgU2VjdXJpdHkgUmVzZWFyY2ggR3JvdXAxFTATBgNVBAMTDElTUkcgUm9vdCBYMTCCAiIwDQYJKoZIhvcNAQEBBQADggIPADCCAgoCggIBAK3oJHP0FDfzm54rVygch77ct984kIxuPOZXoHj3dcKi/vVqbvYATyjb3miGbESTtrFj/RQSa78f0uoxmyF+0TM8ukj13Xnfs7j/EvEhmkvBioZxaUpmZmyPfjxwv60pIgbz5MDmgK7iS4+3mX6UA5/TR5d8mUgjU+g4rk8Kb4Mu0UlXjIB0ttov0DiNewNwIRt18jA8+o+u3dpjq+sWT8KOEUt+zwvo/7V3LvSye0rgTBIlDHCNAymg4VMk7BPZ7hm/ELNKjD+Jo2FR3qyHB5T0Y3HsLuJvW5iB4YlcNHlsdu87kGJ55tukmi8mxdAQ4Q7e2RCOFvu396j3x+UCB5iPNgiV5+I3lg02dZ77DnKxHZu8A/lJBdiB3QW0KtZB6awBdpUKD9jf1b0SHzUvKBds0pjBqAlkd25HN7rOrFleaJ1/ctaJxQZBKT5ZPt0m9STJEadao0xAH0ahmbWnOlFuhjuefXKnEgV4We0+UXgVCwOPjdAvBbI+e0ocS3MFEvzG6uBQE3xDk3SzynTnjh8BCNAw1FtxNrQHusEwMFxIt4I7mKZ9YIqioymCzLq9gwQbooMDQaHWBfEbwrbwqHyGO0aoSCqI3Haadr8faqU9GY/rOPNk3sgrDQoo//fb4hVC1CLQJ13hef4Y53CIrU7m2Ys6xt0nUW7/vGT1M0NPAgMBAAGjQjBAMA4GA1UdDwEB/wQEAwIBBjAPBgNVHRMBAf8EBTADAQH/MB0GA1UdDgQWBBR5tFnme7bl5AFzgAiIyBpY9umbbjANBgkqhkiG9w0BAQsFAAOCAgEAVR9YqbyyqFDQDLHYGmkgJykIrGF1XIpu+ILlaS/V9lZLubhzEFnTIZd+50xx+7LSYK05qAvqFyFWhfFQDlnrzuBZ6brJFe+GnY+EgPbk6ZGQ3BebYhtF8GaV0nxvwuo77x/Py9auJ/GpsMiu/X1+mvoiBOv/2X/qkSsisRcOj/KKNFtY2PwByVS5uCbMiogziUwthDyC3+6WVwW6LLv3xLfHTjuCvjHIInNzktHCgKQ5ORAzI4JMPJ+GslWYHb4phowim57iaztXOoJwTdwJx4nLCgdNbOhdjsnvzqvHu7UrTkXWStAmzOVyyghqpZXjFaH3pO3JLF+l+/+sKAIuvtd7u+Nxe5AW0wdeRlN8NwdCjNPElpzVmbUq4JUagEiuTDkHzsxHpFKVK7q4+63SM1N95R1NbdWhscdCb+ZAJzVcoyi3B43njTOQ5yOf+1CceWxG1bQVs5ZufpsMljq4Ui0/1lvh+wjChP4kqKOJ2qxq4RgqsahDYVvTH9w7jXbyLeiNdd8XM2w9U/t7y0Ff/9yi0GE44Za4rF2LN9d11TPAmRGunUHBcnWEvgJBQl9nJEiU0Zsnvgc/ubhPgXRR4Xq37Z0j4r7g1SgEEzwxA57demyPxgcYxn/eR44/KJ4EBs+lVDR3veyJm+kXQ99b21/+jh5Xos1AnX5iItreGCc='
+set pki ca LE-Root-YR-X1 certificate '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'
+set pki ca LE-YR1 certificate 'MIIE2zCCAsOgAwIBAgIRAKICU/FfJpHAXcHOE7m8yk4wDQYJKoZIhvcNAQELBQAwLjELMAkGA1UEBhMCVVMxDTALBgNVBAoTBElTUkcxEDAOBgNVBAMTB1Jvb3QgWVIwHhcNMjUwOTAzMDAwMDAwWhcNMjgwOTAyMjM1OTU5WjAzMQswCQYDVQQGEwJVUzEWMBQGA1UEChMNTGV0J3MgRW5jcnlwdDEMMAoGA1UEAxMDWVIxMIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAoVi8X2xCYgMXvJxNPKp/oF13UMgmPABB07VCLNDtoXmt9luEZNJSBV10VyT1Pz6LD8Zq1d2gc43WNl1AdRrj4sEnazbOiz0nPpmGBp2hui49oZtDIY6wdKeZAi5BbNU20CH6RSBBMLSQ9cXrH8dxdv4PAJ45ssGML68USE3BsjC2a6cAN9L5CgXVIQi5tfNiTPoFZZ3S0OlXqLmmtdV95udWAb5b6e/F49DiCsH0Y00Ag72BVIb1hzynmKe+X0mERBTtsb3BwmpV9ipeBjMLoR/D9cHxHQCWoi5lTmXwY015J5rGelz1nZjJuxc2kioaX29XJBnhMkP531rSdG5uMwIDAQABo4HuMIHrMA4GA1UdDwEB/wQEAwIBhjATBgNVHSUEDDAKBggrBgEFBQcDATASBgNVHRMBAf8ECDAGAQH/AgEAMB0GA1UdDgQWBBQfLzW+RhSCzUCxrnksVXj699Ro+zAfBgNVHSMEGDAWgBTe51tg0CJtQCh9Pw0B/qS1UrRRlDAyBggrBgEFBQcBAQQmMCQwIgYIKwYBBQUHMAKGFmh0dHA6Ly95ci5pLmxlbmNyLm9yZy8wEwYDVR0gBAwwCjAIBgZngQwBAgEwJwYDVR0fBCAwHjAcoBqgGIYWaHR0cDovL3lyLmMubGVuY3Iub3JnLzANBgkqhkiG9w0BAQsFAAOCAgEA0+zvMq3kHig1ddTmmm+RibTr9/RpX7k4buanMMRqbV/yIvP82zAHN3mvaw+cASuVsdpd0ikjhr4hnhJQLQOzOp2ccKrsdGOAgo0vddeISFAqEWEV4lmUM3vFF796up+bSgmJ1u6RupDCMxDgF8M3eLvGuj6L0lu3zkQ0KuQLnKxLtB0oQqn1Idg5CuuGpMvQzk29Pa3D/qHurc0EIM9SxukQuJqq63lxsYyRQFU8yMBOhq1w5LbfaWNRrz1uklOfI/pYkAb2E2MTZrAMQkBIE2S8Jt1F8gRc96o/xOsrgvSka84AisX6xq1lz1Z7jGvrnXc4TMcjxZTjiTaihcYI1JIXZiLtEMSCa5l3cu8YWd6zdLRQlqRdclVjuQfNHawRJ6GWlkK0QJosivTKwdBw3KxEtzGo8yMHERbsy57gP1UXHOMcmZYQC0gtyR3SxfenIM/MxC3Ia2Ypab/kQ/CTnlIn2KQ5JUC6NYrGCbhFN9bp5lKJStEwCUnLpntcrXk5XVDCNv/5RyWpRThkGOV7GetKkQ0qAY8hCzWK6oqnAhDZcjlYVdWfqOw3DIOX6EDNBgAqHarRVxyF9QZdOaXSyPJ0ueD2BYJEBgaCGQ8rAaU/Qc123V5LTXDZW4CcsPBDyhy4v+c8hClAyw/IkJlfBqxB9D+/wvIMHgECZ4ptP6o='
+set pki ca LE-YR2 certificate 'MIIE2jCCAsKgAwIBAgIQTr0klH4k05SALYSlL9WzGTANBgkqhkiG9w0BAQsFADAuMQswCQYDVQQGEwJVUzENMAsGA1UEChMESVNSRzEQMA4GA1UEAxMHUm9vdCBZUjAeFw0yNTA5MDMwMDAwMDBaFw0yODA5MDIyMzU5NTlaMDMxCzAJBgNVBAYTAlVTMRYwFAYDVQQKEw1MZXQncyBFbmNyeXB0MQwwCgYDVQQDEwNZUjIwggEiMA0GCSqGSIb3DQEBAQUAA4IBDwAwggEKAoIBAQDZ0LxwBppqh84luqMerV/eeL/fXQ7mLQQv1LnpWKZbyvGpx6wh6AfnslAnF6ewTkcHA+gSOoBvm3Dfm06AuGiF+KRut4fAcowqnAQQCW98+QPP/eOv/wug7Iyk4NkOxf2I6g2f55T6nJoOTLFcukeRq80JGQEYan+dPFr9OGUgQK2hGKgNkW87pappsOAuUJcroYhRt5uUis4qaZireiseu32gzDJNBAiKtsvd6HX4v25bpkRNcS/B/Gtc9kVbUpD+2PLPxdei3Tim55k4tfAEXwD2qyiPTxrTNq6lN+AMr5g2c1dNqkOTwjxeV6L5lpP1rGiYvLnRaPlOqyZRPW+5AgMBAAGjge4wgeswDgYDVR0PAQH/BAQDAgGGMBMGA1UdJQQMMAoGCCsGAQUFBwMBMBIGA1UdEwEB/wQIMAYBAf8CAQAwHQYDVR0OBBYEFEAVLSZ57TIgnt+ach3WMh+BDIEMMB8GA1UdIwQYMBaAFN7nW2DQIm1AKH0/DQH+pLVStFGUMDIGCCsGAQUFBwEBBCYwJDAiBggrBgEFBQcwAoYWaHR0cDovL3lyLmkubGVuY3Iub3JnLzATBgNVHSAEDDAKMAgGBmeBDAECATAnBgNVHR8EIDAeMBygGqAYhhZodHRwOi8veXIuYy5sZW5jci5vcmcvMA0GCSqGSIb3DQEBCwUAA4ICAQB0ZUQWZ9/Yn9COEpo+JfecMnB0h0vwDm/M66IqXqw3LoaLmx9lZvRTeDIS67PUeI3yCA2W6PKRD0/FE/G57lOmS+Xy5AaaL00ICGOqjNcCaMWW8o8nevHOd4i4lqgtznE/28QwlcdJyF8yBiWHpnyjhEpmNWJURgOCOg2xpwRMBCsjMScqYPtOhBeuYQvSwAEeTML2Ukh6uGuX4E14q65Ja8cdjF5bAldnP1eE4FBaAwsZG2fOqqrKV03Y85Nw2btedP1AtliQuJZs/Jo/gXxXdc7LrH3McgnpnbTiAncX7yEShP6kzQejllqMCIt52HOjxDGWafS7Xw+DKwqmH+Eqy8dcbOuag/1AYlQoKNVK3F5qHh6tEDiMqQcLIibGKteE6iHo4A/bIScbzrhXUYuism42ZYzmc48FMVIH3qy4L84ETdAH2gtxw0PAhvRVXp8HP7wfngpzsN/8xOTpeRSbM4+Qbc56G6+Bifmv6sk1ieQbNA3wJdl4DDUuQSV8hBgx6zoI1ZSGORprDFux7c6rhc77QZMSRrEgomBeklervEve86ylWmZ3WWHV6RLMi8xNvjd71r4EPIGgY7BZU/VPBkq+uA7Gb6mbJnFgV43uh3xyLRFgxIAphIukwTGSMZZR+AI+Qnp0BYTWovHXozOf3H8r6hozEoT02JHn0AeTfA=='
+set pki ca LE-YR3 certificate 'MIIE2jCCAsKgAwIBAgIQdv2+nJw5pmI1PsQaDsOT/jANBgkqhkiG9w0BAQsFADAuMQswCQYDVQQGEwJVUzENMAsGA1UEChMESVNSRzEQMA4GA1UEAxMHUm9vdCBZUjAeFw0yNTA5MDMwMDAwMDBaFw0yODA5MDIyMzU5NTlaMDMxCzAJBgNVBAYTAlVTMRYwFAYDVQQKEw1MZXQncyBFbmNyeXB0MQwwCgYDVQQDEwNZUjMwggEiMA0GCSqGSIb3DQEBAQUAA4IBDwAwggEKAoIBAQDJS0+QyfrZm8U0nXugJKg+3nraHoxKN9NOsGvHT9NtcdgThWuj6gizDMqn9VQilyPJ+qKK7rjgBM/XK3ogx61EPbgQY8LiVNn4nsmR1UFUdalb/cL/mYtXo3lu3qop7k6Ol+pOLzvlBINhl+Mq7l9VxUCM717UpYumNKxGNRjALGg5H16C93UQlW8KgRpW58fY5Be3cLqv24bbKRFisb7S/HPA967pW6rAO/DFFKbi35NfHKEG0jIGqxtsbYbK+/0qe2147p9oUO/SNcuaT9poLFWKmcY90UR0hXKy+qiR6Kv7/e5gCK/BGkjLXM1AfX1CRDwOiIPPsK+RJOIj00ilAgMBAAGjge4wgeswDgYDVR0PAQH/BAQDAgGGMBMGA1UdJQQMMAoGCCsGAQUFBwMBMBIGA1UdEwEB/wQIMAYBAf8CAQAwHQYDVR0OBBYEFGllKfkz+Am2QtXh87W1nR9feiJ8MB8GA1UdIwQYMBaAFN7nW2DQIm1AKH0/DQH+pLVStFGUMDIGCCsGAQUFBwEBBCYwJDAiBggrBgEFBQcwAoYWaHR0cDovL3lyLmkubGVuY3Iub3JnLzATBgNVHSAEDDAKMAgGBmeBDAECATAnBgNVHR8EIDAeMBygGqAYhhZodHRwOi8veXIuYy5sZW5jci5vcmcvMA0GCSqGSIb3DQEBCwUAA4ICAQCNj5bxci8knkGgfw3qSv0KbbjZpmKUgZzgYYW6EpiFj4Bx8CTQ79RCEuitFdGFOvG9xfQdWArQlaO/bsmNcsz0D9wiuwxc9RCo6JC4BKRMcmKEfRiLzHWwHZfUj0sCAY0yBryOGL80J3sD2C3mjAFwV2mVIeuVKOhQeTcstVceW97+38AC+juHSq+xu/HuCbX0LgTzMzh8RYy8OtO80IFE2v8qAEDIK2PYoQp27nwftAICAtOoGzqHDJqPWeiSTQgt1ndRgGAmV7H0HssX66i8naQFlsiidol4goFYEVMVJArpg2X5NyumCCX/aSnXKgp8leQ6XoVQz0VI6+k1a0goPUJB7xp67BkCxkwJamDOMpQLxpdTPI2Z1TO2BuEyzBd8DC/yfm1+rvMCRG3AX44f0ra2ueiM7cdRvzcE+b3c2fun1n/4xzigiimm8Rzs6Cc0A59mt3XhruOe+zGIXtJgn0wf9XfJhKdKcdEH5VNhFapnGc9Tm+fd4n5Qojd7W2CwdBUBgwYIt4Cqxqr2OEf7/k1Xm8eplMQlhwySs/hM0dY6csOPNIXeJm1YsnJyxUGvKRWjOn+vC9k1SXilnnwhcIs9Pp9e5bckYAnB79VJXN/L8X8xt/9Qm2xmKKe/xzKA+oRvWKofeFGKU7hcnFbyUwlCu0d+JkgWxQu4x4drcQ=='
+delete pki ca AUTOCHAIN_vpn-le
+{% endif %}
+{% if ikev2_stage >= 4 %}
+set nat source rule 110 description 'ikev2-clients-pw split-tunnel'
+set nat source rule 110 outbound-interface name 'eth0'
+set nat source rule 110 source address '10.100.93.0/24'
+set nat source rule 110 translation address 'masquerade'
+set vpn ipsec esp-group PW-ESP lifetime '3600'
+set vpn ipsec esp-group PW-ESP pfs 'dh-group14'
+set vpn ipsec esp-group PW-ESP proposal 1 encryption 'aes256'
+set vpn ipsec esp-group PW-ESP proposal 1 hash 'sha256'
+set vpn ipsec esp-group PW-ESP proposal 2 encryption 'aes128gcm128'
+set vpn ipsec esp-group PW-ESP proposal 2 hash 'sha256'
+set vpn ipsec ike-group PW-IKE dead-peer-detection action 'clear'
+set vpn ipsec ike-group PW-IKE dead-peer-detection interval '30'
+set vpn ipsec ike-group PW-IKE key-exchange 'ikev2'
+set vpn ipsec ike-group PW-IKE lifetime '28800'
+set vpn ipsec ike-group PW-IKE proposal 1 dh-group '14'
+set vpn ipsec ike-group PW-IKE proposal 1 encryption 'aes256'
+set vpn ipsec ike-group PW-IKE proposal 1 hash 'sha256'
+set vpn ipsec ike-group PW-IKE proposal 2 dh-group '14'
+set vpn ipsec ike-group PW-IKE proposal 2 encryption 'aes128gcm128'
+set vpn ipsec ike-group PW-IKE proposal 2 hash 'sha256'
+set vpn ipsec ike-group PW-IKE proposal 2 prf 'prfsha256'
+set vpn ipsec remote-access connection pw-ikev2 authentication client-mode 'eap-radius'
+set vpn ipsec remote-access connection pw-ikev2 authentication local-id 'vpn.patchworklabs.org'
+set vpn ipsec remote-access connection pw-ikev2 authentication server-mode 'x509'
+set vpn ipsec remote-access connection pw-ikev2 authentication x509 ca-certificate 'ISRG-Root-X1'
+set vpn ipsec remote-access connection pw-ikev2 authentication x509 ca-certificate 'LE-Root-YR-X1'
+set vpn ipsec remote-access connection pw-ikev2 authentication x509 ca-certificate 'LE-YR1'
+set vpn ipsec remote-access connection pw-ikev2 authentication x509 ca-certificate 'LE-YR2'
+set vpn ipsec remote-access connection pw-ikev2 authentication x509 ca-certificate 'LE-YR3'
+set vpn ipsec remote-access connection pw-ikev2 authentication x509 certificate 'vpn-le'
+{# Apple clients can need "send_cert = always" (vyos-1x T8027). Set      #}
+{# vyos_ikev2_always_send_cert only when                                  #}
+{# `set vpn ipsec remote-access connection pw-ikev2 authentication ?`     #}
+{# on thimble lists always-send-cert. Else the stage 4 commit fails.      #}
+{% if vyos_ikev2_always_send_cert | default(false) is sameas true %}
+set vpn ipsec remote-access connection pw-ikev2 authentication always-send-cert
+{% endif %}
+set vpn ipsec remote-access connection pw-ikev2 description 'Staff IKEv2, AD login through NPS on shuttle'
+set vpn ipsec remote-access connection pw-ikev2 esp-group 'PW-ESP'
+set vpn ipsec remote-access connection pw-ikev2 ike-group 'PW-IKE'
+set vpn ipsec remote-access connection pw-ikev2 local prefix '10.100.90.0/24'
+set vpn ipsec remote-access connection pw-ikev2 local prefix '10.100.91.0/24'
+set vpn ipsec remote-access connection pw-ikev2 local prefix '10.100.92.0/24'
+set vpn ipsec remote-access connection pw-ikev2 local-address '10.100.92.20'
+set vpn ipsec remote-access connection pw-ikev2 pool 'ra-v4'
+set vpn ipsec remote-access connection pw-ikev2 unique 'replace'
+set vpn ipsec remote-access pool ra-v4 name-server '10.100.90.10'
+set vpn ipsec remote-access pool ra-v4 name-server '10.100.90.11'
+set vpn ipsec remote-access pool ra-v4 prefix '10.100.93.0/24'
+set vpn ipsec remote-access radius nas-identifier 'thimble-ikev2'
+set vpn ipsec remote-access radius server 10.100.90.14 key '{{ vyos_secrets["vpn_ipsec_remote_access_radius_server_10_100_90_14_key"] | replace("'", "'\\''") }}'
+set vpn ipsec remote-access radius server 10.100.90.14 port '1812'
+{% endif %}

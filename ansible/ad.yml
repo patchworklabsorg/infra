@@ -56,6 +56,9 @@
     ad_audit_service_accounts:
       - svc-ansible
       - svc-lnx-join
+      # Weave (ad/README.md, Weave). LDAPS binds only, no Kerberos
+      # delegation. ad/converge.ps1 creates it.
+      - svc-weave-ldap
     # -t ldap-binds rotates a bind password only with
     # -e ad_ldap_bind_rotate=true. The accounts are in group_vars/patchwork.yml.
     ad_ldap_bind_rotate: false
@@ -921,7 +924,10 @@
           # 4756 universal.
           $groupSids = @("$domainSid-512", "$domainSid-519", "$domainSid-518", 'S-1-5-32-544')
           $t0 = Get-ADGroup -Filter "SamAccountName -eq '$tier0_group'"
-          if ($t0) { $groupSids += "$($t0.SID)" }
+          # Run after ad/converge.ps1 Build. Before a rename, the group still
+          # has its old name: stop, so the alert never loses the group.
+          if (-not $t0) { throw "$tier0_group does not exist. Run ad/converge.ps1 (Build) first." }
+          $groupSids += "$($t0.SID)"
           $groupFilter = ($groupSids | ForEach-Object { "Data[@Name='TargetSid']='$_'" }) -join ' or '
 
           $selects = @(
@@ -1209,7 +1215,7 @@
 
     # ---------------------------------------------------------- jit-endpoint
     # TIERING.md section 3. The PatchworkT0 JEA endpoint on each DC. Only
-    # GG-T0-Eligible can connect, and it can run Request-T0Admin and
+    # tier0-eligible can connect, and it can run Request-T0Admin and
     # Get-T0AdminGrant only. This tag does NOT enable the AD Privileged
     # Access Management feature, which cannot be undone. It fails while the
     # feature is off. Enable it by hand, once, after approval:

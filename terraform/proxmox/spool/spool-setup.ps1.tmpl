@@ -52,7 +52,38 @@ Set-Service -Name Spooler -StartupType Disabled
 # 5. RSAT AD DS tools (with the AD PowerShell module) and GPMC.
 Install-WindowsFeature -Name RSAT-AD-Tools, GPMC -IncludeAllSubFeature
 
-# 6. Turn off the automatic logon and remove the cached answer files.
+# 6. QEMU guest agent, from the virtio-win guest tools on a CD-ROM. Attach
+#    the virtio-win ISO (trunk-isos:iso/virtio-win-0.1.285.iso) as a CD-ROM
+#    to install it here. There is no download: the fedorapeople.org site
+#    answers scripts with a bot check, and a Tier 0 host must not run a
+#    floating download. The installer must have a valid Authenticode
+#    signature from Red Hat. If any step fails, the script only logs a
+#    warning. Install the agent later by hand (README.md, "After the install").
+$ProgressPreference = 'SilentlyContinue'
+$exe = Get-Volume | Where-Object DriveType -eq 'CD-ROM' | Where-Object DriveLetter |
+  ForEach-Object { "$($_.DriveLetter):\virtio-win-guest-tools.exe" } |
+  Where-Object { Test-Path $_ } | Select-Object -First 1
+if (-not $exe) {
+  Write-Warning 'Guest agent not installed: no CD-ROM has virtio-win-guest-tools.exe.'
+} else {
+  $sig = Get-AuthenticodeSignature -FilePath $exe
+  if ($sig.Status -ne 'Valid' -or $sig.SignerCertificate.Subject -notmatch 'O="?Red Hat, Inc\.?"?') {
+    Write-Warning "Guest agent not installed: $exe has signature $($sig.Status), signer $($sig.SignerCertificate.Subject)."
+  } else {
+    $p = Start-Process -FilePath $exe -ArgumentList '/install', '/quiet', '/norestart' -Wait -PassThru
+    # 3010 means the install worked and needs a restart. Step 8 restarts.
+    if ($p.ExitCode -notin 0, 3010) {
+      Write-Warning "Guest tools installer exit code $($p.ExitCode)."
+    }
+    Set-Service -Name QEMU-GA -StartupType Automatic -ErrorAction SilentlyContinue
+    Start-Service -Name QEMU-GA -ErrorAction SilentlyContinue
+    if ((Get-Service -Name QEMU-GA -ErrorAction SilentlyContinue).Status -ne 'Running') {
+      Write-Warning 'Guest agent installed, but QEMU-GA is not Running.'
+    }
+  }
+}
+
+# 7. Turn off the automatic logon and remove the cached answer files.
 $wl = 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon'
 Set-ItemProperty -Path $wl -Name AutoAdminLogon -Value '0'
 Remove-ItemProperty -Path $wl -Name DefaultPassword -ErrorAction SilentlyContinue
@@ -62,5 +93,5 @@ Remove-Item -Path 'C:\Windows\Panther\unattend.xml', 'C:\Windows\Panther\Unatten
 New-Item -Path 'C:\Windows\Temp\spool-setup.done' -ItemType File -Force | Out-Null
 Stop-Transcript
 
-# 7. Restart, so that spool comes up at the logon screen.
+# 8. Restart, so that spool comes up at the logon screen.
 Restart-Computer -Force

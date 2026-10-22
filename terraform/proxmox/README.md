@@ -13,7 +13,7 @@ This root manages the Patchwork NixOS VMs on the Proxmox node `pve01`. It uses t
 | `batting` | 360 | 10.100.90.60 | 4 GB |
 | `weft` | 361 | 10.100.90.61 | 2 GB |
 
-hem, batting and weft are not in the state yet, so a plain apply creates all three. To create one VM, target it: `tofu apply -target='proxmox_virtual_environment_vm.nixos["batting"]'`.
+hem and batting are in the state (created with `qm create` and `tofu import`). weft is not in the state yet, so a plain apply creates it. To create one VM, target it: `tofu apply -target='proxmox_virtual_environment_vm.nixos["weft"]'`.
 
 Each VM matches `hosts/proxmox-vm.nix`:
 
@@ -32,11 +32,12 @@ Cores and disk sizes in `variables.tf` are starting values. Check them before th
 
 | Host | VMID | Address | Memory | Cores | Disk |
 |---|---|---|---|---|---|
-| `spool` | 359 (confirm free) | 10.100.90.59 (confirm free) | 4 GB | 2 | 60 GB |
+| `spool` | 359 | 10.100.90.59 | 8 GB | 2 | 60 GB |
 
 - OVMF (UEFI) with pre-enrolled Secure Boot keys, a TPM 2.0 state disk, machine `q35`, OS type `win11` (Windows 11 and Server 2022/2025).
 - The disk is `sata0` and the NIC is `e1000e`. The Windows installer has drivers for both, so you do not need the virtio-win ISO.
-- The guest agent is off in Proxmox until you install it in Windows. Then set `agent.enabled = true` by hand in Proxmox. Terraform ignores the change.
+- The QEMU guest agent device follows `spool_agent_installed` (default true, as on the live VM). With the device on and no agent in Windows, each plan and apply waits up to 2 minutes for the agent.
+- For a new spool, set `spool_agent_installed = false` until the agent runs. `spool-setup.ps1` installs it only from a CD-ROM that has `virtio-win-guest-tools.exe` (the virtio-win ISO, `trunk-isos:iso/virtio-win-0.1.285.iso`), and only with a valid Red Hat Authenticode signature. It downloads nothing.
 - No VM is created while `create_spool` is false and `windows_iso_file_id` is null. The NixOS VMs do not need these variables.
 - The install is hands-off with the answer ISO from `spool/build-unattend.sh`. See "Create spool".
 
@@ -189,7 +190,15 @@ The join is a manual step. The answer file does not join, because a join needs a
    The plan destroys `terraform_data.spool_unattend_cdrom` and the answer ISO. Apply it. The destroy step detaches `ide0`, then Terraform deletes `local:iso/spool-autounattend.iso` from the node.
 2. Delete the local output: `rm -rf spool/out`. Do this after the domain join.
 3. Detach the Windows ISO from `ide2` in the Proxmox UI. Terraform ignores the CD-ROM and the boot order.
-4. Install the QEMU guest agent in Windows. Then set `agent.enabled = true` by hand in Proxmox.
+4. Check the QEMU guest agent: `Get-Service QEMU-GA` must show `Running`. If it is missing, attach `trunk-isos:iso/virtio-win-0.1.285.iso` as a CD-ROM, then run this as the local Administrator (replace `D:` with the CD-ROM drive):
+
+   ```powershell
+   $exe = 'D:\virtio-win-guest-tools.exe'
+   Get-AuthenticodeSignature $exe | Format-List Status, SignerCertificate   # must be Valid, signed by Red Hat, Inc.
+   (Start-Process $exe -ArgumentList '/install','/quiet','/norestart' -Wait -PassThru).ExitCode   # 0 or 3010
+   ```
+
+   Then set `spool_agent_installed = true` (the default) and apply with `-target=proxmox_virtual_environment_vm.spool`. Shut down in Windows and start the VM in Proxmox. A restart in Windows does not add the agent device.
 
 Keep `create_spool = true` in later runs. If you set it to false, the plan destroys the ISO resource and the VM. The VM has `prevent_destroy`, so the plan fails.
 

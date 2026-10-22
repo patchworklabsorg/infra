@@ -151,6 +151,12 @@
                   module = ./hosts/batting/quilt.nix;
                   agenixModule = agenix.nixosModules.default;
                 };
+                weave-alastor = import ./tests/weave-alastor.nix {
+                  inherit pkgs;
+                  inherit (nixpkgs.lib) nixosSystem;
+                  module = self.nixosModules.weave-alastor;
+                  agenixModule = agenix.nixosModules.default;
+                };
               }
             )
           );

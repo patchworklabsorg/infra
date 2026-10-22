@@ -286,7 +286,7 @@ sequenceDiagram
 | Rights | The two `svc-weave-ldap` rows in the delegation table above. |
 | Denied | `Admin-Accounts` (all tiers), `Service-Accounts`, `Servers/Tier0`, `Disabled`. A deny covers write, create, delete, permissions, owner and every extended right. |
 | Not delegatable | `ansible/ad.yml -t svc-posture` sets AES only and "not delegatable". `-t audit` checks it. |
-| Password store | `secrets/weave-ldap.age` (agenix), password only. Recipients: `jsp` and the host that runs Weave (`alastor` today, `warp` after the move). |
+| Password store | `secrets/weave-ldap.age` (agenix), password only. Recipients: `jsp` and `alastor`, the host that runs Weave. |
 
 The deny on `Service-Accounts` covers `svc-weave-ldap` itself, but it is an inherited deny. The default ACL of a user object gives Everyone and SELF an explicit "change password" right, and an explicit allow wins over an inherited deny. So Weave can change its own password when it knows the old one. A compromised Weave can rotate the password, and then the copy in `weave-ldap.age` is stale. Watch for event 4723 on `svc-weave-ldap`.
 
@@ -336,9 +336,11 @@ The issuer is `CN=Patchwork-Issuing-CA` (bobbin, valid until 2031-08-01). Its is
 2. Give Weave that file as its LDAPS trust list, with host name checks on.
 3. Connect to `loom.patchwork.internal` and `spindle.patchwork.internal` by name, not by IP address, and not by `patchwork.internal`. The certificates have no other name. Weave runs in Docker containers on alastor, and a container does not read `/etc/hosts` of the host. So map the two names to the tailnet addresses of the DCs in the Weave module (`--add-host` on the web and worker containers), not with `networking.hosts`.
 
+Weave staging does this now (`hosts/alastor/weave.nix`, `staging.extraHosts` and `staging.volumes`). Production stays off until the staging test plan in the weave repo (`docs/ACTIVE_DIRECTORY.md`) passes. `tests/weave-alastor.nix` checks that the AD settings reach staging only. If a DC joins the tailnet again, its address changes: read it with `tailscale ip -4 loom` and change `extraHosts`.
+
 ### Network
 
-alastor reaches the DCs over the tailnet on TCP 636 only. The grant is in `jaspermayone/infra`, `tailscale/policy.hujson` (`tag:ingress` to `tag:patchwork-dc`, `tcp:636`). The DCs join the tailnet through `ansible/windows.yml` with that tag. Both are separate PRs. Merge the policy PR first, then the `windows.yml` PR, then run `windows.yml`. Until then, Weave cannot reach LDAPS from alastor. When Weave runs on warp, it is on VLAN 90 with the DCs, and it does not need the tailnet path.
+alastor reaches the DCs over the tailnet on TCP 636 only. The grant is in `jaspermayone/infra`, `tailscale/policy.hujson` (`tag:ingress` to `tag:patchwork-dc`, `tcp:636`). The DCs join the tailnet through `ansible/windows.yml` with that tag. Both are separate PRs. Merge the policy PR first, then the `windows.yml` PR, then run `windows.yml`. Until then, Weave cannot reach LDAPS from alastor.
 
 ### Start Weave on AD: steps for an admin
 

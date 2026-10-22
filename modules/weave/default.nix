@@ -53,6 +53,15 @@ let
     env:
     lib.concatStrings (lib.mapAttrsToList (k: v: "--env ${lib.escapeShellArg "${k}=${v}"} \\\n  ") env);
 
+  # Same idea for extraHosts (`--add-host`) and volumes (`--volume`). Empty
+  # inputs render "", so production stays identical.
+  runArgs =
+    { extraHosts, volumes }:
+    lib.concatStrings (
+      lib.mapAttrsToList (h: ip: "--add-host ${lib.escapeShellArg "${h}:${ip}"} \\\n  ") extraHosts
+      ++ map (v: "--volume ${lib.escapeShellArg v} \\\n  ") volumes
+    );
+
   # Every unit, container, network, state path and script name of one Weave
   # instance is derived from `name`. Production is name = "weave".
   #   name             unit/container/network prefix and /var/lib/<name>
@@ -62,6 +71,8 @@ let
   #   environmentFile  agenix env file (RAILS_MASTER_KEY, POSTGRES_PASSWORD)
   #   storageVolume    Docker named volume mounted at /rails/storage
   #   extraEnv         extra container env for db:prepare, web and worker
+  #   extraHosts       extra /etc/hosts entries for the web and worker
+  #   volumes          extra bind mounts for the web and worker
   mkInstance =
     {
       name,
@@ -71,11 +82,16 @@ let
       environmentFile,
       storageVolume,
       extraEnv ? { },
+      extraHosts ? { },
+      volumes ? [ ],
     }:
     let
       network = name;
       stateDir = "/var/lib/${name}";
       extraEnvArgs = envArgs extraEnv;
+      # Web and worker only. db:prepare does not talk to AD, so it does not
+      # get the mounts (the AD bind password is one of them).
+      extraRunArgs = runArgs { inherit extraHosts volumes; };
     in
     {
       # ── Docker network ────────────────────────────────────────────────────────
@@ -261,7 +277,7 @@ let
               --env SOLID_QUEUE_IN_PUMA=true \
               --env RAILS_SERVE_STATIC_FILES=true \
               --env RAILS_LOG_TO_STDOUT=true \
-              ${extraEnvArgs}--volume ${storageVolume}:/rails/storage \
+              ${extraEnvArgs}${extraRunArgs}--volume ${storageVolume}:/rails/storage \
               --restart no \
               "$IMAGE"
           '';
@@ -355,7 +371,7 @@ let
               --env REDIS_URL=redis://${name}-redis:6379/0 \
               --env REDIS_CACHE_URL=redis://${name}-redis:6379/1 \
               --env RAILS_LOG_TO_STDOUT=true \
-              ${extraEnvArgs}--volume ${storageVolume}:/rails/storage \
+              ${extraEnvArgs}${extraRunArgs}--volume ${storageVolume}:/rails/storage \
               --restart no \
               "$IMAGE" \
               ./bin/jobs
@@ -511,6 +527,29 @@ in
           containers. WEAVE_ENV=staging is always set.
         '';
       };
+
+      extraHosts = lib.mkOption {
+        type = lib.types.attrsOf lib.types.str;
+        default = { };
+        example = {
+          "loom.patchwork.internal" = "100.75.125.1";
+        };
+        description = ''
+          Extra /etc/hosts entries (`--add-host`) for the staging web and
+          worker containers. Use it for names that the host DNS can not
+          resolve, for example the AD domain controllers.
+        '';
+      };
+
+      volumes = lib.mkOption {
+        type = lib.types.listOf lib.types.str;
+        default = [ ];
+        example = [ "/run/weave-staging-ad:/run/weave/ad:ro" ];
+        description = ''
+          Extra bind mounts (`--volume src:dst[:opts]`) for the staging web
+          and worker containers. Not for db:prepare.
+        '';
+      };
     };
   };
 
@@ -623,7 +662,13 @@ in
       (lib.mkIf cfg.staging.enable (mkInstance {
         name = "weave-staging";
         label = "Weave staging";
-        inherit (cfg.staging) port image environmentFile;
+        inherit (cfg.staging)
+          port
+          image
+          environmentFile
+          extraHosts
+          volumes
+          ;
         storageVolume = "weave_staging_storage";
         extraEnv = {
           WEAVE_ENV = "staging";

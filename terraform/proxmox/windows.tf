@@ -104,12 +104,16 @@ resource "proxmox_virtual_environment_vm" "spool" {
     prevent_destroy = true
 
     # Operators detach the ISO and change the boot order after the install.
+    # Proxmox pins the machine version of a Windows guest at create
+    # (pc-q35-11.0+pve2), so Windows does not see new hardware after a
+    # Proxmox upgrade. Keep that pin.
     ignore_changes = [
       cdrom,
       boot_order,
       started,
       description,
       tags,
+      machine,
     ]
   }
 }

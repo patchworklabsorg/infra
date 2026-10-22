@@ -115,7 +115,7 @@ variable "windows_iso_file_id" {
 }
 
 variable "spool" {
-  description = "The Tier 0 jump host spool (Windows Server 2025). VMID 359 and 10.100.90.59 are proposed: confirm they are free before the first apply."
+  description = "The Tier 0 jump host spool (Windows Server 2025), VMID 359 at 10.100.90.59. The memory matches the live VM (8 GiB)."
   type = object({
     vmid      = number
     memory_mb = number
@@ -126,7 +126,7 @@ variable "spool" {
 
   default = {
     vmid      = 359
-    memory_mb = 4096
+    memory_mb = 8192
     cores     = 2
     disk_gb   = 60
     ip        = "10.100.90.59"

@@ -32,7 +32,7 @@ Cores and disk sizes in `variables.tf` are starting values. Check them before th
 
 | Host | VMID | Address | Memory | Cores | Disk |
 |---|---|---|---|---|---|
-| `spool` | 359 (confirm free) | 10.100.90.59 (confirm free) | 4 GB | 2 | 60 GB |
+| `spool` | 359 | 10.100.90.59 | 8 GB | 2 | 60 GB |
 
 - OVMF (UEFI) with pre-enrolled Secure Boot keys, a TPM 2.0 state disk, machine `q35`, OS type `win11` (Windows 11 and Server 2022/2025).
 - The disk is `sata0` and the NIC is `e1000e`. The Windows installer has drivers for both, so you do not need the virtio-win ISO.

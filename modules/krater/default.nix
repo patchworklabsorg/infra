@@ -358,7 +358,7 @@ in
       type = lib.types.attrsOf lib.types.str;
       default = { };
       example = {
-        "skein.wildebeest-stargazer.ts.net" = "100.109.223.51";
+        "hem.wildebeest-stargazer.ts.net" = "100.67.124.123";
       };
       description = ''
         Host name to address entries for the portal, the worker and the migrations (`--add-host`).

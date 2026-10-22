@@ -12,7 +12,6 @@ let
   tailnet = "wildebeest-stargazer.ts.net";
 
   # <router name> = { backend = "<host>"; hosts = [ "<fqdn>" ... ]; };
-  # Krater on weft gets its route with that change.
   routes = {
     # Not `quilt`/`quilt-staging`: those were the router names of the old
     # Traefik fragment on alastor (quilt.toml), and the same name in two
@@ -24,6 +23,17 @@ let
     quilt-staging-batting = {
       backend = "batting";
       hosts = [ "quilt-staging.patchworklabs.org" ];
+    };
+    # Krater on weft (../weft/krater.nix): the portal and its S3 gateway.
+    # Not `krater`/`krater-storage`: the names of Krater's own Traefik
+    # fragment, which a host that runs Krater with traefik.enable would add.
+    krater-weft = {
+      backend = "weft";
+      hosts = [ "krater.patchworklabs.org" ];
+    };
+    krater-storage-weft = {
+      backend = "weft";
+      hosts = [ "krater-storage.patchworklabs.org" ];
     };
     # Every host in ../warp/redirects.nix. A new path on an existing host
     # needs no change here.

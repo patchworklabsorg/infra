@@ -161,6 +161,15 @@
                   agenixModule = agenix.nixosModules.default;
                 };
               }
+              # weft is an x86_64-linux host, so its check builds there.
+              // nixpkgs.lib.optionalAttrs (system == "x86_64-linux") {
+                krater-weft = import ./tests/krater-weft.nix {
+                  inherit pkgs;
+                  inherit (nixpkgs.lib) nixosSystem;
+                  weft = self.nixosConfigurations.weft;
+                  edgeModule = self.nixosModules.edge-alastor;
+                };
+              }
             )
           );
 

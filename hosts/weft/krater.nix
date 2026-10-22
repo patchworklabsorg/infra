@@ -1,23 +1,20 @@
-# Krater on alastor. Exported as nixosModules.krater-alastor.
+# Krater on weft: the instance settings and the agenix secrets. nginx on weft
+# (./configuration.nix) fronts the two ports, and alastor routes the public
+# names here over the tailnet (nixosModules.edge-alastor).
 #
-# alastor is jaspermayone's VPS and is built from jaspermayone/infra, which
-# imports this module through its `patchwork-infra` flake input, the same way
-# as nixosModules.weave-alastor.
+# Network: the containers are on the `krater` bridge network. weft reaches
+# skein.wildebeest-stargazer.ts.net:5432 (patchwork_central) over the tailnet,
+# through the tag:patchwork-krater grant in jaspermayone/infra
+# tailscale/policy.hujson. weft has no MagicDNS, so `extraHosts` gives the
+# containers skein's tailnet address.
 #
-# What the importing host must provide:
-#   - the agenix NixOS module (`age.*` options)
-#   - Docker, with the buildx plugin (krater-build uses BuildKit)
-#   - Traefik with the file provider on /etc/traefik/conf.d and a `cloudflare`
-#     cert resolver and `hsts` middleware (infra's modules/traefik)
-#   - loopback ports 3010-3011 free (see the module's port options)
-#
-# Before the first deploy:
-#   - DNS for the two hostnames below (patchworklabsorg/dns)
-#   - Krater's Weave app and roles; fill in the client id below
-#   - secrets/krater-env.age and secrets/central-prod-krater.age
-#     (bin/new-krater-secrets), and skein deployed with Krater's role
-#   - this host can reach skein:5432 (tailnet ACL), and the database host in
-#     KRATER_DATABASE_URL resolves from inside a Docker container here
+# Before Krater runs:
+#   - DNS for the two hostnames below, proxied to alastor (patchworklabsorg/dns)
+#   - Krater's Weave app and roles; fill in `weaveClientId` below. Krater stays
+#     off until it is set, so weft builds and deploys without it.
+#   - secrets/krater-env.age (jsp + weft) and secrets/central-prod-krater.age
+#     (jsp + skein), from bin/new-krater-secrets, and skein deployed with
+#     Krater's role and password
 # The full checklist is in Krater's docs/dev/production.md.
 #
 # Krater Compute stays off (KRATER_COMPUTE_MODE=off) until Krater's paid checks
@@ -32,10 +29,17 @@
 # Back it up with the other agenix secrets: losing it loses every stored
 # project secret.
 { config, ... }:
+let
+  # Client id of Krater's Weave app (redirect URI
+  # https://krater.patchworklabs.org/auth/callback). Not secret. Empty keeps
+  # Krater off.
+  weaveClientId = "";
+  enable = weaveClientId != "";
+in
 {
   imports = [ ../../modules/krater ];
 
-  # Recipients are in ../../secrets/secrets.nix (jsp + alastor's host key).
+  # Recipients are in ../../secrets/secrets.nix (jsp + weft's host key).
   age.secrets = {
     krater-env = {
       file = ../../secrets/krater-env.age;
@@ -52,7 +56,7 @@
   };
 
   patchwork.services.krater = {
-    enable = true;
+    inherit enable;
     environmentFile = config.age.secrets.krater-env.path;
 
     # Fallback build; deploys write /var/lib/krater/source-rev instead.
@@ -71,19 +75,22 @@
     # compute.labelPrefix = "krater-prod-";
     # projectSecretsKeyFile = config.age.secrets.krater-project-secrets-key.path;
 
-    # With Cloudflare in front of Traefik, the client's address is not the
-    # last X-Forwarded-For hop the module's default (1) assumes. Set this to
-    # the number of proxies that append to X-Forwarded-For once Traefik's
-    # forwardedHeaders.trustedIPs are known, or rate limits key on
-    # Cloudflare's edge addresses.
-    # extraEnv.KRATER_TRUSTED_PROXY_COUNT = "2";
+    # Proxies that append to X-Forwarded-For: Traefik on alastor and nginx
+    # here. nginx sets the client address from alastor's header
+    # (./configuration.nix), and Cloudflare is in front of alastor. Check this
+    # against a real request before relying on per-client rate limits.
+    extraEnv.KRATER_TRUSTED_PROXY_COUNT = "2";
+
+    # weft has no MagicDNS. KRATER_DATABASE_URL names skein by its tailnet
+    # name (bin/new-krater-secrets). If skein joins the tailnet again, its
+    # address changes: update it here and the pw-skein alias in
+    # jaspermayone/infra tailscale/policy.hujson.
+    extraHosts."skein.wildebeest-stargazer.ts.net" = "100.109.223.51";
 
     weave = {
       # Exactly the `issuer` in Weave's discovery document.
       issuer = "https://weave.patchworklabs.org";
-      # Not secret, but only known once the app exists in Weave. The module
-      # refuses to build while it is empty.
-      clientId = "";
+      clientId = weaveClientId;
       # The `krater` CLI's public Weave app (Krater's docs/compute/cli.md).
       # Empty keeps the CLI's API off.
       cliClientId = "";
@@ -93,6 +100,8 @@
     # Add its public key here once the KRATER_DEPLOY_SSH_KEY secret exists.
     deployAuthorizedKeys = [ ];
 
-    traefik.enable = true;
+    # alastor's Traefik routes here (nixosModules.edge-alastor), so no Traefik
+    # on weft.
+    traefik.enable = false;
   };
 }

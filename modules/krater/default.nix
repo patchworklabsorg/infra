@@ -1,8 +1,8 @@
 # modules/krater/default.nix
 # Krater — the Project Ganymede portal (proposal review, compute budgets, gallery, and Krater Compute,
 # which rents Vast.ai machines for members) — as Docker containers on a dedicated network. Exported by this
-# flake as nixosModules.krater; alastor imports nixosModules.krater-alastor (hosts/alastor/krater.nix), which
-# sets the instance options below.
+# flake as nixosModules.krater; weft imports it through hosts/weft/krater.nix, which sets the instance
+# options below.
 #
 # Containers (network `krater`, state under /var/lib/krater):
 #   krater-storage     SeaweedFS S3 gateway: gallery screenshots, and machines' checkpoints and outputs
@@ -92,6 +92,12 @@ let
     KRATER_WEAVE_CLI_CLIENT_ID = cfg.weave.cliClientId;
   }
   // cfg.extraEnv;
+
+  # --add-host for each extraHosts entry: the containers are on the `krater` bridge network, so
+  # Docker's DNS answers them from the host's resolvers, not from /etc/hosts.
+  hostArgs = lib.concatStringsSep " " (
+    lib.mapAttrsToList (name: ip: "--add-host ${lib.escapeShellArg "${name}:${ip}"}") cfg.extraHosts
+  );
 
   envArgs =
     env:
@@ -337,6 +343,19 @@ in
       description = "Extra non-secret settings for the portal, worker and migrations.";
     };
 
+    extraHosts = lib.mkOption {
+      type = lib.types.attrsOf lib.types.str;
+      default = { };
+      example = {
+        "skein.wildebeest-stargazer.ts.net" = "100.109.223.51";
+      };
+      description = ''
+        Host name to address entries for the portal, the worker and the migrations (`--add-host`).
+        For a database host name that the host's DNS cannot resolve, such as a tailnet name on a
+        host without MagicDNS.
+      '';
+    };
+
     deployAuthorizedKeys = lib.mkOption {
       type = lib.types.listOf lib.types.str;
       default = [ ];
@@ -529,6 +548,7 @@ in
               echo "Waiting for the database..."
               until ${dockerBin} run --rm \
                 --network krater \
+                ${hostArgs} \
                 --env-file ${envDir}/app.env \
                 ${envArgs appEnv} \
                 "$image" \
@@ -538,6 +558,7 @@ in
               # Migrations, then the screenshot bucket and its CORS rule. Both are idempotent.
               ${dockerBin} run --rm \
                 --network krater \
+                ${hostArgs} \
                 --env-file ${envDir}/app.env \
                 ${envArgs appEnv} \
                 "$image" \
@@ -548,6 +569,7 @@ in
             exec ${dockerBin} run \
               --name krater-web \
               --network krater \
+              ${hostArgs} \
               --publish 127.0.0.1:${toString cfg.port}:8000 \
               --env-file ${envDir}/web.env \
               ${envArgs appEnv} \
@@ -571,6 +593,7 @@ in
             exec ${dockerBin} run \
               --name krater-worker \
               --network krater \
+              ${hostArgs} \
               --env-file ${envDir}/worker.env \
               ${envArgs appEnv} \
               --restart no \

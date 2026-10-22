@@ -21,7 +21,7 @@ Declarative infrastructure for Patchwork Labs: every Patchwork host, the NixOS m
 | `modules/weave/` | The Weave service module. |
 | `modules/quilt/` | The Quilt service module. |
 | `modules/krater/` | The Krater service module (portal, worker, screenshot storage; Krater Compute off by default). Exported as `nixosModules.krater`. |
-| `hosts/alastor/krater.nix` | Krater as it would run on alastor. Exported as `nixosModules.krater-alastor`; not imported by alastor yet. |
+| `hosts/weft/krater.nix` | Krater on weft: instance settings and secrets. Krater stays off until its Weave client id is set. |
 | `tests/` | NixOS VM tests. |
 | `secrets/` | agenix secrets. `secrets.nix` lists the recipients of each file. |
 | `ansible/` | Ansible for the Windows hosts and AD: `windows.yml`, `ad.yml`. See `ansible/README.md`. |
@@ -44,7 +44,7 @@ The lab hosts below are NixOS VMs on pve01, VLAN 90 (`patchwork.internal`). alas
 | `seam` | 357 | 10.100.90.57 | 2 GB | `patchwork_central_restricted`, prod. Tailnet only. |
 | `hem` | 358 | 10.100.90.58 | 2 GB | Both staging clusters: central on 5432, restricted on 5433. Quilt staging uses the restricted one. |
 | `batting` | 360 | 10.100.90.60 | 4 GB | Quilt prod + staging. nginx on `tailscale0:80` for alastor. |
-| `weft` | 361 | 10.100.90.61 | 2 GB | Krater prod + staging. nginx on `tailscale0:80` for alastor. |
+| `weft` | 361 | 10.100.90.61 | 4 GB | Krater prod + staging. nginx on `tailscale0:80` for alastor. |
 
 The Windows hosts are managed by Ansible (`ansible/`):
 

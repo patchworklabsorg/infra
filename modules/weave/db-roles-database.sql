@@ -30,8 +30,9 @@ SELECT current_database() = 'weave_production' AS is_primary \gset
   CREATE EXTENSION IF NOT EXISTS fuzzystrmatch;
 \endif
 
--- Every old version of an audit row (status and notes), in the primary
--- database. Only its trigger writes to it.
+-- Every version of an audit row, in the primary database: the new row at
+-- INSERT and the old row at each UPDATE. Only its trigger writes to it, and
+-- it always belongs to weave_audit, also during a flagged migration.
 \if :is_primary
   CREATE TABLE IF NOT EXISTS public.audits1984_audit_versions (
     id bigserial PRIMARY KEY,
@@ -41,15 +42,19 @@ SELECT current_database() = 'weave_production' AS is_primary \gset
     auditor_id bigint,
     changed_at timestamp(6) NOT NULL DEFAULT now()
   );
+  ALTER TABLE public.audits1984_audit_versions ADD COLUMN IF NOT EXISTS operation text;
+  ALTER TABLE public.audits1984_audit_versions OWNER TO weave_audit;
 \endif
 
 DO $$
 DECLARE
+  -- audits1984_audit_versions is not in this list: it always belongs to
+  -- weave_audit (see above).
   audit_tables text[] := ARRAY[
     'console1984_users', 'console1984_sessions', 'console1984_commands',
-    'console1984_sensitive_accesses', 'audits1984_audits', 'audits1984_audit_versions',
-    'console_access_requests'
+    'console1984_sensitive_accesses', 'audits1984_audits', 'console_access_requests'
   ];
+  locked boolean := current_setting('weave.audit_owner') = 'weave_audit';
   -- The columns the app changes in an audit table. Nothing else can change.
   -- The triggers below limit how they change.
   audit_update_columns jsonb := '{
@@ -66,7 +71,7 @@ BEGIN
   -- search path. Stop if one exists.
   IF EXISTS (
     SELECT FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
-    WHERE c.relname = ANY (audit_tables) AND n.nspname <> 'public'
+    WHERE (c.relname = ANY (audit_tables) OR c.relname = 'audits1984_audit_versions') AND n.nspname <> 'public'
   ) THEN
     RAISE EXCEPTION 'an audit table exists outside the public schema';
   END IF;
@@ -79,7 +84,9 @@ BEGIN
     WHERE n.nspname = 'public' AND c.relkind IN ('r', 'p', 'v', 'm', 'f', 'S')
       AND NOT EXISTS (SELECT FROM pg_depend d WHERE d.objid = c.oid AND d.deptype IN ('a', 'i', 'e'))
   LOOP
-    IF r.relname = ANY (audit_tables) THEN
+    IF r.relname = 'audits1984_audit_versions' THEN
+      CONTINUE;
+    ELSIF r.relname = ANY (audit_tables) THEN
       EXECUTE format('ALTER TABLE public.%I OWNER TO %I', r.relname, current_setting('weave.audit_owner'));
     ELSIF r.relkind = 'S' THEN
       EXECUTE format('ALTER SEQUENCE public.%I OWNER TO weave_app', r.relname);
@@ -111,18 +118,23 @@ BEGIN
     EXECUTE format('ALTER ROUTINE %s OWNER TO weave_app', r.oid::regprocedure);
   END LOOP;
 
+  -- weave_app may only read the version table.
+  IF to_regclass('public.audits1984_audit_versions') IS NOT NULL THEN
+    REVOKE ALL ON TABLE public.audits1984_audit_versions FROM weave_app, PUBLIC;
+    GRANT SELECT ON TABLE public.audits1984_audit_versions TO weave_app;
+  END IF;
+
   -- weave_app may read the audit tables and add rows, and change only the
-  -- listed columns. No DELETE, TRUNCATE, REFERENCES or other UPDATE. It may
-  -- only read the version table.
+  -- listed columns. No DELETE, TRUNCATE, REFERENCES or other UPDATE. During a
+  -- flagged migration weave_app owns them, and an owner keeps every right, so
+  -- that a data migration (an UPDATE, a new foreign key) works. The next run
+  -- takes them back and sets these grants again.
   FOR r IN
     SELECT c.relname FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
     WHERE n.nspname = 'public' AND c.relkind = 'r' AND c.relname = ANY (audit_tables)
+      AND locked
   LOOP
     EXECUTE format('REVOKE ALL ON TABLE public.%I FROM weave_app, PUBLIC', r.relname);
-    IF r.relname = 'audits1984_audit_versions' THEN
-      EXECUTE format('GRANT SELECT ON TABLE public.%I TO weave_app', r.relname);
-      CONTINUE;
-    END IF;
     EXECUTE format('GRANT SELECT, INSERT ON TABLE public.%I TO weave_app', r.relname);
     IF audit_update_columns ? r.relname THEN
       SELECT string_agg(quote_ident(col), ', ') INTO cols
@@ -187,18 +199,47 @@ BEGIN
   RETURN NEW;
 END $fn$;
 
--- Every change to an audit (its status or notes) keeps the old version.
+-- Every audit keeps its versions: the new row at INSERT, and the old row at
+-- each change of its status or notes.
 CREATE OR REPLACE FUNCTION public.weave_audit_keep_audit_version() RETURNS trigger
 LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog AS $fn$
 BEGIN
-  INSERT INTO public.audits1984_audit_versions (audit_id, status, notes, auditor_id)
-  VALUES (OLD.id, OLD.status, OLD.notes, OLD.auditor_id);
+  IF TG_OP = 'INSERT' THEN
+    INSERT INTO public.audits1984_audit_versions (audit_id, status, notes, auditor_id, operation)
+    VALUES (NEW.id, NEW.status, NEW.notes, NEW.auditor_id, 'insert');
+  ELSE
+    INSERT INTO public.audits1984_audit_versions (audit_id, status, notes, auditor_id, operation)
+    VALUES (OLD.id, OLD.status, OLD.notes, OLD.auditor_id, 'update');
+  END IF;
+  RETURN NEW;
+END $fn$;
+
+-- Nobody reviews their own console session. The Console1984 username is
+-- "<full name> (<PWL id>)" (ConsoleAccess.username_for in Weave), and the
+-- auditor is a users row (find_current_auditor), so the two match on the PWL
+-- id. An audit cannot move to another session or auditor either.
+CREATE OR REPLACE FUNCTION public.weave_audit_guard_audit() RETURNS trigger
+LANGUAGE plpgsql SET search_path = pg_catalog AS $fn$
+BEGIN
+  IF TG_OP = 'UPDATE' AND (NEW.session_id IS DISTINCT FROM OLD.session_id OR NEW.auditor_id IS DISTINCT FROM OLD.auditor_id) THEN
+    RAISE EXCEPTION 'an audit cannot change its session or auditor';
+  END IF;
+  IF EXISTS (
+    SELECT FROM public.console1984_sessions s
+    JOIN public.console1984_users cu ON cu.id = s.user_id
+    JOIN public.users u ON u.id = NEW.auditor_id
+    WHERE s.id = NEW.session_id AND u.p_id <> ''
+      AND right(cu.username, length(u.p_id) + 2) = '(' || u.p_id || ')'
+  ) THEN
+    RAISE EXCEPTION 'nobody can audit their own console session';
+  END IF;
   RETURN NEW;
 END $fn$;
 
 ALTER FUNCTION public.weave_audit_guard_command() OWNER TO weave_audit;
 ALTER FUNCTION public.weave_audit_guard_request() OWNER TO weave_audit;
 ALTER FUNCTION public.weave_audit_keep_audit_version() OWNER TO weave_audit;
+ALTER FUNCTION public.weave_audit_guard_audit() OWNER TO weave_audit;
 REVOKE ALL ON FUNCTION public.weave_audit_keep_audit_version() FROM PUBLIC;
 
 SELECT to_regclass('public.console1984_commands') IS NOT NULL AS has_commands,
@@ -214,6 +255,9 @@ SELECT to_regclass('public.console1984_commands') IS NOT NULL AS has_commands,
     FOR EACH ROW EXECUTE FUNCTION public.weave_audit_guard_request();
 \endif
 \if :has_audits
-  CREATE OR REPLACE TRIGGER weave_audit_keep_version BEFORE UPDATE ON public.audits1984_audits
+  -- Triggers fire in name order: the guard first, then the version.
+  CREATE OR REPLACE TRIGGER weave_audit_guard BEFORE INSERT OR UPDATE ON public.audits1984_audits
+    FOR EACH ROW EXECUTE FUNCTION public.weave_audit_guard_audit();
+  CREATE OR REPLACE TRIGGER weave_audit_keep_version BEFORE INSERT OR UPDATE ON public.audits1984_audits
     FOR EACH ROW EXECUTE FUNCTION public.weave_audit_keep_audit_version();
 \endif

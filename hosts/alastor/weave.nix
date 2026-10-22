@@ -70,6 +70,10 @@
       enable = true;
       environmentFile = config.age.secrets.weave-staging-env.path;
       hosts = [ "weave-staging.patchworklabs.org" ];
+      # Step 1 of the database roles rollout (modules/weave/default.nix
+      # header). Production stays on the superuser until staging has run
+      # with it.
+      dbRoles.enable = true;
       extraEnv = {
         APP_HOST = "weave-staging.patchworklabs.org";
         # Sender domain verified in Resend; the staging Resend key only allows

@@ -5,9 +5,10 @@
 -- socket in the db container (`docker exec ... psql -U weave`). Both files are
 -- idempotent.
 --
---   weave        bootstrap superuser. No password, so it can sign in only over
---                the local socket inside the db container, never over the
---                network. Only operators with a shell on the host can use it.
+--   weave        bootstrap superuser. With lock_superuser, no password, so it
+--                can sign in only over the local socket inside the db
+--                container, never over the network. Only operators with a
+--                shell on the host can use it.
 --   weave_app    the role the app signs in with. Not a superuser. It owns the
 --                app's tables, so migrations work. It does not own the
 --                databases or the public schema: an owner of those could drop
@@ -41,8 +42,17 @@ SELECT NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'weave_audit') AS create
   CREATE ROLE weave_audit NOLOGIN;
 \endif
 
--- The app knows POSTGRES_PASSWORD, so the superuser must not accept it.
-ALTER ROLE weave PASSWORD NULL;
+-- The app knows POSTGRES_PASSWORD, so the superuser must not accept it. The
+-- module sets lock_superuser only when dbRoles.lockSuperuser is on: a deploy
+-- that rolls back to units that sign in as `weave` then fails, so this comes
+-- in a second deploy, after the weave_app units work (see the module header).
+\if :{?lock_superuser}
+\else
+  \set lock_superuser false
+\endif
+\if :lock_superuser
+  ALTER ROLE weave PASSWORD NULL;
+\endif
 
 -- The superuser owns the app's databases (db:prepare may create the queue
 -- database as weave_app on a new host). db-roles-database.sql then runs in

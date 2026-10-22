@@ -398,6 +398,25 @@ function Get-ResourceGroups {
     foreach ($g in $data.resourceGroups) { $g }
 }
 
+# Reports a hostGroupMembers host that is not in linuxHosts, or a kind that is
+# not a hostGroups template. Such an entry gives nobody access.
+function Test-HostGroupMembers {
+    $all = $data.PSObject.Properties['hostGroupMembers']
+    if (-not $all) { return }
+    $kinds = @($data.hostGroups | ForEach-Object { $_.name.Replace('lnx-{host}-', '') })
+    foreach ($hp in $all.Value.PSObject.Properties) {
+        if ($data.linuxHosts -notcontains $hp.Name) {
+            Write-Report "hostGroupMembers.$($hp.Name): $($hp.Name) is not in linuxHosts. Nobody gets access from it."
+            continue
+        }
+        foreach ($kp in $hp.Value.PSObject.Properties) {
+            if ($kinds -notcontains $kp.Name) {
+                Write-Report "hostGroupMembers.$($hp.Name).$($kp.Name): $($kp.Name) is not a hostGroups kind ($($kinds -join ', ')). Nobody gets access from it."
+            }
+        }
+    }
+}
+
 # --- Build: pieces -----------------------------------------------------------
 function Sync-UpnSuffix {
     $forest = Get-ADForest @ad
@@ -1548,6 +1567,7 @@ function Invoke-Build {
         if ($script:jitActive -and $g.name -eq $jit.group) { continue }
         Sync-Members $g.name @($g.members)
     }
+    Test-HostGroupMembers
     foreach ($g in Get-ResourceGroups) { Sync-Members $g.name @($g.members) }
     Remove-RetiredHostGroups
 

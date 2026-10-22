@@ -255,11 +255,11 @@ Add the host to `flake.nix`, and add its name to `linuxHosts`. `nix flake check`
 
 ## Give a team one lab host
 
-To let a team log in to one host only, add its role group to `hostGroupMembers` for that host. The kind is the end of the template name: `users` for `lnx-<host>-users`, `admins` for `lnx-<host>-admins`. `infra` stays in both.
+To let a team log in to one host only, make a role group for that host (for example `weft-admins`) and add it to `hostGroupMembers` for that host. Membership in `admins` is root on that host, so use a group for this purpose only, not a project group. The kind is the end of the template name: `users` for `lnx-<host>-users`, `admins` for `lnx-<host>-admins`. `infra` stays in both.
 
 ```json
 "hostGroupMembers": {
-  "weft": { "users": ["ganymede-admins"], "admins": ["ganymede-admins"] }
+  "weft": { "users": ["weft-admins"], "admins": ["weft-admins"] }
 }
 ```
 
@@ -267,7 +267,7 @@ To let a team log in to one host only, add its role group to `hostGroupMembers` 
 - Members of `lnx-<host>-admins` get sudo with their AD password. On an app host, sudo and the docker group are root, so this gives every secret on that host.
 - The account must be enabled, with a password set.
 - The tailnet policy (jaspermayone/infra `tailscale/policy.hujson`) must also let the person reach the host on port 2222.
-- `nix flake check` refuses a host that is not in `linuxHosts`, a kind that is not a template, a member that is not a role group, and a tier 0 group.
+- `nix flake check` refuses a host that is not in `linuxHosts`, a kind that is not a template, a value that is not a list, duplicates, a member that is not a role group, and a privileged group (tier 0, `tier1-admins`, `tier2-helpdesk`, `password-reset`, `server-computer-admin`, `privileged.groups`). Build reports an entry that matches no host or kind.
 - Apply it with Build (`.\converge.ps1 -WhatIf`, then `.\converge.ps1`, see "Run it"). `ansible/ad.yml -t host-groups` only creates the groups and sets no members. A host's sssd cache can keep the old membership: run `sudo sss_cache -E` on the host.
 
 ## Retire a lab host

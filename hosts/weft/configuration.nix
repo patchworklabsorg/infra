@@ -1,5 +1,4 @@
-# weft — Krater host (pve01 VMID 361, 10.100.90.61, 2 GB;
-# VMID and address to be confirmed free before create)
+# weft — Krater host (pve01 VMID 361, 10.100.90.61, 4 GB, 40 GB disk)
 #
 # One app per VM. Sudo and the docker group are root here, so only the
 # break-glass admins (modules/common) and lnx-weft-admins get them. Only this
@@ -9,12 +8,10 @@
 #
 # Tailnet tags: tag:patchwork (ssh from admins, port 80 from alastor) and
 # tag:patchwork-krater. The policy in jaspermayone/infra lets tag:patchwork-krater
-# reach skein:5432 (prod) only. hem (staging) gets a grant when it joins the tailnet.
+# reach skein:5432 (prod) and hem:5432 (staging).
 #
-# Bring-up: create the VM (terraform/proxmox), install with nixos-anywhere,
-# tag the node with both tags, then add the host key to secrets/secrets.nix
-# as a recipient of ad-join.age (AD logon) and run `agenix -r`.
-# Krater itself comes in a later change, with its secrets and its edge route.
+# Built on 2026-10-22 with `qm create`, `tofu import` and nixos-anywhere. Its
+# host key is a recipient of ad-join.age (AD logon). Krater comes in #32.
 { ... }:
 {
   imports = [

@@ -41,7 +41,7 @@ The lab hosts below are NixOS VMs on pve01, VLAN 90 (`patchwork.internal`). alas
 | `seam` | 357 | 10.100.90.57 | 2 GB | `patchwork_central_restricted`, prod. Tailnet only. |
 | `hem` | 358 | 10.100.90.58 | 2 GB | Both staging clusters: central on 5432, restricted on 5433. Quilt staging uses the restricted one. |
 | `batting` | 360 | 10.100.90.60 | 4 GB | Quilt prod + staging. nginx on `tailscale0:80` for alastor. |
-| `weft` | 361 | 10.100.90.61 | 2 GB | Krater prod + staging. nginx on `tailscale0:80` for alastor. |
+| `weft` | 361 | 10.100.90.61 | 4 GB | Krater prod + staging. nginx on `tailscale0:80` for alastor. |
 
 The Windows hosts are managed by Ansible (`ansible/`):
 
@@ -52,7 +52,7 @@ The Windows hosts are managed by Ansible (`ansible/`):
 | `bobbin` | 312 | 10.100.90.12 | Issuing CA |
 | `shuttle` | 314 | 10.100.90.14 | NPS / RADIUS |
 
-VMIDs 358, 360 and 361 and their addresses are proposed. Confirm that they are free before you create the VMs. On 2026-10-21 pve01 had about 25 GiB available. hem, batting and weft need 8 GiB together, with no ballooning.
+hem, batting and weft are built (2026-10-21 and 2026-10-22). weft has 4 GB and a 40 GB disk, because Krater builds its image on the host and runs SeaweedFS.
 
 ```mermaid
 flowchart LR

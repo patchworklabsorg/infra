@@ -1,5 +1,4 @@
-# weft — Krater host (pve01 VMID 361, 10.100.90.61, 2 GB;
-# VMID and address to be confirmed free before create)
+# weft — Krater host (pve01 VMID 361, 10.100.90.61, 4 GB, 40 GB disk)
 #
 # One app per VM. Sudo and the docker group are root here, so only the
 # break-glass admins (modules/common) and lnx-weft-admins get them. Only this

@@ -16,8 +16,7 @@ let
   warp = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIJoRstg6i9nq60YNVyKvlhsURUHnNGPXcR5eV6P6hmXH";
   hem = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIHFHZ/2Q8x+Z9toPli2yQZpQ4e8dBMOqDAFyAFaxgsIE";
   batting = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIEN68vw2ir+q4fMQV8WBJvH7WDG4D2uFjChwkkA93LJC";
-  # weft: add its key after its install, then add the host to the
-  # files it needs and run `agenix -r`.
+  weft = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIAbzni2Be82ORFcHSPVr7OPpfs80Py04JtwyCKc4L28X";
   #
   # Central DB passwords, one file per app and environment, password only:
   #   central-prod-<app>.age        recipients: jsp, skein
@@ -150,5 +149,6 @@ in
     warp
     hem
     batting
+    weft
   ];
 }

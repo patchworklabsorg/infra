@@ -8,12 +8,10 @@
 #
 # Tailnet tags: tag:patchwork (ssh from admins, port 80 from alastor) and
 # tag:patchwork-krater. The policy in jaspermayone/infra lets tag:patchwork-krater
-# reach skein:5432 (prod) only. hem (staging) gets a grant when it joins the tailnet.
+# reach skein:5432 (prod) and hem:5432 (staging).
 #
-# Bring-up: create the VM (terraform/proxmox), install with nixos-anywhere,
-# tag the node with both tags, then add the host key to secrets/secrets.nix
-# as a recipient of ad-join.age (AD logon) and run `agenix -r`.
-# Krater itself comes in a later change, with its secrets and its edge route.
+# Built on 2026-10-22 with `qm create`, `tofu import` and nixos-anywhere. Its
+# host key is a recipient of ad-join.age (AD logon). Krater comes in #32.
 { ... }:
 {
   imports = [

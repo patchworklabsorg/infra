@@ -375,14 +375,23 @@ function Get-AdminSams {
 
 $builtinSid = "$($domain.DomainSID)-500"
 
-# Every resource group, with {host} expanded for each Linux host.
+# Every resource group, with {host} expanded for each Linux host. A host can
+# add role groups to its own groups with hostGroupMembers.<host>.<kind>, where
+# <kind> is the end of the template name (lnx-{host}-<kind>). The template
+# members stay.
 function Get-ResourceGroups {
     foreach ($h in $data.linuxHosts) {
+        # Strict mode: read optional properties through PSObject.Properties.
+        $all = $data.PSObject.Properties['hostGroupMembers']
+        $extra = if ($all) { $all.Value.PSObject.Properties[$h] }
         foreach ($t in $data.hostGroups) {
+            $kind = $t.name.Replace('lnx-{host}-', '')
+            $list = if ($extra) { $extra.Value.PSObject.Properties[$kind] }
+            $more = if ($list) { @($list.Value) } else { @() }
             [pscustomobject]@{
                 name        = $t.name.Replace('{host}', $h)
                 description = $t.description.Replace('{host}', $h)
-                members     = @($t.members)
+                members     = @(@($t.members) + @($more) | Select-Object -Unique)
             }
         }
     }

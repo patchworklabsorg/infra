@@ -98,6 +98,9 @@
     { "name": "lnx-{host}-users", "description": "Linux logon on {host}", "members": ["infra"] },
     { "name": "lnx-{host}-admins", "description": "Linux sudo on {host}", "members": ["infra"] }
   ],
+  "hostGroupMembers": {
+    "weft": { "users": ["ganymede-admins"], "admins": ["ganymede-admins"] }
+  },
   "resourceGroups": [
     { "name": "password-reset", "formerNames": ["DL-Users-PasswordReset"], "description": "Reset password, unlock, change at next logon: Users/Staff, Board-Only, Sponsored-Projects",
       "members": ["tier2-helpdesk", "tier1-admins"] },

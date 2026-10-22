@@ -492,6 +492,28 @@ let
         builtins.filter (m: lib.elem m sams && !lib.elem m (map (u: u.sam) people)) g.members
       )
     ) (builtins.filter (g: g.allowUserMembers or false) org.resourceGroups)
+    # hostGroupMembers.<host>.<kind>: extra members of one host's
+    # lnx-<host>-<kind> group. Role groups only, as in the templates.
+    ++ lib.concatLists (
+      lib.mapAttrsToList (
+        h: kinds:
+        lib.optional (!lib.elem h org.linuxHosts) "hostGroupMembers: ${h} is not in linuxHosts"
+        ++ lib.concatLists (
+          lib.mapAttrsToList (
+            kind: members:
+            lib.optional (
+              !lib.elem "lnx-{host}-${kind}" (map (t: t.name) org.hostGroups)
+            ) "hostGroupMembers.${h}: ${kind} is not a hostGroups kind"
+            ++ map (m: "hostGroupMembers.${h}.${kind}: member ${m} is not a role group") (
+              builtins.filter (m: !lib.elem m roleNames) members
+            )
+            ++ map (m: "hostGroupMembers.${h}.${kind}: ${m} is a tier 0 group") (
+              builtins.filter (m: lib.hasPrefix "tier0" m) members
+            )
+          ) kinds
+        )
+      ) (org.hostGroupMembers or { })
+    )
     ++ map (h: "${h} is in both linuxHosts and retiredHosts") (
       builtins.filter (h: lib.elem h org.linuxHosts) org.retiredHosts
     )

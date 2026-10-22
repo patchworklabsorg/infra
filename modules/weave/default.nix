@@ -17,13 +17,21 @@
 #   3. CI SSHes as weave-deploy and runs:
 #        sudo systemctl restart weave-web
 #   The web service auto-runs `bin/rails db:prepare` on start (creates +
-#   migrates the primary and queue databases, idempotent). weave-worker is
+#   migrates the primary and queue databases, idempotent), with the database
+#   roles from db-roles.sql applied before and after it. weave-worker is
 #   `partOf` weave-web, so that one restart carries the worker onto the same
 #   image — see the comment on the worker unit for why it has to.
 #
 # Env file (weave-env.age) must contain:
 #   RAILS_MASTER_KEY=...   # decrypts config/credentials (Resend + Slack + more)
-#   POSTGRES_PASSWORD=...  # used by both the Rails app and the postgres init
+#   POSTGRES_PASSWORD=...  # the password of weave_app, the app's database role
+#
+# Database roles (db-roles.sql, db-roles-database.sql): the app signs in as
+# weave_app, which is not a superuser. The bootstrap superuser `weave` has no
+# password and works only over the socket inside the db container. The console
+# audit tables belong to weave_audit, so a Rails console or SQL console cannot
+# delete or rewrite its own records. A migration that changes an audit table
+# must run by hand as `weave`.
 #
 # Staging (optional, `staging.enable`) is a second, fully separate instance
 # rendered by the same `mkInstance` function below: units weave-staging-*,
@@ -237,7 +245,10 @@ let
             "-${dockerBin} stop ${name}-web"
             "-${dockerBin} rm ${name}-web"
 
-            # Wait for postgres, then run db:prepare (create + migrate, idempotent).
+            # Wait for postgres, then run db:prepare (create + migrate,
+            # idempotent). The database roles are applied before db:prepare,
+            # so it can run as weave_app, and again after it, so a new audit
+            # table moves to weave_audit at once.
             (pkgs.writeShellScript "${name}-db-prepare" ''
               set -e
               IMAGE=$(cat /run/${name}-image)
@@ -246,6 +257,17 @@ let
                   pg_isready -U weave -h localhost -q; do
                 sleep 2
               done
+              db_roles() {
+                ${dockerBin} exec -i ${name}-db \
+                  psql -U weave -d postgres -X -q -v ON_ERROR_STOP=1 -f - < ${./db-roles.sql}
+                for db in $(${dockerBin} exec ${name}-db psql -U weave -d postgres -X -At -c \
+                    "SELECT datname FROM pg_database WHERE datname IN ('weave_production', 'weave_production_queue')"); do
+                  ${dockerBin} exec -i ${name}-db \
+                    psql -U weave -d "$db" -X -q -v ON_ERROR_STOP=1 -f - < ${./db-roles-database.sql}
+                done
+              }
+              echo "Applying database roles..."
+              db_roles
               echo "Running db:prepare..."
               ${dockerBin} run --rm \
                 --network ${network} \
@@ -254,9 +276,11 @@ let
                 --env DB_HOST=${name}-db \
                 --env DB_PORT=5432 \
                 --env POSTGRES_DB=weave_production \
-                --env POSTGRES_USER=weave \
+                --env POSTGRES_USER=weave_app \
                 ${extraEnvArgs}"$IMAGE" \
                 bin/rails db:prepare
+              echo "Applying database roles to new tables..."
+              db_roles
             '')
           ];
 
@@ -271,7 +295,7 @@ let
               --env DB_HOST=${name}-db \
               --env DB_PORT=5432 \
               --env POSTGRES_DB=weave_production \
-              --env POSTGRES_USER=weave \
+              --env POSTGRES_USER=weave_app \
               --env REDIS_URL=redis://${name}-redis:6379/0 \
               --env REDIS_CACHE_URL=redis://${name}-redis:6379/1 \
               --env SOLID_QUEUE_IN_PUMA=true \
@@ -367,7 +391,7 @@ let
               --env DB_HOST=${name}-db \
               --env DB_PORT=5432 \
               --env POSTGRES_DB=weave_production \
-              --env POSTGRES_USER=weave \
+              --env POSTGRES_USER=weave_app \
               --env REDIS_URL=redis://${name}-redis:6379/0 \
               --env REDIS_CACHE_URL=redis://${name}-redis:6379/1 \
               --env RAILS_LOG_TO_STDOUT=true \

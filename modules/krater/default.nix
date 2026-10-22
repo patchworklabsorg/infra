@@ -85,7 +85,8 @@ let
   // lib.optionalAttrs cfg.compute.enable {
     KRATER_VAST_MODE = "live";
     # The scheduler destroys unknown instances with this prefix: unique per deployment on one Vast account.
-    KRATER_COMPUTE_LABEL_PREFIX = cfg.compute.labelPrefix;
+    # Never null here: an assertion requires it when compute is on.
+    KRATER_COMPUTE_LABEL_PREFIX = toString cfg.compute.labelPrefix;
     KRATER_COMPUTE_RUNNER_URL = cfg.compute.runnerUrl;
   }
   // lib.optionalAttrs (cfg.weave.cliClientId != "") {
@@ -306,6 +307,14 @@ in
         default = "chrislusf/seaweedfs:4.47";
         description = "SeaweedFS image. 4.47 is the version Krater's staging ran; bump it only after a staging run.";
       };
+      maxVolumes = lib.mkOption {
+        type = lib.types.ints.unsigned;
+        default = 0;
+        description = ''
+          The most 1 GB SeaweedFS volumes the store may make (-volume.max). This caps the bucket's disk use.
+          0 sizes the limit from free disk, which lets the store fill the host's disk.
+        '';
+      };
     };
 
     compute = {
@@ -319,9 +328,11 @@ in
         description = "File holding the Vast.ai API key (an agenix secret, the bare key). Read into the worker's env only.";
       };
       labelPrefix = lib.mkOption {
-        type = lib.types.strMatching "[a-z0-9-]+-";
-        default = "krater-prod-";
+        type = lib.types.nullOr (lib.types.strMatching "[a-z0-9-]+-");
+        default = null;
+        example = "krater-staging-";
         description = ''
+          Required when compute.enable is true.
           Label prefix of the instances this deployment rents. The scheduler destroys instances with this
           prefix that it doesn't know, so no other deployment or script on the same Vast account may use it.
         '';
@@ -403,6 +414,10 @@ in
               assertion = cfg.compute.enable -> cfg.compute.vastKeyFile != null;
               message = "patchwork.services.krater.compute.vastKeyFile must be set when compute.enable is true";
             }
+            {
+              assertion = cfg.compute.enable -> cfg.compute.labelPrefix != null;
+              message = "patchwork.services.krater.compute.labelPrefix must be set when compute.enable is true";
+            }
           ];
 
         # ── State ───────────────────────────────────────────────────────────────
@@ -481,6 +496,8 @@ in
             docker image ls krater --format '{{.Tag}}' | { grep -vx "$rev" || true; } | while read -r tag; do
               docker rmi "krater:$tag" >/dev/null 2>&1 || true
             done
+            # BuildKit's cache (the dependency layers) grows with each build. Keep one week of it.
+            docker builder prune -f --filter until=168h >/dev/null || true
           '';
         };
 
@@ -507,6 +524,7 @@ in
               --network krater \
               --publish 127.0.0.1:${toString cfg.storage.port}:8333 \
               --env-file ${envDir}/storage.env \
+              --env VOLUME_MAX=${toString cfg.storage.maxVolumes} \
               --volume ${stateDir}/storage:/data \
               --volume ${./storage-start.sh}:/krater/storage-start.sh:ro \
               --entrypoint /bin/sh \
@@ -542,6 +560,19 @@ in
               ${writeAppEnv}
               ${writeWebEnv}
               echo "$image" > ${envDir}/image
+
+              # Check the settings first, so a wrong or missing value in the env file fails the
+              # unit at once with Krater's message, not after a long wait for the database.
+              if ! ${dockerBin} run --rm \
+                --network krater \
+                ${hostArgs} \
+                --env-file ${envDir}/app.env \
+                ${envArgs appEnv} \
+                "$image" \
+                python -c 'from krater.config import get_settings; get_settings()'; then
+                echo "krater: the settings are not valid (see the error above). Fix ${cfg.environmentFile} or the module options." >&2
+                exit 1
+              fi
 
               # The database is on another host (patchwork_central): wait until a connection works,
               # from a container like the portal's, so DNS and routing are tested the same way.

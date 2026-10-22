@@ -63,7 +63,9 @@ in
   # on weft) runtime env. The keys it must contain are listed at the top of
   # ../modules/krater/default.nix. KRATER_DATABASE_URL holds the password in
   # central-staging-krater.age. `bin/new-krater-secrets staging` writes both
-  # files. Krater has no production instance yet.
+  # files. Krater has no production instance yet. KRATER_SLACK_BOT_TOKEN and
+  # KRATER_SLACK_SIGNING_SECRET come from a separate Slack app in a test
+  # workspace, never the real Patchwork workspace.
   "krater-staging-env.age".publicKeys = [
     jsp
     weft

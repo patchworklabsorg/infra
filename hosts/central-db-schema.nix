@@ -1,5 +1,6 @@
 # Apps and shared schemas of the two central databases. prod (skein, seam) and
-# staging (hem) read this same file, so the environments cannot drift.
+# staging (hem) read this same file, so the environments cannot drift. The one
+# exception is `stagingOnlyApps`: apps with no production instance yet.
 #
 # Add an app: add it here, add its password secret for each environment in
 # secrets/secrets.nix, deploy the DB hosts. See modules/central-db for what
@@ -11,6 +12,11 @@
       # Weave is the IDP, so it owns people.* and runs its migrations.
       weave = { };
       selvage.read = [ "people" ];
+    };
+    # Apps on staging (hem) only, until they have a production instance. skein
+    # does not create their role or schema. Move an app to `apps` when it goes
+    # to production.
+    stagingOnlyApps = {
       # Krater (Project Ganymede portal): proposals, budget ledger, audit log. It stores no personal
       # data, only Patchwork IDs, and reads people through Weave's directory API, so no shared schemas.
       krater = { };

@@ -17,13 +17,17 @@
 # address.
 #
 # Before Krater staging runs (Krater stays off until the env file and the
-# Weave client id both exist, so weft builds and deploys without them):
+# Weave client id both exist, so weft builds and deploys without them).
+# Deploy once with the id empty, and run `systemctl start krater-build` by
+# hand: the first build takes minutes. Then set the id and deploy again:
 #   - secrets/krater-staging-env.age (jsp + weft) and
 #     secrets/central-staging-krater.age (jsp + hem): run
 #     `bin/new-krater-secrets staging`, then deploy hem so the krater role
 #     gets its password
 #   - Krater's app in Weave staging; fill in `weaveClientId` below, and the
-#     client secret and the Slack values in krater-staging-env.age
+#     client secret and the Slack values in krater-staging-env.age. The Slack
+#     values must come from a separate Slack app in a test workspace, never
+#     from the real Patchwork workspace.
 #   - DNS for the two hostnames below, proxied to alastor (patchworklabsorg/dns)
 # The full checklist is in Krater's docs/dev/production.md.
 #
@@ -70,27 +74,41 @@ in
     # agenix's default path for the secret above.
     environmentFile = "/run/agenix/krater-staging-env";
 
-    # Fallback build; deploys write /var/lib/krater/source-rev instead.
-    rev = "16de89ada091eb27bf137f5f557a4ca59ac4ae30";
+    # Fallback build; deploys write /var/lib/krater/source-rev instead. A
+    # commit on Krater's main (2026-10-22, after patchworklabsorg/krater#9).
+    rev = "b081a132fe1e6c2b8d998f45a65e507745052300";
 
     # One level under patchworklabs.org: the records are proxied through
     # Cloudflare, whose edge certificate covers only one subdomain level.
     # Added by a PR to patchworklabsorg/dns, like weave-staging's.
     domain = "krater-staging.patchworklabs.org";
     storage.domain = "krater-staging-storage.patchworklabs.org";
+    # At most 12 GB of screenshots and job files on weft's 40 GB disk, which
+    # also holds the system, the Docker images and the build cache. Cloudflare
+    # in front of alastor caps each request body at 100 MB, so one upload
+    # through the public hostname cannot be larger than that.
+    storage.maxVolumes = 12;
 
     # Krater Compute (see the comment at the top). The label prefix must be
     # unique to this deployment on the Vast account.
     compute.enable = false;
+    compute.labelPrefix = "krater-staging-";
     # compute.vastKeyFile = config.age.secrets.krater-staging-vast-key.path;
-    # compute.labelPrefix = "krater-staging-";
     # projectSecretsKeyFile = config.age.secrets.krater-staging-project-secrets-key.path;
 
-    # Proxies that append to X-Forwarded-For: Traefik on alastor and nginx
-    # here. nginx sets the client address from alastor's header
-    # (./configuration.nix), and Cloudflare is in front of alastor. Check this
-    # against a real request before relying on per-client rate limits.
-    extraEnv.KRATER_TRUSTED_PROXY_COUNT = "2";
+    # The proxies that each append one address to X-Forwarded-For: Cloudflare
+    # (the client), Traefik on alastor (Cloudflare's edge) and nginx on weft
+    # (alastor's tailnet address). Krater sees "client, cf_ip, alastor_ip" and
+    # takes the third address from the right as the client. nginx on weft
+    # does no real_ip rewrite (./configuration.nix), so the chain stays whole.
+    extraEnv = {
+      KRATER_TRUSTED_PROXY_COUNT = "3";
+      # Krater sends its events to Quilt only when this is set. Leave it
+      # empty, or set it to Quilt staging. Never set it to production Quilt:
+      # staging events would land in the real books. Events wait in Krater's
+      # quilt_outbox table until it is set.
+      KRATER_QUILT_URL = "";
+    };
 
     # weft has no MagicDNS. KRATER_DATABASE_URL names hem by its tailnet name
     # (bin/new-krater-secrets staging). If hem joins the tailnet again, its

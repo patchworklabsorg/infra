@@ -2,14 +2,14 @@
 #
 # One app per VM. Sudo and the docker group are root here, so only the
 # break-glass admins (modules/common) and lnx-weft-admins get them. Only this
-# host's key decrypts the Krater secrets.
+# host's key decrypts the Krater staging secrets.
 # Public traffic arrives from alastor over the tailnet
 # (nixosModules.edge-alastor) as plain HTTP to nginx on tailscale0:80.
 #
 # Tailnet tags: tag:patchwork (ssh from admins, port 80 from alastor) and
 # tag:patchwork-krater. The policy in jaspermayone/infra lets tag:patchwork-krater
-# reach skein:5432 (prod) and hem:5432 (staging). Only Krater staging runs
-# here today (./krater.nix).
+# reach hem:5432 (central staging). Only Krater staging runs here
+# (./krater.nix), and it uses hem only.
 #
 # Built on 2026-10-22 with `qm create`, `tofu import` and nixos-anywhere. Its
 # host key is a recipient of ad-join.age (AD logon).
@@ -37,11 +37,11 @@ in
   services.nginx = {
     enable = true;
     # Only alastor reaches this, over the tailnet. alastor terminated TLS and
-    # set X-Forwarded-For and X-Forwarded-Proto (https); pass them on as they
-    # are. recommendedProxySettings would set X-Forwarded-Proto to http.
+    # set X-Forwarded-For and X-Forwarded-Proto (https). Pass the proto on as
+    # it is (recommendedProxySettings would set http), and append alastor's
+    # address to X-Forwarded-For. No real_ip here: Krater reads the client
+    # from X-Forwarded-For itself (KRATER_TRUSTED_PROXY_COUNT in ./krater.nix).
     commonHttpConfig = ''
-      set_real_ip_from 100.64.0.0/10;
-      real_ip_header X-Forwarded-For;
       proxy_set_header Host $host;
       proxy_set_header X-Real-IP $remote_addr;
       proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;

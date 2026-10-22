@@ -167,6 +167,7 @@
                   inherit pkgs;
                   inherit (nixpkgs.lib) nixosSystem;
                   weft = self.nixosConfigurations.weft;
+                  inherit (self.nixosConfigurations) skein hem;
                   edgeModule = self.nixosModules.edge-alastor;
                 };
               }

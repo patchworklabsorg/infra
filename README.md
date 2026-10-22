@@ -12,7 +12,7 @@ Declarative infrastructure for Patchwork Labs: every Patchwork host, the NixOS m
 | `hosts/installer.nix` | The installer ISO: NixOS minimal with the admin SSH keys on root. |
 | `bin/install-host` | Plans and applies the VM, reads its address, runs nixos-anywhere. |
 | `bin/new-quilt-staging-secrets` | Writes the two Quilt staging secrets with a new random password and `SECRET_KEY_BASE`. Prints no value. |
-| `bin/new-krater-secrets` | Writes Krater's two secrets for one environment (`staging` or `production`) with a new random database password and keys. Prints no value. |
+| `bin/new-krater-secrets` | Writes Krater staging's two secrets with a new random database password and keys. Prints no value. |
 | `hosts/central-db-schema.nix` | Apps and shared schemas of the central databases. |
 | `hosts/alastor/` | Modules that `jaspermayone/infra` imports for alastor. |
 | `modules/common/` | Accounts, SSH, sudo, Tailscale, Nix. Every host imports it. `keys.nix` holds the SSH keys. |
@@ -44,7 +44,7 @@ The lab hosts below are NixOS VMs on pve01, VLAN 90 (`patchwork.internal`). alas
 | `seam` | 357 | 10.100.90.57 | 2 GB | `patchwork_central_restricted`, prod. Tailnet only. |
 | `hem` | 358 | 10.100.90.58 | 2 GB | Both staging clusters: central on 5432, restricted on 5433. Quilt staging uses the restricted one. |
 | `batting` | 360 | 10.100.90.60 | 4 GB | Quilt prod + staging. nginx on `tailscale0:80` for alastor. |
-| `weft` | 361 | 10.100.90.61 | 4 GB | Krater prod + staging. nginx on `tailscale0:80` for alastor. |
+| `weft` | 361 | 10.100.90.61 | 4 GB | Krater staging only. nginx on `tailscale0:80` for alastor. |
 
 The Windows hosts are managed by Ansible (`ansible/`):
 
@@ -62,11 +62,11 @@ flowchart LR
   internet((Internet)) --> alastor["alastor (Traefik, TLS, Weave)"]
   alastor -- "tailnet, HTTP :80" --> warp["warp: misc"]
   alastor -- "tailnet, HTTP :80" --> batting["batting: Quilt"]
-  alastor -- "tailnet, HTTP :80" --> weft["weft: Krater"]
-  weft -- "tailnet :5432" --> skein["skein: patchwork_central"]
+  alastor -- "tailnet, HTTP :80" --> weft["weft: Krater staging"]
   batting -- "tailnet :5432" --> seam["seam: patchwork_central_restricted"]
   batting -. "staging :5433" .-> hem["hem: :5432 / :5433"]
   weft -. "staging :5432" .-> hem
+  skein["skein: patchwork_central (no app connects yet)"]
 ```
 
 ## Login

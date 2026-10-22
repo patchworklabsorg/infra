@@ -8,6 +8,8 @@
   pkgs,
   nixosSystem,
   weft,
+  skein,
+  hem,
   edgeModule,
 }:
 let
@@ -69,7 +71,16 @@ let
       && !(lib.elem 80 on.networking.firewall.allowedTCPPorts);
     "weave staging issuer" =
       on.patchwork.services.krater.weave.issuer == "https://weave-staging.patchworklabs.org";
-    "trusted proxy count" = on.patchwork.services.krater.extraEnv.KRATER_TRUSTED_PROXY_COUNT == "2";
+    "trusted proxy count: Cloudflare, Traefik, nginx" =
+      on.patchwork.services.krater.extraEnv.KRATER_TRUSTED_PROXY_COUNT == "3";
+    "no real_ip rewrite on weft" = !(lib.hasInfix "real_ip_header" on.services.nginx.commonHttpConfig);
+    "nginx appends to X-Forwarded-For" =
+      lib.hasInfix "X-Forwarded-For $proxy_add_x_forwarded_for" on.services.nginx.commonHttpConfig;
+    "no events to Quilt" = on.patchwork.services.krater.extraEnv.KRATER_QUILT_URL == "";
+    "staging label prefix" = on.patchwork.services.krater.compute.labelPrefix == "krater-staging-";
+    "storage volume limit" = on.patchwork.services.krater.storage.maxVolumes == 12;
+    "krater is not on skein" = !(skein.config.patchwork.centralDb.apps ? krater);
+    "krater is on hem" = hem.config.containers.central-staging.config.patchwork.centralDb.apps ? krater;
   };
   failed = lib.attrNames (lib.filterAttrs (_: ok: !ok) checks);
 in
@@ -93,12 +104,17 @@ pkgs.runCommand "krater-weft" { } ''
   grep -F -- "$hem" ${svc.krater-worker.serviceConfig.ExecStart}
   for f in ${lib.concatStringsSep " " (lib.filter (lib.hasPrefix "/nix/store/") (lib.toList svc.krater-web.serviceConfig.ExecStartPre))}; do
     if grep -qF 'alembic upgrade head' "$f"; then
-      test "$(grep -cF -- "$hem" "$f")" = 2
+      test "$(grep -cF -- "$hem" "$f")" = 3
+      # The settings check runs before the database wait.
+      grep -F 'from krater.config import get_settings; get_settings()' "$f"
       prepare=1
     fi
   done
   test "''${prepare:-0}" = 1
   absent "--add-host" ${svc.krater-storage.serviceConfig.ExecStart}
+
+  grep -F -- '--env VOLUME_MAX=12' ${svc.krater-storage.serviceConfig.ExecStart}
+  grep -F 'docker builder prune -f --filter until=168h' ${svc.krater-build.serviceConfig.ExecStart}
 
   # Loopback only: nginx is the way in.
   grep -F -- '--publish 127.0.0.1:3010:8000' ${svc.krater-web.serviceConfig.ExecStart}

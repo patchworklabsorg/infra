@@ -80,13 +80,15 @@ pkgs.runCommand "krater-weft" { } ''
       exit 1
     fi
   }
-  skein="--add-host 'skein.wildebeest-stargazer.ts.net:100.109.223.51'"
+  # lib.escapeShellArg leaves a name:address with no special characters
+  # unquoted.
+  skein="--add-host skein.wildebeest-stargazer.ts.net:100.109.223.51"
 
   # The portal, the worker, the database wait and the migrations get skein's
   # tailnet address. SeaweedFS does not talk to the database.
   grep -F -- "$skein" ${svc.krater-web.serviceConfig.ExecStart}
   grep -F -- "$skein" ${svc.krater-worker.serviceConfig.ExecStart}
-  for f in ${lib.concatStringsSep " " (lib.toList svc.krater-web.serviceConfig.ExecStartPre)}; do
+  for f in ${lib.concatStringsSep " " (lib.filter (lib.hasPrefix "/nix/store/") (lib.toList svc.krater-web.serviceConfig.ExecStartPre))}; do
     if grep -qF 'alembic upgrade head' "$f"; then
       test "$(grep -cF -- "$skein" "$f")" = 2
       prepare=1

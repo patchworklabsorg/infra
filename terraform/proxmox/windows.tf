@@ -58,12 +58,12 @@ resource "proxmox_virtual_environment_vm" "spool" {
     floating  = 0
   }
 
-  # spool-setup.ps1 installs the QEMU guest agent at the first logon. Wait
-  # 2 minutes for it, not the 15 minute default, so an apply during the
-  # install does not stall. A change here needs a stop and start of the VM,
-  # not a restart in Windows.
+  # Turn the agent device on only after the QEMU guest agent runs in Windows
+  # (var.spool_agent_installed). With the device on and no agent, each plan
+  # waits for the timeout. The wait is 2 minutes, not the 15 minute default.
+  # A change here needs a stop and start of the VM, not a restart in Windows.
   agent {
-    enabled = true
+    enabled = var.spool_agent_installed
     timeout = "2m"
   }
 
@@ -104,9 +104,9 @@ resource "proxmox_virtual_environment_vm" "spool" {
     prevent_destroy = true
 
     # Operators detach the ISO and change the boot order after the install.
-    # Proxmox pins the machine version of a Windows guest at create
-    # (pc-q35-11.0+pve2), so Windows does not see new hardware after a
-    # Proxmox upgrade. Keep that pin.
+    # Proxmox can pin the machine version of a Windows guest (live:
+    # pc-q35-11.0+pve2). Terraform does not change it. Make a machine change
+    # by hand, and check `qm config 359` after a new create.
     ignore_changes = [
       cdrom,
       boot_order,

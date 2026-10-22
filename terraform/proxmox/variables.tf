@@ -133,6 +133,12 @@ variable "spool" {
   }
 }
 
+variable "spool_agent_installed" {
+  description = "The QEMU guest agent runs in Windows on spool, so Terraform turns on the agent device. It is true for the live VM. For a new spool, set it to false until spool-setup.ps1 or a person installs the agent."
+  type        = bool
+  default     = true
+}
+
 variable "spool_unattend_iso_path" {
   description = "Local path of the spool answer ISO. Build it with spool/build-unattend.sh. When it is set and create_spool is true, Terraform uploads the ISO, attaches it to spool as a second CD-ROM (ide0) and starts the install. Keep it null after the install: Terraform then detaches the ISO and deletes it from the node."
   type        = string

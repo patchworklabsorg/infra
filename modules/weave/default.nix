@@ -30,8 +30,20 @@
 # weave_app, which is not a superuser. The bootstrap superuser `weave` has no
 # password and works only over the socket inside the db container. The console
 # audit tables belong to weave_audit, so a Rails console or SQL console cannot
-# delete or rewrite its own records. A migration that changes an audit table
-# must run by hand as `weave`.
+# delete or rewrite its own records.
+#
+#   A migration that changes an audit table (console1984_*, audits1984_*,
+#   console_access_requests) fails as weave_app. For the deploy that brings
+#   it, create the flag file. weave_app then owns the audit tables during
+#   that one db:prepare, and the roles script takes them back and removes the
+#   flag after it:
+#     touch /var/lib/weave/allow-audit-migration   # staging: /var/lib/weave-staging
+#     systemctl restart weave-web
+#
+#   To roll back to a module from before the roles, first give `weave` the
+#   POSTGRES_PASSWORD value again (psql asks for it), or db:prepare, web and
+#   worker cannot sign in:
+#     docker exec -it weave-db psql -U weave -d postgres -c '\password weave'
 #
 # Staging (optional, `staging.enable`) is a second, fully separate instance
 # rendered by the same `mkInstance` function below: units weave-staging-*,
@@ -257,17 +269,30 @@ let
                   pg_isready -U weave -h localhost -q; do
                 sleep 2
               done
+              # $1 is the owner of the audit tables for this run.
               db_roles() {
-                ${dockerBin} exec -i ${name}-db \
+                # --env-file passes the current POSTGRES_PASSWORD, not the one
+                # the db container started with.
+                ${dockerBin} exec -i --env-file ${environmentFile} ${name}-db \
                   psql -U weave -d postgres -X -q -v ON_ERROR_STOP=1 -f - < ${./db-roles.sql}
-                for db in $(${dockerBin} exec ${name}-db psql -U weave -d postgres -X -At -c \
-                    "SELECT datname FROM pg_database WHERE datname IN ('weave_production', 'weave_production_queue')"); do
+                dbs=$(${dockerBin} exec ${name}-db psql -U weave -d postgres -X -At -v ON_ERROR_STOP=1 -c \
+                    "SELECT datname FROM pg_database WHERE datname IN ('weave_production', 'weave_production_queue')")
+                for db in $dbs; do
                   ${dockerBin} exec -i ${name}-db \
-                    psql -U weave -d "$db" -X -q -v ON_ERROR_STOP=1 -f - < ${./db-roles-database.sql}
+                    psql -U weave -d "$db" -X -q -v ON_ERROR_STOP=1 -v audit_owner="$1" \
+                    -f - < ${./db-roles-database.sql}
                 done
               }
-              echo "Applying database roles..."
-              db_roles
+              # One start may give the audit tables to weave_app, so that a
+              # migration can change them. See the module header.
+              AUDIT_MIGRATION_FLAG=${stateDir}/allow-audit-migration
+              if [ -e "$AUDIT_MIGRATION_FLAG" ]; then
+                echo "Giving the audit tables to weave_app for this db:prepare..."
+                db_roles weave_app
+              else
+                echo "Applying database roles..."
+                db_roles weave_audit
+              fi
               echo "Running db:prepare..."
               ${dockerBin} run --rm \
                 --network ${network} \
@@ -280,7 +305,8 @@ let
                 ${extraEnvArgs}"$IMAGE" \
                 bin/rails db:prepare
               echo "Applying database roles to new tables..."
-              db_roles
+              db_roles weave_audit
+              rm -f "$AUDIT_MIGRATION_FLAG"
             '')
           ];
 

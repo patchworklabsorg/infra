@@ -18,9 +18,9 @@
 --                so a console cannot delete or rewrite its own records. See
 --                docs/CONSOLE_ACCESS.md in the Weave repo.
 --
--- weave_app signs in with POSTGRES_PASSWORD from the instance env file, read
--- here from the db container's environment. Migrations that change an audit
--- table must run as `weave` by hand, because weave_app does not own them.
+-- weave_app signs in with POSTGRES_PASSWORD from the instance env file. The
+-- module passes the current file to psql (`docker exec --env-file`), so a new
+-- password in the file takes effect at the next weave-web start.
 
 \set ON_ERROR_STOP on
 
@@ -29,6 +29,9 @@ SELECT NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'weave_app') AS create_a
   CREATE ROLE weave_app LOGIN;
 \endif
 ALTER ROLE weave_app WITH LOGIN NOSUPERUSER CREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS;
+-- weave_app can set its own defaults, for example a search_path that puts
+-- another schema first. Clear them.
+ALTER ROLE weave_app RESET ALL;
 \set app_password `printf '%s' "$POSTGRES_PASSWORD"`
 ALTER ROLE weave_app PASSWORD :'app_password';
 \unset app_password
@@ -42,13 +45,13 @@ SELECT NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'weave_audit') AS create
 ALTER ROLE weave PASSWORD NULL;
 
 -- The superuser owns the app's databases (db:prepare may create the queue
--- database as weave_app on a new host). weave_app may connect and create
--- objects. db-roles-database.sql then runs in each database.
+-- database as weave_app on a new host). db-roles-database.sql then runs in
+-- each database and sets what weave_app may do there.
 DO $$
 DECLARE db text;
 BEGIN
   FOR db IN SELECT datname FROM pg_database WHERE datname IN ('weave_production', 'weave_production_queue') LOOP
     EXECUTE format('ALTER DATABASE %I OWNER TO weave', db);
-    EXECUTE format('GRANT CONNECT, CREATE, TEMPORARY ON DATABASE %I TO weave_app', db);
+    EXECUTE format('ALTER ROLE weave_app IN DATABASE %I RESET ALL', db);
   END LOOP;
 END $$;

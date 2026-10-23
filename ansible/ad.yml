@@ -13,7 +13,10 @@
 #   -t join-delegation  give ad_join_account the computer-join rights on
 #                       both computer OUs (what -t audit checks)
 #   -t host-groups      lnx-<host>-users / lnx-<host>-admins for every NixOS
-#                       host in ../flake.nix (nixosConfigurations)
+#                       host in ../flake.nix (nixosConfigurations), and the
+#                       host-dns tasks below
+#   -t host-dns         an A record per NixOS host (patchwork.lanAddress), and
+#                       no tailnet A or AAAA records in AD DNS
 #   -t svc-posture      service accounts: AES only, not delegatable
 #   -t ldap-binds       read-only LDAP bind accounts from
 #                       ad_ldap_bind_accounts (empty today)
@@ -309,6 +312,95 @@
           groups_created: "{{ ad_host_groups.result }}"
       when: ad_is_primary_dc
       tags: [host-groups, never]
+
+    # -------------------------------------------------------------- host-dns
+    # One A record per NixOS host in the domain zone, from the host's
+    # patchwork.lanAddress in the flake. sssd does not update DNS, so without
+    # this the hosts have no name in AD DNS. -t host-groups runs it too, so
+    # the one step for a new host covers both.
+    #
+    # It also removes A and AAAA records with tailnet addresses (100.64.0.0/10,
+    # fd7a:115c:a1e0::/48) from the domain zones. A DC registers the address of every adapter, and before
+    # roles/tailscale_windows stopped it (adapter registration, and the DNS
+    # server's own listening addresses), loom and spindle published their
+    # tailnet addresses. A lab host that resolves
+    # loom to such an address has no route to it.
+    - name: Host DNS | Read the NixOS host addresses from the flake
+      ansible.builtin.set_fact:
+        ad_linux_host_addresses: >-
+          {{ lookup('ansible.builtin.pipe',
+                    'nix --extra-experimental-features "nix-command flakes" eval --json '
+                    ~ (ad_flake_dir ~ '#nixosConfigurations') | quote
+                    ~ ' --apply ' ~ ('builtins.mapAttrs (_: c: c.config.patchwork.lanAddress)' | quote))
+             | from_json | dict2items | rejectattr('value', 'none') | items2dict }}
+      run_once: true
+      tags: [host-groups, host-dns, never]
+
+    - name: Host DNS | A records for the NixOS hosts, no tailnet addresses
+      ansible.windows.win_powershell:
+        parameters:
+          hosts_json: "{{ ad_linux_host_addresses | to_json }}"
+          zone: "{{ domain_name }}"
+        script: |
+          param([string]$hosts_json, [string]$zone)
+          $Ansible.Changed = $false
+          Import-Module DnsServer
+          $done = @()
+
+          $hosts = $hosts_json | ConvertFrom-Json
+          foreach ($p in $hosts.PSObject.Properties) {
+              $name = $p.Name.ToLower()
+              $ip = $p.Value
+              if ($ip -notmatch '^\d+\.\d+\.\d+\.\d+$') { throw "${name}: lanAddress '$ip' is not an IPv4 address" }
+              $rr = @(Get-DnsServerResourceRecord -ZoneName $zone -Name $name -RRType A -ErrorAction SilentlyContinue)
+              # Add first, then remove the wrong ones, so the name always has
+              # an address.
+              if (-not ($rr | Where-Object { $_.RecordData.IPv4Address.IPAddressToString -eq $ip })) {
+                  Add-DnsServerResourceRecordA -ZoneName $zone -Name $name -IPv4Address $ip -ErrorAction Stop
+                  $done += "added $name $ip"
+                  $Ansible.Changed = $true
+              }
+              foreach ($r in $rr) {
+                  if ($r.RecordData.IPv4Address.IPAddressToString -ne $ip) {
+                      Remove-DnsServerResourceRecord -ZoneName $zone -InputObject $r -Force -ErrorAction Stop
+                      $done += "removed $name $($r.RecordData.IPv4Address)"
+                      $Ansible.Changed = $true
+                  }
+              }
+          }
+
+          # Tailnet addresses: 100.64.0.0/10 (first octet 100, second 64-127)
+          # and fd7a:115c:a1e0::/48.
+          foreach ($z in @($zone, "_msdcs.$zone")) {
+              foreach ($r in @(Get-DnsServerResourceRecord -ZoneName $z -RRType A -ErrorAction SilentlyContinue)) {
+                  $o = $r.RecordData.IPv4Address.GetAddressBytes()
+                  if ($o[0] -eq 100 -and $o[1] -ge 64 -and $o[1] -le 127) {
+                      Remove-DnsServerResourceRecord -ZoneName $z -InputObject $r -Force -ErrorAction Stop
+                      $done += "removed $($r.HostName).$z $($r.RecordData.IPv4Address)"
+                      $Ansible.Changed = $true
+                  }
+              }
+              foreach ($r in @(Get-DnsServerResourceRecord -ZoneName $z -RRType AAAA -ErrorAction SilentlyContinue)) {
+                  if ($r.RecordData.IPv6Address.ToString() -like 'fd7a:115c:a1e0:*') {
+                      Remove-DnsServerResourceRecord -ZoneName $z -InputObject $r -Force -ErrorAction Stop
+                      $done += "removed $($r.HostName).$z $($r.RecordData.IPv6Address)"
+                      $Ansible.Changed = $true
+                  }
+              }
+          }
+          $Ansible.Result = $done
+      register: ad_host_dns
+      when: ad_is_primary_dc
+      tags: [host-groups, host-dns, never]
+
+    - name: Host DNS | Report
+      ansible.builtin.debug:
+        msg:
+          zone: "{{ domain_name }}"
+          hosts: "{{ ad_linux_host_addresses }}"
+          changes: "{{ ad_host_dns.result }}"
+      when: ad_is_primary_dc
+      tags: [host-groups, host-dns, never]
 
     # ------------------------------------------------------------ svc-posture
     # Enforce what -t audit checks on the service accounts: AES-only Kerberos

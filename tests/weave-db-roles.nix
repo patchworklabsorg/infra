@@ -14,7 +14,8 @@ pkgs.runCommand "weave-db-roles"
     nativeBuildInputs = [ pkgs.postgresql_17 ];
     roles = ../modules/weave/db-roles.sql;
     database = ../modules/weave/db-roles-database.sql;
-    logMigration = ./weave-db-roles-log-migration.sql;
+    logMigration1 = ./weave-db-roles-log-migration-1.sql;
+    logMigration2 = ./weave-db-roles-log-migration-2.sql;
   }
   ''
     set -euo pipefail
@@ -49,9 +50,10 @@ pkgs.runCommand "weave-db-roles"
     # roles <audit_owner> <lock_superuser>: what the module's db_roles does.
     roles() {
       POSTGRES_PASSWORD=app-pw psql -X -q -v ON_ERROR_STOP=1 -U weave -d postgres \
-        -v lock_superuser="$2" -f $roles
+        -v lock_superuser="$2" -f $roles || return 1
+      # The return keeps a failure visible also where set -e is off (in an if).
       for db in weave_production weave_production_queue; do
-        psql -X -q -v ON_ERROR_STOP=1 -U weave -d $db -v audit_owner="$1" -f $database
+        psql -X -q -v ON_ERROR_STOP=1 -U weave -d $db -v audit_owner="$1" -f $database || return 1
       done
     }
 
@@ -158,12 +160,25 @@ pkgs.runCommand "weave-db-roles"
     no weave_app $P "UPDATE console1984_sessions SET source = 'changed'"
 
     # The permanent log. Weave's migrations make it as weave_app in
-    # db:prepare. The event trigger is on, but nothing is pinned yet, so the
-    # migrations (which drop and make the users trigger again) work.
+    # db:prepare, each in one transaction. The event trigger is on, but
+    # nothing is pinned yet, so migration 1 works.
+    migrate() { psql -X -q -1 -v ON_ERROR_STOP=1 -U weave_app -d $P -f "$1"; }
     is 0 weave $P "SELECT count(*) FROM weave_audit_pinned_capture_triggers"
-    psql -X -q -v ON_ERROR_STOP=1 -U weave_app -d $P -f $logMigration
+    migrate $logMigration1
     is weave_app weave $P "SELECT tableowner FROM pg_tables WHERE tablename = 'privileged_attribute_changes'"
-    # The run after db:prepare takes it over and pins the capture triggers.
+    # A locked run between the two migrations takes the log and pins the
+    # users trigger. Migration 2 then fails without the flag and changes
+    # nothing (it changes the log and drops the users trigger).
+    roles weave_audit false
+    is 1 weave $P "SELECT count(*) FROM weave_audit_pinned_capture_triggers"
+    if migrate $logMigration2 >/dev/null 2>&1; then
+      echo "WORKED, should fail: migration 2 after a locked run, without the flag" >&2
+      exit 1
+    fi
+    is "" weave $P "SELECT to_regclass('user_roles')"
+    # With the flag it works, and the run after it pins the new triggers.
+    roles weave_app false
+    migrate $logMigration2
     roles weave_audit false
     roles weave_audit false
     is weave_audit weave $P "SELECT tableowner FROM pg_tables WHERE tablename = 'privileged_attribute_changes'"
@@ -174,6 +189,7 @@ pkgs.runCommand "weave-db-roles"
     done
     is weave_app weave $P "SELECT tableowner FROM pg_tables WHERE tablename = 'user_roles'"
     is 4 weave $P "SELECT count(*) FROM weave_audit_pinned_capture_triggers"
+    is "" weave $P "SELECT weave_audit_capture_trigger_drift()"
     is O weave $P "SELECT evtenabled FROM pg_event_trigger WHERE evtname = 'weave_audit_keep_capture_triggers'"
 
     # The capture triggers still write, as weave_app.
@@ -239,8 +255,28 @@ pkgs.runCommand "weave-db-roles"
     # Other DDL on these tables still works.
     ok weave_app $P "ALTER TABLE users ADD COLUMN nickname text"
     ok weave_app $P "CREATE INDEX users_nickname ON users (nickname)"
-    ok weave_app $P "CREATE TRIGGER other_trigger AFTER UPDATE ON users FOR EACH ROW EXECUTE FUNCTION log_privileged_attribute_changes()"
-    ok weave_app $P "DROP TRIGGER other_trigger ON users"
+    ok weave_app $P "ALTER TABLE users ADD CONSTRAINT users_nickname_short CHECK (length(nickname) < 50)"
+    ok weave_app $P "ALTER TABLE user_roles ADD COLUMN note text"
+    ok weave_app $P "CREATE INDEX user_roles_note ON user_roles (note)"
+    ok weave_app $P "ALTER TABLE user_roles ADD CONSTRAINT user_roles_granted_by_fk2 FOREIGN KEY (granted_by_id) REFERENCES users (id)"
+    ok weave_app $P "CREATE TABLE user_notes (id bigserial PRIMARY KEY, user_id bigint REFERENCES users (id))"
+    ok weave_app $P "DROP TABLE user_notes"
+    # A new trigger on users or user_roles is refused too, with any name.
+    pinned weave_app $P "CREATE TRIGGER other_trigger AFTER UPDATE ON users FOR EACH ROW EXECUTE FUNCTION log_privileged_attribute_changes()"
+    # A BEFORE trigger that sets role from another column: AFTER UPDATE OF
+    # role does not fire for it, so it would change role with no log row.
+    ok weave_app $P "CREATE FUNCTION public.sneak() RETURNS trigger LANGUAGE plpgsql AS \$\$ BEGIN NEW.role := NEW.nickname::int; RETURN NEW; END \$\$"
+    pinned weave_app $P "CREATE TRIGGER a_sneak BEFORE UPDATE ON users FOR EACH ROW EXECUTE FUNCTION public.sneak()"
+    pinned weave_app $P "CREATE CONSTRAINT TRIGGER a_sneak AFTER UPDATE ON users FOR EACH ROW EXECUTE FUNCTION public.sneak()"
+    ok weave_app $P "UPDATE users SET nickname = '9' WHERE id = 1"
+    is 3 weave $P "SELECT role FROM users WHERE id = 1"
+    # A BEFORE trigger after user_roles_append_only (name order) that turns
+    # a revoked row back into an active grant.
+    ok weave_app $P "CREATE FUNCTION public.unrevoke() RETURNS trigger LANGUAGE plpgsql AS \$\$ BEGIN NEW.revoked_at := NULL; NEW.revoke_reason := NULL; RETURN NEW; END \$\$"
+    pinned weave_app $P "CREATE TRIGGER zzz BEFORE UPDATE ON user_roles FOR EACH ROW EXECUTE FUNCTION public.unrevoke()"
+    ok weave_app $P "UPDATE user_roles SET revoked_by_id = NULL"
+    is 1 weave $P "SELECT count(*) FROM user_roles WHERE revoked_at IS NOT NULL"
+    is "" weave $P "SELECT weave_audit_capture_trigger_drift()"
     is 4 weave $P "SELECT count(*) FROM privileged_attribute_changes"
 
     # A flagged migration may change the log, its functions and its triggers.
@@ -252,6 +288,7 @@ pkgs.runCommand "weave-db-roles"
     ok weave_app $P "ALTER TABLE privileged_attribute_changes ADD COLUMN request_id text"
     ok weave_app $P "DROP TRIGGER log_privileged_attribute_changes ON users"
     ok weave_app $P "CREATE TRIGGER log_privileged_attribute_changes AFTER INSERT OR UPDATE OF role, first_name ON users FOR EACH ROW EXECUTE FUNCTION log_privileged_attribute_changes()"
+    ok weave_app $P "CREATE TRIGGER added_by_migration AFTER INSERT ON user_roles FOR EACH ROW EXECUTE FUNCTION log_user_role_changes()"
     no weave_app $P "DELETE FROM privileged_attribute_changes"
     # The next run takes it back and pins the new users trigger.
     roles weave_audit false
@@ -259,10 +296,27 @@ pkgs.runCommand "weave-db-roles"
     is weave_audit weave $P "SELECT tableowner FROM pg_tables WHERE tablename = 'privileged_attribute_changes'"
     is weave_audit weave $P "SELECT proowner::regrole FROM pg_proc WHERE proname = 'log_privileged_attribute_changes'"
     is 1 weave $P "SELECT count(*) FROM weave_audit_pinned_capture_triggers WHERE definition LIKE '%UPDATE OF role, first_name%'"
+    is 5 weave $P "SELECT count(*) FROM weave_audit_pinned_capture_triggers"
+    pinned weave_app $P "DROP TRIGGER added_by_migration ON user_roles"
     pinned weave_app $P "DROP TRIGGER log_privileged_attribute_changes ON users"
     no weave_app $P "DELETE FROM privileged_attribute_changes"
     ok weave_app $P "UPDATE users SET role = 0 WHERE id = 1"
     is 5 weave $P "SELECT count(*) FROM privileged_attribute_changes"
+    # A superuser can turn event triggers off for a session. The next locked
+    # run then stops at once and names the drifted trigger.
+    as weave $P "SET event_triggers = off; DROP TRIGGER added_by_migration ON user_roles"
+    if drift_out=$(roles weave_audit false 2>&1); then
+      echo "WORKED, should fail: a locked run after drift" >&2
+      exit 1
+    fi
+    case $drift_out in
+      *"differ from the pinned ones: user_roles.added_by_migration"*) ;;
+      *) echo "drift not named: $drift_out" >&2; exit 1 ;;
+    esac
+    # A flagged run accepts the triggers as they are.
+    roles weave_app false
+    roles weave_audit false
+    is 4 weave $P "SELECT count(*) FROM weave_audit_pinned_capture_triggers"
     # The queue database has no permanent log and no event trigger.
     is 0 weave weave_production_queue "SELECT count(*) FROM pg_event_trigger"
 

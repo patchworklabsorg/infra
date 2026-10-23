@@ -188,6 +188,13 @@ pkgs.runCommand "weave-db-roles"
     ok weave_app $P "SELECT count(*) FROM privileged_attribute_changes"
     is 3 weave $P "SELECT count(*) FROM privileged_attribute_changes"
 
+    # A shadow function in public does not stop the capture: the capture
+    # functions run with search_path = pg_catalog.
+    ok weave_app $P "CREATE FUNCTION public.to_jsonb(users) RETURNS jsonb LANGUAGE sql AS \$\$ SELECT '{}'::jsonb \$\$"
+    ok weave_app $P "UPDATE users SET role = 3 WHERE id = 1"
+    is 4 weave $P "SELECT count(*) FROM privileged_attribute_changes WHERE user_id = 1 OR user_id = 2"
+    ok weave_app $P "DROP FUNCTION public.to_jsonb(users)"
+
     # weave_app cannot change or remove log rows.
     no weave_app $P "UPDATE privileged_attribute_changes SET new_value = '0'"
     no weave_app $P "DELETE FROM privileged_attribute_changes"
@@ -234,7 +241,7 @@ pkgs.runCommand "weave-db-roles"
     ok weave_app $P "CREATE INDEX users_nickname ON users (nickname)"
     ok weave_app $P "CREATE TRIGGER other_trigger AFTER UPDATE ON users FOR EACH ROW EXECUTE FUNCTION log_privileged_attribute_changes()"
     ok weave_app $P "DROP TRIGGER other_trigger ON users"
-    is 3 weave $P "SELECT count(*) FROM privileged_attribute_changes"
+    is 4 weave $P "SELECT count(*) FROM privileged_attribute_changes"
 
     # A flagged migration may change the log, its functions and its triggers.
     # The append-only triggers still refuse a DELETE, also for the owner.
@@ -255,7 +262,7 @@ pkgs.runCommand "weave-db-roles"
     pinned weave_app $P "DROP TRIGGER log_privileged_attribute_changes ON users"
     no weave_app $P "DELETE FROM privileged_attribute_changes"
     ok weave_app $P "UPDATE users SET role = 0 WHERE id = 1"
-    is 4 weave $P "SELECT count(*) FROM privileged_attribute_changes"
+    is 5 weave $P "SELECT count(*) FROM privileged_attribute_changes"
     # The queue database has no permanent log and no event trigger.
     is 0 weave weave_production_queue "SELECT count(*) FROM pg_event_trigger"
 

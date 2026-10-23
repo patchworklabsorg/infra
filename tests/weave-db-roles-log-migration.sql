@@ -25,7 +25,7 @@ CREATE INDEX index_privileged_attribute_changes_on_user_id ON privileged_attribu
 CREATE INDEX index_privileged_attribute_changes_on_changed_at ON privileged_attribute_changes (changed_at);
 
 CREATE FUNCTION log_privileged_attribute_changes() RETURNS trigger
-LANGUAGE plpgsql AS $$
+LANGUAGE plpgsql SET search_path = pg_catalog AS $$
 DECLARE
   column_name text;
   old_text text;
@@ -43,7 +43,7 @@ BEGIN
       CONTINUE WHEN old_text IS NOT DISTINCT FROM new_text;
     END IF;
 
-    INSERT INTO privileged_attribute_changes
+    INSERT INTO public.privileged_attribute_changes
       (user_id, user_p_id, attribute_name, old_value, new_value, operation, changed_at, db_user, actor_id, actor_label)
     VALUES
       (NEW.id, NEW.p_id, column_name, old_text, new_text, lower(TG_OP), now(), CURRENT_USER,
@@ -54,7 +54,7 @@ END;
 $$;
 
 CREATE FUNCTION refuse_privileged_attribute_change_edits() RETURNS trigger
-LANGUAGE plpgsql AS $$
+LANGUAGE plpgsql SET search_path = pg_catalog AS $$
 BEGIN
   RAISE EXCEPTION 'privileged_attribute_changes is append-only: % is not allowed', TG_OP;
 END;
@@ -104,7 +104,7 @@ AFTER INSERT OR UPDATE OF role ON users
 FOR EACH ROW EXECUTE FUNCTION log_privileged_attribute_changes();
 
 CREATE FUNCTION log_user_role_changes() RETURNS trigger
-LANGUAGE plpgsql AS $$
+LANGUAGE plpgsql SET search_path = pg_catalog AS $$
 DECLARE
   actor_id_text text := nullif(current_setting('weave.actor_id', true), '');
   actor_label_text text := nullif(current_setting('weave.actor_label', true), '');
@@ -120,10 +120,10 @@ BEGIN
     RETURN NULL;
   END IF;
 
-  SELECT key INTO role_key_text FROM roles WHERE id = NEW.role_id;
-  SELECT p_id INTO p_id_text FROM users WHERE id = NEW.user_id;
+  SELECT key INTO role_key_text FROM public.roles WHERE id = NEW.role_id;
+  SELECT p_id INTO p_id_text FROM public.users WHERE id = NEW.user_id;
 
-  INSERT INTO privileged_attribute_changes
+  INSERT INTO public.privileged_attribute_changes
     (user_id, user_p_id, attribute_name, old_value, new_value, operation, changed_at, db_user, actor_id, actor_label,
      role_key, role_scope, user_role_id)
   VALUES
@@ -139,7 +139,7 @@ END;
 $$;
 
 CREATE FUNCTION refuse_user_role_edits() RETURNS trigger
-LANGUAGE plpgsql AS $$
+LANGUAGE plpgsql SET search_path = pg_catalog AS $$
 BEGIN
   IF TG_OP <> 'UPDATE' THEN
     RAISE EXCEPTION 'user_roles rows are permanent: % is not allowed. Revoke a role by setting revoked_at.', TG_OP;

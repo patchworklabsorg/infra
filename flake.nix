@@ -72,6 +72,9 @@
         edge-alastor = ./hosts/alastor/edge.nix;
         # The Quilt service module alone, with no instance settings.
         quilt = ./modules/quilt;
+        # The Krater service module alone, with no instance settings. weft
+        # imports it through hosts/weft/krater.nix.
+        krater = ./modules/krater;
       };
 
       nixosConfigurations = nixpkgs.lib.genAttrs hosts mkHost;
@@ -158,6 +161,16 @@
                   inherit (nixpkgs.lib) nixosSystem;
                   module = self.nixosModules.weave-alastor;
                   agenixModule = agenix.nixosModules.default;
+                };
+              }
+              # weft is an x86_64-linux host, so its check builds there.
+              // nixpkgs.lib.optionalAttrs (system == "x86_64-linux") {
+                krater-weft = import ./tests/krater-weft.nix {
+                  inherit pkgs;
+                  inherit (nixpkgs.lib) nixosSystem;
+                  weft = self.nixosConfigurations.weft;
+                  inherit (self.nixosConfigurations) skein hem;
+                  edgeModule = self.nixosModules.edge-alastor;
                 };
               }
             )

@@ -24,7 +24,17 @@
 #   postgres://<app>:<pw>@hem.wildebeest-stargazer.ts.net:5433/patchwork_central_restricted?sslmode=disable
 { config, lib, ... }:
 let
-  schemas = import ../central-db-schema.nix;
+  schemas =
+    let
+      s = import ../central-db-schema.nix;
+    in
+    s
+    // {
+      # Staging also gets the apps that have no production instance yet.
+      central = s.central // {
+        apps = s.central.apps // s.central.stagingOnlyApps;
+      };
+    };
 
   passwordRoot = "/run/central-db-passwords";
 

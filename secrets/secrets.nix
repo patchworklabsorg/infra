@@ -59,6 +59,28 @@ in
     alastor
   ];
 
+  # Krater staging (Project Ganymede portal, krater-staging.patchworklabs.org
+  # on weft) runtime env. The keys it must contain are listed at the top of
+  # ../modules/krater/default.nix. KRATER_DATABASE_URL holds the password in
+  # central-staging-krater.age. `bin/new-krater-secrets staging` writes both
+  # files. KRATER_SLACK_BOT_TOKEN and
+  # KRATER_SLACK_SIGNING_SECRET come from a separate Slack app in a test
+  # workspace, never the real Patchwork workspace.
+  "krater-staging-env.age".publicKeys = [
+    jsp
+    weft
+  ];
+
+  # Krater production (krater.patchworklabs.org on weft) runtime env. Same keys
+  # as staging. KRATER_DATABASE_URL holds the password in
+  # central-prod-krater.age (skein). `bin/new-krater-secrets production` writes
+  # both files. Production is off until hosts/weft/krater-production.nix turns
+  # it on. Its Slack values come from the real Patchwork Slack app.
+  "krater-env.age".publicKeys = [
+    jsp
+    weft
+  ];
+
   # Quilt (quilt.patchworklabs.org on batting) runtime env. Must contain the
   # variables in docs/deploy.md of patchworklabsorg/quilt:
   #   RESTRICTED_DATABASE_URL=postgres://quilt:<password>@seam.wildebeest-stargazer.ts.net:5432/patchwork_central_restricted?sslmode=disable
@@ -72,6 +94,50 @@ in
   "quilt-env.age".publicKeys = [
     jsp
     batting
+  ];
+
+  # Krater staging's role password in patchwork_central on hem (:5432).
+  # Password only. weft does not get this file: the same password is in
+  # krater-staging-env.age.
+  "central-staging-krater.age".publicKeys = [
+    jsp
+    hem
+  ];
+
+  # Krater production's role password in patchwork_central on skein. Password
+  # only. skein reads it only once hosts/weft/krater-production.nix moves
+  # krater to `apps` (hosts/central-db-schema.nix). weft does not get this
+  # file: the same password is in krater-env.age.
+  "central-prod-krater.age".publicKeys = [
+    jsp
+    skein
+  ];
+
+  # The Vast.ai API key Krater staging's Compute rents with: the bare key,
+  # nothing else in the file. Only Krater's worker reads it. Not used while
+  # Krater's compute is off.
+  "krater-staging-vast-key.age".publicKeys = [
+    jsp
+    weft
+  ];
+
+  # Krater staging's project-secrets keys: Fernet keys, one per line, newest
+  # first. Only Krater's portal reads it. Losing it loses every stored
+  # project secret.
+  "krater-staging-project-secrets-key.age".publicKeys = [
+    jsp
+    weft
+  ];
+
+  # Production's Vast key and project-secrets keys, as for staging. Not
+  # created yet: compute and project secrets are off in production too.
+  "krater-vast-key.age".publicKeys = [
+    jsp
+    weft
+  ];
+  "krater-project-secrets-key.age".publicKeys = [
+    jsp
+    weft
   ];
 
   # Quilt staging (quilt-staging.patchworklabs.org on batting, RAILS_ENV=staging)

@@ -176,7 +176,8 @@ pkgs.runCommand "krater-weft" { } ''
   test "''${prepare:-0}" = 1
   absent "--add-host" ${svc.krater-storage.serviceConfig.ExecStart}
 
-  grep -F -- '--env VOLUME_MAX=12' ${svc.krater-storage.serviceConfig.ExecStart}
+  grep -F -- '--env VOLUME_MAX=8' ${svc.krater-storage.serviceConfig.ExecStart}
+  grep -F -- '--env VOLUME_MAX=8' ${pvc.krater-prod-storage.serviceConfig.ExecStart}
   grep -F 'docker builder prune -f --filter until=168h' ${svc.krater-build.serviceConfig.ExecStart}
 
   # Loopback only: nginx is the way in.

@@ -1,8 +1,9 @@
-# Evaluates weft (hosts/weft) with Krater staging on and checks the units,
-# the nginx routes and the alastor edge routes. Also checks that Krater
-# production is off by default (hosts/weft/krater-production.nix), and turns
-# it on with a placeholder id to check its units and routes. No VM: the
-# containers need GitHub, hem and the Krater image.
+# Evaluates weft (hosts/weft) as it is: Krater staging on (its Weave client id
+# and env file exist), Krater production off (hosts/weft/krater-production.nix).
+# Checks the units, the nginx routes and the alastor edge routes. Then turns
+# staging off, and production on with a placeholder id, to check both
+# switches, and checks the database schema for both values of the production
+# switch. No VM: the containers need GitHub, hem and the Krater image.
 #   nix build .#checks.<system>.krater-weft
 {
   pkgs,
@@ -14,18 +15,18 @@
 }:
 let
   inherit (pkgs) lib;
-  off = weft.config;
-  on =
+  # weft as deployed: staging on, production off.
+  on = weft.config;
+  off =
     (weft.extendModules {
-      modules = [
-        {
-          patchwork.services.krater = {
-            enable = lib.mkForce true;
-            weave.clientId = lib.mkForce "test-client-id";
-          };
-        }
-      ];
+      modules = [ { patchwork.services.krater.enable = lib.mkForce false; } ];
     }).config;
+  schemaFor = (import ../hosts/central-db-schema.nix).schemaFor;
+  schemaOff = schemaFor false;
+  schemaOn = schemaFor true;
+  # As hem merges them (hosts/hem/configuration.nix).
+  hemApps = schema: schema.central.apps // schema.central.stagingOnlyApps;
+  switchFile = (import ../hosts/weft/krater-production.nix).enable;
   prod =
     (weft.extendModules {
       modules = [
@@ -64,10 +65,17 @@ let
   vhosts = on.services.nginx.virtualHosts;
   edgeToml = edge.environment.etc."traefik/conf.d/patchwork.toml".source;
   checks = {
-    "krater is off on weft without a client id" = !off.patchwork.services.krater.enable;
+    "staging is on by default" = on.patchwork.services.krater.enable;
+    "staging secret by default" = on.age.secrets ? krater-staging-env;
+    "staging client id is set" = on.patchwork.services.krater.weave.clientId != "";
+    "staging pins hem" =
+      on.patchwork.services.krater.extraHosts."hem.wildebeest-stargazer.ts.net" == "100.67.124.123";
     "no krater unit while off" = !(off.systemd.units ? "krater-web.service");
     "no krater vhost while off" = !(off.services.nginx.virtualHosts ? krater);
-    "no krater secret until the env file exists" = !(off.age.secrets ? krater-staging-env);
+    "catch-all vhost" =
+      on.services.nginx.virtualHosts.catch-all.default
+      && on.services.nginx.virtualHosts.catch-all.locations."/".return == "444";
+    "catch-all stays while krater is off" = off.services.nginx.virtualHosts ? catch-all;
     "web unit exists" = units ? "krater-web.service";
     "worker unit exists" = units ? "krater-worker.service";
     "storage unit exists" = units ? "krater-storage.service";
@@ -96,13 +104,28 @@ let
       lib.hasInfix "X-Forwarded-For $proxy_add_x_forwarded_for" on.services.nginx.commonHttpConfig;
     "no events to Quilt" = on.patchwork.services.krater.extraEnv.KRATER_QUILT_URL == "";
     "staging label prefix" = on.patchwork.services.krater.compute.labelPrefix == "krater-staging-";
-    "storage volume limit" = on.patchwork.services.krater.storage.maxVolumes == 12;
+    "storage volume limit" =
+      on.patchwork.services.krater.storage.maxVolumes == 8
+      && prod.patchwork.services.krater-production.storage.maxVolumes == 8;
     "krater is not on skein" = !(skein.config.patchwork.centralDb.apps ? krater);
-    "production is off by default" = !off.patchwork.services.krater-production.enable;
-    "no production unit by default" =
-      !(off.systemd.units ? "krater-prod-web.service") && !(units ? "krater-prod-web.service");
+    "production is off by default" = !on.patchwork.services.krater-production.enable;
+    "no production unit by default" = !(units ? "krater-prod-web.service");
     "no production vhost by default" = !(vhosts ? krater-prod);
-    "no production secret by default" = !(off.age.secrets ? krater-env);
+    "no production secret by default" = !(on.age.secrets ? krater-env);
+    "edge default follows the switch file" = edge.patchwork.edge.kraterProduction == switchFile;
+    "switch off: krater only on hem" =
+      !(schemaOff.central.apps ? krater)
+      && schemaOff.central.stagingOnlyApps ? krater
+      && hemApps schemaOff ? krater;
+    "switch on: krater on skein and on hem" =
+      schemaOn.central.apps ? krater
+      && schemaOn.central.stagingOnlyApps == { }
+      && hemApps schemaOn ? krater;
+    # skein maps each app in `apps` to secrets/central-prod-<app>.age
+    # (hosts/skein/configuration.nix), so with the switch on it loads this file.
+    "skein's krater password file exists" = builtins.pathExists ../secrets/central-prod-krater.age;
+    "the file is the schema for the switch" =
+      (import ../hosts/central-db-schema.nix).central == (schemaFor switchFile).central;
     "production units when on" =
       prod.systemd.units ? "krater-prod-web.service"
       && prod.systemd.units ? "krater-prod-worker.service"

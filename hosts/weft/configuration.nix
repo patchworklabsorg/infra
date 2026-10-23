@@ -2,7 +2,7 @@
 #
 # One app per VM. Sudo and the docker group are root here, so only the
 # break-glass admins (modules/common) and lnx-weft-admins get them. Only this
-# host's key decrypts the Krater staging secrets.
+# host's key decrypts the Krater secrets (staging and production).
 # Public traffic arrives from alastor over the tailnet
 # (nixosModules.edge-alastor) as plain HTTP to nginx on tailscale0:80.
 #
@@ -85,6 +85,16 @@ in
     '';
     # Krater's hostnames, each instance only while it is on (./krater.nix).
     virtualHosts = lib.mkMerge [
+      {
+        # An unknown Host, or a name whose instance is off, gets no answer
+        # (444): it never falls through to the first vhost, the staging portal.
+        catch-all = {
+          default = true;
+          serverName = "_";
+          inherit listen;
+          locations."/".return = "444";
+        };
+      }
       (lib.mkIf krater.enable (kraterVhosts "krater" krater))
       (lib.mkIf kraterProd.enable (kraterVhosts "krater-prod" kraterProd))
     ];

@@ -46,10 +46,13 @@
 # Production (patchwork.services.krater-production, names krater-prod-*,
 # ports 3012/3013, the `krater` schema in patchwork_central on skein, Weave
 # production). Turn on production:
-#   1. Krater's app in Weave production (redirect URI
-#      https://krater.patchworklabs.org/auth/callback). Put its client id in
-#      `productionWeaveClientId` below, and its secret and the real Slack app's
-#      values in secrets/krater-env.age (`cd secrets && agenix -e krater-env.age`).
+#   1. Krater's app in Weave production exists, and its client id is in
+#      `productionWeaveClientId` below. Fill in the empty keys of
+#      secrets/krater-env.age (`cd secrets && agenix -e krater-env.age`):
+#      KRATER_WEAVE_CLIENT_SECRET, and KRATER_SLACK_BOT_TOKEN and
+#      KRATER_SLACK_SIGNING_SECRET from the real Patchwork Slack app. The file
+#      exists already (bin/new-krater-secrets production), so the build does
+#      not check these: Krater's settings check fails the unit if one is empty.
 #   2. jaspermayone/infra tailscale/policy.hujson: give tag:patchwork-krater
 #      pw-skein:5432 again (the grant and the test lines are in #32's body).
 #   3. Set `enable = true` in ./krater-production.nix. That also puts krater
@@ -67,10 +70,12 @@ let
   stagingWeaveIssuer = "https://weave-staging.patchworklabs.org";
   stagingWeaveClientId = "vTt8nTKFw7Qau8S2aBfhXrBQuCi1PbduyF0x6sH5QJo";
 
-  # Production: Weave production (https://weave.patchworklabs.org). Empty until
-  # Krater's app exists there. Not secret.
+  # Production: Weave production (https://weave.patchworklabs.org). The client
+  # id of Krater's app there (redirect URI
+  # https://krater.patchworklabs.org/auth/callback). Not secret. Setting it does
+  # not turn production on: ./krater-production.nix does.
   productionWeaveIssuer = "https://weave.patchworklabs.org";
-  productionWeaveClientId = "";
+  productionWeaveClientId = "GwmIPZenHuqRjUjawfJyDYceEcdXDJibTbmEEkuRJDU";
 
   envFile = ../../secrets/krater-staging-env.age;
   enable = stagingWeaveClientId != "" && builtins.pathExists envFile;
@@ -93,10 +98,6 @@ in
     {
       assertion = prodEnable -> productionWeaveClientId != "";
       message = "hosts/weft/krater-production.nix turns Krater production on, but productionWeaveClientId in hosts/weft/krater.nix is empty";
-    }
-    {
-      assertion = prodEnable -> builtins.pathExists prodEnvFile;
-      message = "hosts/weft/krater-production.nix turns Krater production on, but secrets/krater-env.age does not exist (bin/new-krater-secrets production)";
     }
   ];
 
@@ -138,11 +139,12 @@ in
     # Added by a PR to patchworklabsorg/dns, like weave-staging's.
     domain = "krater-staging.patchworklabs.org";
     storage.domain = "krater-staging-storage.patchworklabs.org";
-    # At most 12 GB of screenshots and job files on weft's 40 GB disk, which
-    # also holds the system, the Docker images and the build cache. Cloudflare
+    # weft's 40 GB disk holds the system, two SeaweedFS stores (staging and
+    # production), two image repositories (krater, krater-prod) and the shared
+    # BuildKit cache. So each store gets at most 8 volumes of 1 GB. Cloudflare
     # in front of alastor caps each request body at 100 MB, so one upload
     # through the public hostname cannot be larger than that.
-    storage.maxVolumes = 12;
+    storage.maxVolumes = 8;
 
     # Krater Compute (see the comment at the top). The label prefix must be
     # unique to this deployment on the Vast account.
@@ -194,8 +196,8 @@ in
 
     domain = "krater.patchworklabs.org";
     storage.domain = "krater-storage.patchworklabs.org";
-    # Staging and production share weft's 40 GB disk: 12 GB of objects each.
-    storage.maxVolumes = 12;
+    # At most 8 volumes of 1 GB, as for staging (see the disk note there).
+    storage.maxVolumes = 8;
 
     # Compute stays off until Krater's paid checks pass. The prefix is set now
     # so that turning compute on cannot use staging's.

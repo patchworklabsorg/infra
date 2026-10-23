@@ -32,8 +32,10 @@ in
     inherit (schema) apps sharedSchemas;
     # Tailnet only, as on seam. On the LAN every VLAN 90 host could reach
     # the port. On the tailnet the policy in jaspermayone/infra picks the
-    # clients. No app connects to skein yet: Krater runs only as staging, on
-    # hem. Weave uses its own database.
+    # clients. No app connects to skein yet: Krater production is off
+    # (hosts/weft/krater-production.nix), and Krater staging uses hem. Weave
+    # uses its own database. When the switch goes on, krater is in `apps` and
+    # weft connects (it needs the tailnet grant to skein:5432).
     allowedCIDRs = [ "100.64.0.0/10" ];
     firewallInterfaces = [ "tailscale0" ];
   };

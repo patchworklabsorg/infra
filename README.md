@@ -12,7 +12,7 @@ Declarative infrastructure for Patchwork Labs: every Patchwork host, the NixOS m
 | `hosts/installer.nix` | The installer ISO: NixOS minimal with the admin SSH keys on root. |
 | `bin/install-host` | Plans and applies the VM, reads its address, runs nixos-anywhere. |
 | `bin/new-quilt-staging-secrets` | Writes the two Quilt staging secrets with a new random password and `SECRET_KEY_BASE`. Prints no value. |
-| `bin/new-krater-secrets` | Writes Krater staging's two secrets with a new random database password and keys. Prints no value. |
+| `bin/new-krater-secrets` | Writes the two secrets of Krater staging or production with a new random database password and keys. Prints no value. |
 | `hosts/central-db-schema.nix` | Apps and shared schemas of the central databases. |
 | `hosts/alastor/` | Modules that `jaspermayone/infra` imports for alastor. |
 | `modules/common/` | Accounts, SSH, sudo, Tailscale, Nix. Every host imports it. `keys.nix` holds the SSH keys. |
@@ -21,7 +21,7 @@ Declarative infrastructure for Patchwork Labs: every Patchwork host, the NixOS m
 | `modules/weave/` | The Weave service module. |
 | `modules/quilt/` | The Quilt service module. |
 | `modules/krater/` | The Krater service module (portal, worker, screenshot storage; Krater Compute off by default). Exported as `nixosModules.krater`. |
-| `hosts/weft/krater.nix` | Krater staging on weft: instance settings and secrets. Krater stays off until its env file and its Weave client id exist. |
+| `hosts/weft/krater.nix` | Krater staging and production on weft: instance settings and secrets. Production is off until `hosts/weft/krater-production.nix` turns it on. |
 | `tests/` | NixOS VM tests. |
 | `secrets/` | agenix secrets. `secrets.nix` lists the recipients of each file. |
 | `ansible/` | Ansible for the Windows hosts and AD: `windows.yml`, `ad.yml`. See `ansible/README.md`. |
@@ -44,7 +44,7 @@ The lab hosts below are NixOS VMs on pve01, VLAN 90 (`patchwork.internal`). alas
 | `seam` | 357 | 10.100.90.57 | 2 GB | `patchwork_central_restricted`, prod. Tailnet only. |
 | `hem` | 358 | 10.100.90.58 | 2 GB | Both staging clusters: central on 5432, restricted on 5433. Quilt staging uses the restricted one. |
 | `batting` | 360 | 10.100.90.60 | 4 GB | Quilt prod + staging. nginx on `tailscale0:80` for alastor. |
-| `weft` | 361 | 10.100.90.61 | 4 GB | Krater staging only. nginx on `tailscale0:80` for alastor. |
+| `weft` | 361 | 10.100.90.61 | 4 GB | Krater staging, and Krater production (off until its switch). nginx on `tailscale0:80` for alastor. |
 
 The Windows hosts are managed by Ansible (`ansible/`):
 
@@ -161,9 +161,11 @@ alastor also rebuilds itself at 04:00 from `jaspermayone/infra` `main`. It uses 
 
 ## Krater on weft
 
-Only Krater staging runs today, on weft. Krater has no production instance yet. weft is its own VM, so the people who run Krater cannot read the other apps' secrets. alastor routes `krater-staging.patchworklabs.org` and `krater-staging-storage.patchworklabs.org` to nginx on weft over the tailnet (`nixosModules.edge-alastor`).
+Krater staging runs on weft. Krater production is configured on weft too, and its secrets exist, but it is off until `hosts/weft/krater-production.nix` turns it on (the checklist is in `hosts/weft/krater.nix`). weft is its own VM, so the people who run Krater cannot read the other apps' secrets. alastor routes `krater-staging.patchworklabs.org` and `krater-staging-storage.patchworklabs.org` to nginx on weft over the tailnet (`nixosModules.edge-alastor`).
 
-Krater has no registry image. `krater-build` fetches one commit of `patchworklabsorg/krater` and builds it on weft with the repo's own Dockerfile. A deploy writes the commit to `/var/lib/krater/source-rev`, then runs `systemctl start krater-build` (the running site keeps serving) and `systemctl restart krater-web`. So Krater releases do not need a change here. Only the module and its settings do.
+Krater has no registry image. `krater-build` fetches one commit of `patchworklabsorg/krater` and builds it on weft with the repo's own Dockerfile. A deploy writes the commit to `/var/lib/krater/source-rev`, then runs `systemctl start krater-build` (the running site keeps serving) and `systemctl restart krater-web`. Production is the same with `krater-prod` in place of `krater` (`/var/lib/krater-prod/source-rev`, `krater-prod-build`, `krater-prod-web`). So Krater releases do not need a change here. Only the module and its settings do.
+
+`krater-web` requires `krater-build`, so a deploy that turns an instance on waits for its first build (minutes; `TimeoutStartSec` is 45 minutes). Run the build by hand first, or deploy with `--magic-rollback false` and a long `--activation-timeout`.
 
 Krater staging's database is its schema `krater` in `patchwork_central` on hem (port 5432), like the other central apps. The module runs no Postgres of its own. weft reaches hem over the tailnet (`tag:patchwork-krater` to hem:5432). Sign-in is Weave staging.
 

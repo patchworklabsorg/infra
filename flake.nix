@@ -123,6 +123,8 @@
                       tofu fmt -check -recursive -diff $src
                       touch $out
                     '';
+                # modules/weave database roles on a real PostgreSQL 17.
+                weave-db-roles = import ./tests/weave-db-roles.nix { inherit pkgs; };
                 # ansible/filter_plugins (vyos_split_secrets for thimble).
                 ansible-filters =
                   pkgs.runCommand "ansible-filters"

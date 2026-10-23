@@ -76,11 +76,21 @@ pkgs.runCommand "weave-alastor" { } ''
   grep -F 'CN=Patchwork-Root-CA' "$chain"
   test "$(grep -c 'BEGIN CERTIFICATE' "$chain")" -eq 2
 
-  # Production: none of it.
+  # Staging has the database roles (step 1): weave_app, and the superuser
+  # keeps its password.
+  grep -F -- 'db_roles weave_audit' ${prepare "weave-staging-web"}
+  grep -F -- '-v lock_superuser=false' ${prepare "weave-staging-web"}
+  for f in ${prepare "weave-staging-web"} ${svc.weave-staging-web.serviceConfig.ExecStart} ${svc.weave-staging-worker.serviceConfig.ExecStart}; do
+    grep -F -- '--env POSTGRES_USER=weave_app ' $f
+  done
+
+  # Production: none of it, and still the superuser.
   for f in ${prepare "weave-web"} ${svc.weave-web.serviceConfig.ExecStart} ${svc.weave-worker.serviceConfig.ExecStart}; do
     absent '--add-host' $f
     absent '/run/weave/' $f
     absent 'AD_' $f
+    absent 'db_roles' $f
+    grep -F -- '--env POSTGRES_USER=weave ' $f
   done
   touch $out
 ''

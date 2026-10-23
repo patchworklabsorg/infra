@@ -17,13 +17,45 @@
 #   3. CI SSHes as weave-deploy and runs:
 #        sudo systemctl restart weave-web
 #   The web service auto-runs `bin/rails db:prepare` on start (creates +
-#   migrates the primary and queue databases, idempotent). weave-worker is
+#   migrates the primary and queue databases, idempotent), with the database
+#   roles from db-roles.sql applied before and after it when `dbRoles.enable`
+#   is set for the instance. weave-worker is
 #   `partOf` weave-web, so that one restart carries the worker onto the same
 #   image — see the comment on the worker unit for why it has to.
 #
 # Env file (weave-env.age) must contain:
 #   RAILS_MASTER_KEY=...   # decrypts config/credentials (Resend + Slack + more)
-#   POSTGRES_PASSWORD=...  # used by both the Rails app and the postgres init
+#   POSTGRES_PASSWORD=...  # with dbRoles: the password of weave_app, the app's role
+#
+# Database roles (`dbRoles`, per instance; db-roles.sql, db-roles-database.sql):
+# the app signs in as weave_app, which is not a superuser. The console audit
+# tables belong to weave_audit, so a Rails console or SQL console cannot delete
+# or rewrite its own records. Without `dbRoles.enable`, the instance signs in
+# as the superuser `weave`, as before.
+#
+#   Rollout, one instance at a time (staging first):
+#     1. `dbRoles.enable = true`. Deploy. Check that web and worker run and
+#        that sign-in works. `weave` keeps its password (POSTGRES_PASSWORD),
+#        so a deploy-rs rollback to the old units still signs in.
+#     2. `dbRoles.lockSuperuser = true`. Deploy with
+#        `--auto-rollback false --magic-rollback false`. `weave` then has no
+#        password and works only over the socket inside the db container.
+#        Until this step, the app knows a superuser password, so the audit
+#        lock is not complete.
+#
+#   A migration that changes an audit table (console1984_*, audits1984_*,
+#   console_access_requests), changes its rows, or adds a foreign key to one
+#   fails as weave_app. For the deploy that brings it, create the flag file.
+#   weave_app then owns the audit tables during that one db:prepare, with all
+#   rights. The script removes the flag before db:prepare and takes the tables
+#   back after it, also when db:prepare fails:
+#     touch /var/lib/weave/allow-audit-migration   # staging: /var/lib/weave-staging
+#     systemctl restart weave-web
+#   audits1984_audit_versions stays with weave_audit, also then.
+#
+#   To roll back after step 2, first give `weave` the POSTGRES_PASSWORD value
+#   again (psql asks for it), or db:prepare, web and worker cannot sign in:
+#     docker exec -it weave-db psql -U weave -d postgres -c '\password weave'
 #
 # Staging (optional, `staging.enable`) is a second, fully separate instance
 # rendered by the same `mkInstance` function below: units weave-staging-*,
@@ -73,6 +105,7 @@ let
   #   extraEnv         extra container env for db:prepare, web and worker
   #   extraHosts       extra /etc/hosts entries for the web and worker
   #   volumes          extra bind mounts for the web and worker
+  #   dbRoles          { enable, lockSuperuser }: see the header
   mkInstance =
     {
       name,
@@ -84,9 +117,52 @@ let
       extraEnv ? { },
       extraHosts ? { },
       volumes ? [ ],
+      dbRoles ? {
+        enable = false;
+        lockSuperuser = false;
+      },
     }:
     let
       network = name;
+      # The role the app signs in as.
+      dbUser = if dbRoles.enable then "weave_app" else "weave";
+      # Lines of the db:prepare script before and after db:prepare. Empty
+      # without dbRoles, so the script stays as it was.
+      rolesBefore = lib.optionalString dbRoles.enable ''
+        # $1 is the owner of the audit tables for this run.
+        db_roles() {
+          # --env-file passes the current POSTGRES_PASSWORD, not the one
+          # the db container started with.
+          ${dockerBin} exec -i --env-file ${environmentFile} ${name}-db \
+            psql -U weave -d postgres -X -q -v ON_ERROR_STOP=1 \
+            -v lock_superuser=${lib.boolToString dbRoles.lockSuperuser} -f - < ${./db-roles.sql}
+          dbs=$(${dockerBin} exec ${name}-db psql -U weave -d postgres -X -At -v ON_ERROR_STOP=1 -c \
+              "SELECT datname FROM pg_database WHERE datname IN ('weave_production', 'weave_production_queue')")
+          for db in $dbs; do
+            ${dockerBin} exec -i ${name}-db \
+              psql -U weave -d "$db" -X -q -v ON_ERROR_STOP=1 -v audit_owner="$1" \
+              -f - < ${./db-roles-database.sql}
+          done
+        }
+        # One start may give the audit tables to weave_app, so that a
+        # migration can change them. See the module header. The flag goes
+        # first, and the trap takes the tables back if anything fails.
+        AUDIT_MIGRATION_FLAG=${stateDir}/allow-audit-migration
+        if [ -e "$AUDIT_MIGRATION_FLAG" ]; then
+          rm -f "$AUDIT_MIGRATION_FLAG"
+          trap 'db_roles weave_audit' EXIT
+          echo "Giving the audit tables to weave_app for this db:prepare..."
+          db_roles weave_app
+        else
+          echo "Applying database roles..."
+          db_roles weave_audit
+        fi
+      '';
+      rolesAfter = lib.optionalString dbRoles.enable ''
+        trap - EXIT
+        echo "Applying database roles to new tables..."
+        db_roles weave_audit
+      '';
       stateDir = "/var/lib/${name}";
       extraEnvArgs = envArgs extraEnv;
       # Web and worker only. db:prepare does not talk to AD, so it does not
@@ -238,6 +314,9 @@ let
             "-${dockerBin} rm ${name}-web"
 
             # Wait for postgres, then run db:prepare (create + migrate, idempotent).
+            # With dbRoles, the roles are applied before db:prepare, so it can
+            # run as weave_app, and again after it, so a new audit table moves
+            # to weave_audit at once.
             (pkgs.writeShellScript "${name}-db-prepare" ''
               set -e
               IMAGE=$(cat /run/${name}-image)
@@ -246,7 +325,7 @@ let
                   pg_isready -U weave -h localhost -q; do
                 sleep 2
               done
-              echo "Running db:prepare..."
+              ${rolesBefore}echo "Running db:prepare..."
               ${dockerBin} run --rm \
                 --network ${network} \
                 --env-file ${environmentFile} \
@@ -254,10 +333,10 @@ let
                 --env DB_HOST=${name}-db \
                 --env DB_PORT=5432 \
                 --env POSTGRES_DB=weave_production \
-                --env POSTGRES_USER=weave \
+                --env POSTGRES_USER=${dbUser} \
                 ${extraEnvArgs}"$IMAGE" \
                 bin/rails db:prepare
-            '')
+              ${rolesAfter}'')
           ];
 
           ExecStart = pkgs.writeShellScript "${name}-web-start" ''
@@ -271,7 +350,7 @@ let
               --env DB_HOST=${name}-db \
               --env DB_PORT=5432 \
               --env POSTGRES_DB=weave_production \
-              --env POSTGRES_USER=weave \
+              --env POSTGRES_USER=${dbUser} \
               --env REDIS_URL=redis://${name}-redis:6379/0 \
               --env REDIS_CACHE_URL=redis://${name}-redis:6379/1 \
               --env SOLID_QUEUE_IN_PUMA=true \
@@ -367,7 +446,7 @@ let
               --env DB_HOST=${name}-db \
               --env DB_PORT=5432 \
               --env POSTGRES_DB=weave_production \
-              --env POSTGRES_USER=weave \
+              --env POSTGRES_USER=${dbUser} \
               --env REDIS_URL=redis://${name}-redis:6379/0 \
               --env REDIS_CACHE_URL=redis://${name}-redis:6379/1 \
               --env RAILS_LOG_TO_STDOUT=true \
@@ -414,6 +493,19 @@ in
         Path to an env file (an agenix secret) containing:
           RAILS_MASTER_KEY=...
           POSTGRES_PASSWORD=...
+      '';
+    };
+
+    dbRoles = {
+      enable = lib.mkEnableOption ''
+        database roles for this instance: the app signs in as weave_app, not
+        the superuser, and weave_audit owns the console audit tables (see the
+        module header)
+      '';
+      lockSuperuser = lib.mkEnableOption ''
+        no password for the superuser `weave` (step 2 of the rollout in the
+        module header). Needs `enable`. Deploy it with
+        `--auto-rollback false --magic-rollback false`
       '';
     };
 
@@ -541,6 +633,19 @@ in
         '';
       };
 
+      dbRoles = {
+        enable = lib.mkEnableOption ''
+          database roles for this instance: the app signs in as weave_app, not
+          the superuser, and weave_audit owns the console audit tables (see the
+          module header)
+        '';
+        lockSuperuser = lib.mkEnableOption ''
+          no password for the superuser `weave` (step 2 of the rollout in the
+          module header). Needs `enable`. Deploy it with
+          `--auto-rollback false --magic-rollback false`
+        '';
+      };
+
       volumes = lib.mkOption {
         type = lib.types.listOf lib.types.str;
         default = [ ];
@@ -556,6 +661,16 @@ in
   config = lib.mkIf cfg.enable (
     lib.mkMerge [
       {
+        assertions = [
+          {
+            assertion = !cfg.dbRoles.lockSuperuser || cfg.dbRoles.enable;
+            message = "patchwork.services.weave.dbRoles.lockSuperuser needs dbRoles.enable.";
+          }
+          {
+            assertion = !cfg.staging.dbRoles.lockSuperuser || cfg.staging.dbRoles.enable;
+            message = "patchwork.services.weave.staging.dbRoles.lockSuperuser needs staging.dbRoles.enable.";
+          }
+        ];
 
         # ── CI deploy user ────────────────────────────────────────────────────────
         users.users.weave-deploy = lib.mkIf (cfg.deployAuthorizedKeys != [ ]) {
@@ -654,6 +769,7 @@ in
           image
           environmentFile
           extraEnv
+          dbRoles
           ;
         storageVolume = "weave_storage";
       })
@@ -668,6 +784,7 @@ in
           environmentFile
           extraHosts
           volumes
+          dbRoles
           ;
         storageVolume = "weave_staging_storage";
         extraEnv = {

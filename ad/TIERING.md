@@ -150,6 +150,7 @@ A Proxmox administrator can read the disk of a DC VM and take `ntds.dit`. The Pr
 
 - Delegated rights below Domain Admins: `tier1-admins` (computer objects in `Servers` and `Computers`, and the helpdesk rights) and `tier2-helpdesk` (reset, unlock, change at next logon in the people OUs). Both are empty. No group except Domain Admins has rights on `Admin-Accounts` or `Servers/Tier0`. See "Delegation" in `README.md`.
 - `infra` gives the daily account sudo on the NixOS hosts. That is a Tier 2 account that administers Tier 1. Accept it for now. The NixOS hosts hold no Tier 0 credentials, and no Tier 0 account is in `infra`. Later, add a Tier 1 account (`mayonej.t1`) if more people get sudo.
+- `weft-admins` gives `adam.sidwa`, a Tier 2 daily account, sudo on weft only (a Tier 1 host with the Krater secrets). Accepted for now: weft holds no Tier 0 credentials and no other app's secrets. Require a Tier 1 account for him when he gets sudo on a second host, when weft holds secrets of another app, or when `tier1-admins` gets its first member.
 - `Tier0-Admin-Protection` denies Domain Admins local and RDP logon on Staff-Computers. Keep it. Link it to the new `Computers` OU at Migrate (Migrate copies links). Add a second GPO for member servers that are Tier 1, when such Windows servers exist.
 
 ### Weave and alastor: Tier 1 (sensitive)

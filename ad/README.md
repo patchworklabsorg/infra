@@ -253,6 +253,23 @@ Build finds a group by its name, then by a former name. If it finds the group un
 
 Add the host to `flake.nix`, and add its name to `linuxHosts`. `nix flake check` fails until both lists match. Build then makes `lnx-<host>-users` and `lnx-<host>-admins`, with `infra` in both.
 
+## Give a team one lab host
+
+To let a team log in to one host only, make a role group for that host (for example `weft-admins`) and add it to `hostGroupMembers` for that host. Membership in `admins` is root on that host, so use a group for this purpose only, not a project group. The kind is the end of the template name: `users` for `lnx-<host>-users`, `admins` for `lnx-<host>-admins`. `infra` stays in both.
+
+```json
+"hostGroupMembers": {
+  "weft": { "users": ["weft-admins"], "admins": ["weft-admins"] }
+}
+```
+
+- Members of `lnx-<host>-users` can log in to that host over sshd, by SSH key only. The key comes from the person's `altSecurityIdentities` (`SSHKey:<key>`, `modules/ad-join`).
+- Members of `lnx-<host>-admins` get sudo with their AD password. On an app host, sudo and the docker group are root, so this gives every secret on that host.
+- The account must be enabled, with a password set.
+- The tailnet policy (jaspermayone/infra `tailscale/policy.hujson`) must also let the person reach the host on port 2222.
+- `nix flake check` refuses a host that is not in `linuxHosts`, a kind that is not a template, a value that is not a list, duplicates, a member that is not a role group, and a privileged group (tier 0, `tier1-admins`, `tier2-helpdesk`, `password-reset`, `server-computer-admin`, `privileged.groups`). Build reports an entry that matches no host or kind.
+- Apply it with Build (`.\converge.ps1 -WhatIf`, then `.\converge.ps1`, see "Run it"). `ansible/ad.yml -t host-groups` only creates the groups and sets no members. A host's sssd cache can keep the old membership: run `sudo sss_cache -E` on the host.
+
 ## Retire a lab host
 
 Move its name from `linuxHosts` to `retiredHosts`, and remove it from `flake.nix`. Build deletes its `lnx-<host>-users` and `lnx-<host>-admins` groups. Delete its computer object in AD by hand.

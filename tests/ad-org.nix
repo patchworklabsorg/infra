@@ -287,6 +287,20 @@ let
   # users, groups and computers, and AD compares it without case, so a group
   # name must not match a user, a host, a built-in group or another group.
   lower = map lib.toLower;
+  # Groups that must never get root on a lab host through hostGroupMembers:
+  # every tier 0 group, the tier 1 and helpdesk groups, the delegated access
+  # groups, and the groups in "privileged".
+  privilegedForHosts =
+    [
+      org.privileged.tier0Group
+      "tier1-admins"
+      "tier2-helpdesk"
+      "password-reset"
+      "server-computer-admin"
+    ]
+    ++ org.privileged.groups
+    ++ builtins.filter (n: lib.hasPrefix "tier0" n) (map (g: g.name) (org.roleGroups ++ org.resourceGroups))
+    ++ (if tiering == null then [ ] else [ (tiering.jit.group or org.privileged.tier0Group) ]);
   managedGroups = org.roleGroups ++ org.resourceGroups;
   managedNames = map (g: g.name) managedGroups;
   hostNames =
@@ -492,6 +506,38 @@ let
         builtins.filter (m: lib.elem m sams && !lib.elem m (map (u: u.sam) people)) g.members
       )
     ) (builtins.filter (g: g.allowUserMembers or false) org.resourceGroups)
+    # hostGroupMembers.<host>.<kind>: extra members of one host's
+    # lnx-<host>-<kind> group. A list of plain role groups, no duplicates,
+    # and never a privileged group: lnx-<host>-admins is root on that host.
+    ++ lib.concatLists (
+      lib.mapAttrsToList (
+        h: kinds:
+        lib.optional (!lib.elem h org.linuxHosts) "hostGroupMembers: ${h} is not in linuxHosts"
+        ++ lib.optional (!builtins.isAttrs kinds) "hostGroupMembers.${h} must be an object"
+        ++ lib.concatLists (
+          lib.mapAttrsToList (
+            kind: members:
+            lib.optional (
+              !lib.elem "lnx-{host}-${kind}" (map (t: t.name) org.hostGroups)
+            ) "hostGroupMembers.${h}: ${kind} is not a hostGroups kind"
+            ++ (
+              if !builtins.isList members then
+                [ "hostGroupMembers.${h}.${kind} must be a list" ]
+              else
+                lib.optional (
+                  dupes members != [ ]
+                ) "hostGroupMembers.${h}.${kind} has duplicates: ${toString (dupes members)}"
+                ++ map (m: "hostGroupMembers.${h}.${kind}: member ${m} is not a role group") (
+                  builtins.filter (m: !lib.elem m roleNames) members
+                )
+                ++ map (m: "hostGroupMembers.${h}.${kind}: ${m} is a privileged group") (
+                  builtins.filter (m: lib.elem (lib.toLower m) (lower privilegedForHosts)) members
+                )
+            )
+          ) (if builtins.isAttrs kinds then kinds else { })
+        )
+      ) (org.hostGroupMembers or { })
+    )
     ++ map (h: "${h} is in both linuxHosts and retiredHosts") (
       builtins.filter (h: lib.elem h org.linuxHosts) org.retiredHosts
     )

@@ -375,18 +375,46 @@ function Get-AdminSams {
 
 $builtinSid = "$($domain.DomainSID)-500"
 
-# Every resource group, with {host} expanded for each Linux host.
+# Every resource group, with {host} expanded for each Linux host. A host can
+# add role groups to its own groups with hostGroupMembers.<host>.<kind>, where
+# <kind> is the end of the template name (lnx-{host}-<kind>). The template
+# members stay.
 function Get-ResourceGroups {
     foreach ($h in $data.linuxHosts) {
+        # Strict mode: read optional properties through PSObject.Properties.
+        $all = $data.PSObject.Properties['hostGroupMembers']
+        $extra = if ($all) { $all.Value.PSObject.Properties[$h] }
         foreach ($t in $data.hostGroups) {
+            $kind = $t.name.Replace('lnx-{host}-', '')
+            $list = if ($extra) { $extra.Value.PSObject.Properties[$kind] }
+            $more = if ($list) { @($list.Value) } else { @() }
             [pscustomobject]@{
                 name        = $t.name.Replace('{host}', $h)
                 description = $t.description.Replace('{host}', $h)
-                members     = @($t.members)
+                members     = @(@($t.members) + @($more) | Select-Object -Unique)
             }
         }
     }
     foreach ($g in $data.resourceGroups) { $g }
+}
+
+# Reports a hostGroupMembers host that is not in linuxHosts, or a kind that is
+# not a hostGroups template. Such an entry gives nobody access.
+function Test-HostGroupMembers {
+    $all = $data.PSObject.Properties['hostGroupMembers']
+    if (-not $all) { return }
+    $kinds = @($data.hostGroups | ForEach-Object { $_.name.Replace('lnx-{host}-', '') })
+    foreach ($hp in $all.Value.PSObject.Properties) {
+        if ($data.linuxHosts -notcontains $hp.Name) {
+            Write-Report "hostGroupMembers.$($hp.Name): $($hp.Name) is not in linuxHosts. Nobody gets access from it."
+            continue
+        }
+        foreach ($kp in $hp.Value.PSObject.Properties) {
+            if ($kinds -notcontains $kp.Name) {
+                Write-Report "hostGroupMembers.$($hp.Name).$($kp.Name): $($kp.Name) is not a hostGroups kind ($($kinds -join ', ')). Nobody gets access from it."
+            }
+        }
+    }
 }
 
 # --- Build: pieces -----------------------------------------------------------
@@ -1539,6 +1567,7 @@ function Invoke-Build {
         if ($script:jitActive -and $g.name -eq $jit.group) { continue }
         Sync-Members $g.name @($g.members)
     }
+    Test-HostGroupMembers
     foreach ($g in Get-ResourceGroups) { Sync-Members $g.name @($g.members) }
     Remove-RetiredHostGroups
 

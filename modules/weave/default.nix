@@ -53,6 +53,21 @@
 #     systemctl restart weave-web
 #   audits1984_audit_versions stays with weave_audit, also then.
 #
+#   The permanent log of privileged attributes (privileged_attribute_changes,
+#   docs/KYC.md in the Weave repo) is an audit table too. Weave's migration
+#   makes it as weave_app, and the run after db:prepare gives it and its
+#   trigger functions (log_privileged_attribute_changes,
+#   refuse_privileged_attribute_change_edits, log_user_role_changes,
+#   refuse_user_role_edits) to weave_audit. weave_app may then only read the
+#   log and add rows. An event trigger keeps the capture triggers on users and
+#   user_roles (and the user_roles guards), which weave_app owns: a DDL command
+#   that drops, disables or changes one fails, also for the superuser. So a
+#   migration that changes the log table, one of these functions or one of
+#   these triggers also needs the flag file. The flagged run turns the event
+#   trigger off, and the run after db:prepare pins the new trigger
+#   definitions and turns it on again. If the event trigger blocks a deploy,
+#   the flag file is also the way out.
+#
 #   To roll back after step 2, first give `weave` the POSTGRES_PASSWORD value
 #   again (psql asks for it), or db:prepare, web and worker cannot sign in:
 #     docker exec -it weave-db psql -U weave -d postgres -c '\password weave'

@@ -12,6 +12,18 @@
 \endif
 SELECT set_config('weave.audit_owner', :'audit_owner', false) AS audit_owner_set \gset
 
+-- The event trigger at the end of this file stops all changes to the capture
+-- triggers of the permanent log. A flagged run turns it off first, so that the
+-- migration can change them. The run after the migration turns it on again.
+SELECT EXISTS (SELECT FROM pg_event_trigger WHERE evtname = 'weave_audit_keep_capture_triggers') AS has_capture_guard,
+       :'audit_owner' = 'weave_audit' AS audit_locked \gset
+\if :has_capture_guard
+  \if :audit_locked
+  \else
+    ALTER EVENT TRIGGER weave_audit_keep_capture_triggers DISABLE;
+  \endif
+\endif
+
 -- weave_app may connect, and nothing more at the database level: no CREATE
 -- (no new schema that could put a copy of an audit table in front of public)
 -- and no TEMPORARY (no temp table that could do the same).
@@ -50,9 +62,20 @@ DO $$
 DECLARE
   -- audits1984_audit_versions is not in this list: it always belongs to
   -- weave_audit (see above).
+  -- privileged_attribute_changes is Weave's permanent log of privileged
+  -- attributes (docs/KYC.md in the Weave repo). It has no UPDATE columns:
+  -- weave_app may only read it and add rows, as its capture triggers do.
   audit_tables text[] := ARRAY[
     'console1984_users', 'console1984_sessions', 'console1984_commands',
-    'console1984_sensitive_accesses', 'audits1984_audits', 'console_access_requests'
+    'console1984_sensitive_accesses', 'audits1984_audits', 'console_access_requests',
+    'privileged_attribute_changes'
+  ];
+  -- The trigger functions of the permanent log, made by Weave's migrations.
+  -- They belong to the owner of the audit tables, so weave_app cannot replace
+  -- them. They stay SECURITY INVOKER: the log row records CURRENT_USER.
+  log_functions text[] := ARRAY[
+    'log_privileged_attribute_changes', 'refuse_privileged_attribute_change_edits',
+    'log_user_role_changes', 'refuse_user_role_edits'
   ];
   locked boolean := current_setting('weave.audit_owner') = 'weave_audit';
   -- The columns the app changes in an audit table. Nothing else can change.
@@ -84,7 +107,7 @@ BEGIN
     WHERE n.nspname = 'public' AND c.relkind IN ('r', 'p', 'v', 'm', 'f', 'S')
       AND NOT EXISTS (SELECT FROM pg_depend d WHERE d.objid = c.oid AND d.deptype IN ('a', 'i', 'e'))
   LOOP
-    IF r.relname = 'audits1984_audit_versions' THEN
+    IF r.relname IN ('audits1984_audit_versions', 'weave_audit_pinned_capture_triggers') THEN
       CONTINUE;
     ELSIF r.relname = ANY (audit_tables) THEN
       EXECUTE format('ALTER TABLE public.%I OWNER TO %I', r.relname, current_setting('weave.audit_owner'));
@@ -102,7 +125,8 @@ BEGIN
   END LOOP;
 
   -- Enums, domains and functions that are not part of an extension. The
-  -- weave_audit_* functions below stay with weave_audit.
+  -- weave_audit_* functions below stay with weave_audit, and the log
+  -- functions go to the owner of the audit tables.
   FOR r IN
     SELECT t.oid FROM pg_type t JOIN pg_namespace n ON n.oid = t.typnamespace
     WHERE n.nspname = 'public' AND t.typtype IN ('e', 'd')
@@ -111,11 +135,15 @@ BEGIN
     EXECUTE format('ALTER TYPE %s OWNER TO weave_app', r.oid::regtype);
   END LOOP;
   FOR r IN
-    SELECT p.oid FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace
+    SELECT p.oid, p.proname, p.pronargs FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace
     WHERE n.nspname = 'public' AND p.proname NOT LIKE 'weave\_audit\_%'
       AND NOT EXISTS (SELECT FROM pg_depend d WHERE d.objid = p.oid AND d.deptype = 'e')
   LOOP
-    EXECUTE format('ALTER ROUTINE %s OWNER TO weave_app', r.oid::regprocedure);
+    IF r.proname = ANY (log_functions) AND r.pronargs = 0 THEN
+      EXECUTE format('ALTER ROUTINE %s OWNER TO %I', r.oid::regprocedure, current_setting('weave.audit_owner'));
+    ELSE
+      EXECUTE format('ALTER ROUTINE %s OWNER TO weave_app', r.oid::regprocedure);
+    END IF;
   END LOOP;
 
   -- weave_app may only read the version table.
@@ -260,4 +288,95 @@ SELECT to_regclass('public.console1984_commands') IS NOT NULL AS has_commands,
     FOR EACH ROW EXECUTE FUNCTION public.weave_audit_guard_audit();
   CREATE OR REPLACE TRIGGER weave_audit_keep_version BEFORE INSERT OR UPDATE ON public.audits1984_audits
     FOR EACH ROW EXECUTE FUNCTION public.weave_audit_keep_audit_version();
+\endif
+
+-- The capture triggers of the permanent log are on users and user_roles,
+-- which weave_app owns. An owner can disable, drop or replace a trigger on its
+-- table, so ownership alone does not keep them. An event trigger does: after
+-- each DDL command in the primary database (by any role), it checks that the
+-- pinned triggers still exist, are enabled and have the same definition, and
+-- otherwise refuses the command. The user_roles guards are pinned too: with
+-- them off, a DELETE of a user_roles row would end a role with no log row.
+--
+-- Each locked run pins the triggers that exist then. A flagged run turns the
+-- event trigger off (top of this file) and does not pin, so the migration can
+-- change the triggers. The run after it pins the new definitions.
+\if :is_primary
+  CREATE TABLE IF NOT EXISTS public.weave_audit_pinned_capture_triggers (
+    table_name text NOT NULL,
+    trigger_name text NOT NULL,
+    definition text NOT NULL
+  );
+  ALTER TABLE public.weave_audit_pinned_capture_triggers OWNER TO weave_audit;
+  REVOKE ALL ON TABLE public.weave_audit_pinned_capture_triggers FROM weave_app, PUBLIC;
+  GRANT SELECT ON TABLE public.weave_audit_pinned_capture_triggers TO weave_app;
+
+  -- The enabled capture triggers and their definitions. The fixed
+  -- search_path keeps pg_get_triggerdef the same for every caller.
+  CREATE OR REPLACE FUNCTION public.weave_audit_capture_triggers()
+  RETURNS TABLE (table_name text, trigger_name text, definition text)
+  LANGUAGE sql STABLE SET search_path = pg_catalog AS $fn$
+    SELECT c.relname::text, t.tgname::text, pg_get_triggerdef(t.oid)
+    FROM pg_trigger t
+    JOIN pg_class c ON c.oid = t.tgrelid
+    JOIN pg_namespace n ON n.oid = c.relnamespace
+    WHERE n.nspname = 'public' AND t.tgenabled IN ('O', 'A')
+      AND (c.relname::text, t.tgname::text) IN (
+        ('users', 'log_privileged_attribute_changes'),
+        ('user_roles', 'log_user_role_changes'),
+        ('user_roles', 'user_roles_append_only'),
+        ('user_roles', 'user_roles_no_truncate')
+      )
+  $fn$;
+
+  CREATE OR REPLACE FUNCTION public.weave_audit_keep_capture_triggers() RETURNS event_trigger
+  LANGUAGE plpgsql SET search_path = pg_catalog AS $fn$
+  BEGIN
+    IF EXISTS (
+      SELECT table_name, trigger_name, definition FROM public.weave_audit_pinned_capture_triggers
+      EXCEPT
+      SELECT table_name, trigger_name, definition FROM public.weave_audit_capture_triggers()
+    ) THEN
+      RAISE EXCEPTION 'the capture triggers of privileged_attribute_changes cannot change'
+        USING HINT = 'A migration that changes them needs allow-audit-migration (modules/weave/default.nix in the infra repo).';
+    END IF;
+  END $fn$;
+
+  ALTER FUNCTION public.weave_audit_capture_triggers() OWNER TO weave_audit;
+  ALTER FUNCTION public.weave_audit_keep_capture_triggers() OWNER TO weave_audit;
+
+  \if :audit_locked
+    BEGIN;
+    DELETE FROM public.weave_audit_pinned_capture_triggers;
+    INSERT INTO public.weave_audit_pinned_capture_triggers SELECT * FROM public.weave_audit_capture_triggers();
+    SELECT NOT EXISTS (SELECT FROM pg_event_trigger WHERE evtname = 'weave_audit_keep_capture_triggers') AS create_capture_guard \gset
+    \if :create_capture_guard
+      CREATE EVENT TRIGGER weave_audit_keep_capture_triggers ON ddl_command_end
+        EXECUTE FUNCTION public.weave_audit_keep_capture_triggers();
+    \endif
+    ALTER EVENT TRIGGER weave_audit_keep_capture_triggers ENABLE;
+    COMMIT;
+
+    -- With the log in place, every capture trigger must be there to pin.
+    DO $$
+    DECLARE missing text;
+    BEGIN
+      IF to_regclass('public.privileged_attribute_changes') IS NOT NULL THEN
+        SELECT string_agg(want.t || '.' || want.g, ', ') INTO missing
+        FROM (VALUES ('users', 'log_privileged_attribute_changes')) AS want (t, g)
+        WHERE NOT EXISTS (SELECT FROM public.weave_audit_pinned_capture_triggers p
+                          WHERE p.table_name = want.t AND p.trigger_name = want.g);
+        IF to_regclass('public.user_roles') IS NOT NULL THEN
+          SELECT concat_ws(', ', missing, string_agg(want.t || '.' || want.g, ', ')) INTO missing
+          FROM (VALUES ('user_roles', 'log_user_role_changes'), ('user_roles', 'user_roles_append_only'),
+                       ('user_roles', 'user_roles_no_truncate')) AS want (t, g)
+          WHERE NOT EXISTS (SELECT FROM public.weave_audit_pinned_capture_triggers p
+                            WHERE p.table_name = want.t AND p.trigger_name = want.g);
+        END IF;
+        IF missing <> '' THEN
+          RAISE WARNING 'permanent log: these triggers are missing or disabled, and are not pinned: %', missing;
+        END IF;
+      END IF;
+    END $$;
+  \endif
 \endif

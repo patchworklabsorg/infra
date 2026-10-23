@@ -53,6 +53,35 @@
 #     systemctl restart weave-web
 #   audits1984_audit_versions stays with weave_audit, also then.
 #
+#   The permanent log of privileged attributes (privileged_attribute_changes,
+#   docs/KYC.md in the Weave repo) is an audit table too. Weave's migration
+#   makes it as weave_app, and the run after db:prepare gives it and its
+#   trigger functions (log_privileged_attribute_changes,
+#   refuse_privileged_attribute_change_edits, log_user_role_changes,
+#   refuse_user_role_edits) to weave_audit. weave_app may then only read the
+#   log and add rows. weave_app owns users and user_roles, so an event trigger
+#   pins every trigger on them (the capture triggers, the user_roles guards
+#   and any other, but not the internal foreign key triggers). A DDL command
+#   that drops, disables, changes or adds a trigger there fails. Other DDL on
+#   them (columns, indexes, constraints) works. So a migration that changes
+#   the log table, one of these functions or any trigger on users or
+#   user_roles also needs the flag file. The flagged run turns the event
+#   trigger off, and the run after db:prepare pins the new triggers and turns
+#   it on again. If the event trigger blocks a deploy, the flag file is also
+#   the way out.
+#
+#   The event trigger also stops the superuser in a normal session. But a
+#   superuser can run `SET event_triggers = off` and then change the
+#   triggers. The next start then stops before db:prepare with an error that
+#   names the changed triggers. Check them, then use the flag file to pin
+#   them as they are.
+#
+#   Deploy order: deploy the permanent log part of this module only after
+#   every Weave branch with a log migration (20261013140100 makes the log,
+#   20261020130000 changes it) is merged and staging has run all of them.
+#   After a normal start pins the triggers, a later log migration fails
+#   without the flag file.
+#
 #   To roll back after step 2, first give `weave` the POSTGRES_PASSWORD value
 #   again (psql asks for it), or db:prepare, web and worker cannot sign in:
 #     docker exec -it weave-db psql -U weave -d postgres -c '\password weave'

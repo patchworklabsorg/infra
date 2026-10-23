@@ -1,8 +1,8 @@
-# Evaluates weft (hosts/weft) with Krater staging turned on and checks the
-# units, the nginx routes and the alastor edge routes. Krater stays off on the
-# real weft until its env file and its Weave client id exist, so this test
-# turns it on with a placeholder id. No VM: the containers need GitHub, hem
-# and the Krater image.
+# Evaluates weft (hosts/weft) with Krater staging on and checks the units,
+# the nginx routes and the alastor edge routes. Also checks that Krater
+# production is off by default (hosts/weft/krater-production.nix), and turns
+# it on with a placeholder id to check its units and routes. No VM: the
+# containers need GitHub, hem and the Krater image.
 #   nix build .#checks.<system>.krater-weft
 {
   pkgs,
@@ -26,11 +26,24 @@ let
         }
       ];
     }).config;
-  edge =
+  prod =
+    (weft.extendModules {
+      modules = [
+        {
+          patchwork.services.krater-production = {
+            enable = lib.mkForce true;
+            weave.clientId = lib.mkForce "test-prod-client-id";
+          };
+        }
+      ];
+    }).config;
+  mkEdge =
+    extra:
     (nixosSystem {
       inherit (pkgs.stdenv.hostPlatform) system;
       modules = [
         edgeModule
+        extra
         {
           boot.loader.grub.enable = false;
           fileSystems."/" = {
@@ -41,7 +54,12 @@ let
         }
       ];
     }).config;
+  edge = mkEdge { };
+  edgeProd = mkEdge { patchwork.edge.kraterProduction = true; };
+  edgeProdToml = edgeProd.environment.etc."traefik/conf.d/patchwork.toml".source;
   units = on.systemd.units;
+  pvc = prod.systemd.services;
+  pvhosts = prod.services.nginx.virtualHosts;
   svc = on.systemd.services;
   vhosts = on.services.nginx.virtualHosts;
   edgeToml = edge.environment.etc."traefik/conf.d/patchwork.toml".source;
@@ -80,6 +98,28 @@ let
     "staging label prefix" = on.patchwork.services.krater.compute.labelPrefix == "krater-staging-";
     "storage volume limit" = on.patchwork.services.krater.storage.maxVolumes == 12;
     "krater is not on skein" = !(skein.config.patchwork.centralDb.apps ? krater);
+    "production is off by default" = !off.patchwork.services.krater-production.enable;
+    "no production unit by default" =
+      !(off.systemd.units ? "krater-prod-web.service") && !(units ? "krater-prod-web.service");
+    "no production vhost by default" = !(vhosts ? krater-prod);
+    "no production secret by default" = !(off.age.secrets ? krater-env);
+    "production units when on" =
+      prod.systemd.units ? "krater-prod-web.service"
+      && prod.systemd.units ? "krater-prod-worker.service"
+      && prod.systemd.units ? "krater-prod-storage.service"
+      && prod.systemd.units ? "krater-prod-build.service"
+      && prod.systemd.units ? "krater-prod-network.service";
+    "production vhosts when on" =
+      pvhosts.krater-prod.serverName == "krater.patchworklabs.org"
+      && pvhosts.krater-prod.locations."/".proxyPass == "http://127.0.0.1:3012"
+      && pvhosts.krater-prod-storage.serverName == "krater-storage.patchworklabs.org"
+      && pvhosts.krater-prod-storage.locations."/".proxyPass == "http://127.0.0.1:3013";
+    "production uses weave production" =
+      prod.patchwork.services.krater-production.weave.issuer == "https://weave.patchworklabs.org";
+    "production label prefix" =
+      prod.patchwork.services.krater-production.compute.labelPrefix == "krater-prod-";
+    "staging keeps weave staging" =
+      prod.patchwork.services.krater.weave.issuer == "https://weave-staging.patchworklabs.org";
     "krater is on hem" = hem.config.containers.central-staging.config.patchwork.centralDb.apps ? krater;
   };
   failed = lib.attrNames (lib.filterAttrs (_: ok: !ok) checks);
@@ -124,6 +164,25 @@ pkgs.runCommand "krater-weft" { } ''
   grep -F 'Host(`krater-staging.patchworklabs.org`)' ${edgeToml}
   grep -F 'Host(`krater-staging-storage.patchworklabs.org`)' ${edgeToml}
   absent 'Host(`krater.patchworklabs.org`)' ${edgeToml}
+  absent 'Host(`krater-storage.patchworklabs.org`)' ${edgeToml}
+
+  # Production: its own network, image repository, state and ports, and skein.
+  skein="--add-host skein.wildebeest-stargazer.ts.net:100.109.223.51"
+  grep -F -- "$skein" ${pvc.krater-prod-web.serviceConfig.ExecStart}
+  absent "hem.wildebeest-stargazer.ts.net" ${pvc.krater-prod-web.serviceConfig.ExecStart}
+  grep -F -- '--network krater-prod ' ${pvc.krater-prod-web.serviceConfig.ExecStart}
+  grep -F -- '--publish 127.0.0.1:3012:8000' ${pvc.krater-prod-web.serviceConfig.ExecStart}
+  grep -F -- '--publish 127.0.0.1:3013:8333' ${pvc.krater-prod-storage.serviceConfig.ExecStart}
+  grep -F -- '/var/lib/krater-prod/storage:/data' ${pvc.krater-prod-storage.serviceConfig.ExecStart}
+  grep -F 'docker image ls krater-prod ' ${pvc.krater-prod-build.serviceConfig.ExecStart}
+  # With the switch on, alastor routes production's two names to weft too.
+  grep -F 'Host(`krater.patchworklabs.org`)' ${edgeProdToml}
+  grep -F 'Host(`krater-storage.patchworklabs.org`)' ${edgeProdToml}
+  grep -F 'Host(`krater-staging.patchworklabs.org`)' ${edgeProdToml}
+
+  # Staging's build cleans only its own repository, so it never removes a
+  # production image.
+  grep -F 'docker image ls krater ' ${svc.krater-build.serviceConfig.ExecStart}
   grep -F 'http://weft.wildebeest-stargazer.ts.net' ${edgeToml}
   touch $out
 ''

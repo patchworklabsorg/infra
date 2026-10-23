@@ -7,9 +7,15 @@
 # here. Import this module next to weave-alastor. One VM per app: add a route
 # when the app runs on its VM, and remove the app's own alastor module in the
 # same change in jaspermayone/infra.
-{ lib, pkgs, ... }:
+{
+  config,
+  lib,
+  pkgs,
+  ...
+}:
 let
   tailnet = "wildebeest-stargazer.ts.net";
+  kraterProduction = config.patchwork.edge.kraterProduction;
 
   # <router name> = { backend = "<host>"; hosts = [ "<fqdn>" ... ]; };
   routes = {
@@ -25,9 +31,9 @@ let
       hosts = [ "quilt-staging.patchworklabs.org" ];
     };
     # Krater staging on weft (../weft/krater.nix): the portal and its S3
-    # gateway. Krater has no production instance yet. Not `krater`/
-    # `krater-storage`: the names of Krater's own Traefik fragment, which a
-    # host that runs Krater with traefik.enable would add.
+    # gateway. Not `krater`/`krater-storage`: the names of Krater's own
+    # Traefik fragment, which a host that runs Krater with traefik.enable
+    # would add. Production's routes are below, only while it is on.
     krater-staging-weft = {
       backend = "weft";
       hosts = [ "krater-staging.patchworklabs.org" ];
@@ -42,10 +48,29 @@ let
       backend = "warp";
       hosts = builtins.attrNames (import ../warp/redirects.nix);
     };
+  }
+  // lib.optionalAttrs kraterProduction {
+    krater-weft = {
+      backend = "weft";
+      hosts = [ "krater.patchworklabs.org" ];
+    };
+    krater-storage-weft = {
+      backend = "weft";
+      hosts = [ "krater-storage.patchworklabs.org" ];
+    };
   };
 in
 {
-  environment.etc."traefik/conf.d/patchwork.toml".source =
+  # Set from the one switch for Krater production
+  # (../weft/krater-production.nix). An option only so that the test can turn
+  # the routes on: set the switch file, not this.
+  options.patchwork.edge.kraterProduction = lib.mkOption {
+    type = lib.types.bool;
+    default = (import ../weft/krater-production.nix).enable;
+    description = "Route krater.patchworklabs.org and krater-storage.patchworklabs.org to weft.";
+  };
+
+  config.environment.etc."traefik/conf.d/patchwork.toml".source =
     (pkgs.formats.toml { }).generate "patchwork.toml"
       {
         http = {

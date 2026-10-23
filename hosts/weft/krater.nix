@@ -1,7 +1,8 @@
-# Krater staging on weft: the instance settings and the agenix secrets. nginx
-# on weft (./configuration.nix) fronts the two ports, and alastor routes the
-# public names here over the tailnet (nixosModules.edge-alastor). Krater has
-# no production instance yet: only staging runs, on weft.
+# Krater on weft: staging and production, with their settings and agenix
+# secrets. nginx on weft (./configuration.nix) fronts the ports, and alastor
+# routes the public names here over the tailnet (nixosModules.edge-alastor).
+# Staging runs now. Production is ready but off: ./krater-production.nix is
+# its one switch.
 #
 # Staging follows the Patchwork staging standard: its own database (the
 # `krater` schema in patchwork_central on hem:5432), Weave staging for sign-in,
@@ -42,32 +43,86 @@
 #   python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
 # Back it up with the other agenix secrets: losing it loses every stored
 # project secret.
+# Production (patchwork.services.krater-production, names krater-prod-*,
+# ports 3012/3013, the `krater` schema in patchwork_central on skein, Weave
+# production). Turn on production:
+#   1. Krater's app in Weave production (redirect URI
+#      https://krater.patchworklabs.org/auth/callback). Put its client id in
+#      `productionWeaveClientId` below, and its secret and the real Slack app's
+#      values in secrets/krater-env.age (`cd secrets && agenix -e krater-env.age`).
+#   2. jaspermayone/infra tailscale/policy.hujson: give tag:patchwork-krater
+#      pw-skein:5432 again (the grant and the test lines are in #32's body).
+#   3. Set `enable = true` in ./krater-production.nix. That also puts krater
+#      in `apps` for skein (../central-db-schema.nix) and adds the alastor
+#      routes (../alastor/edge.nix).
+#   4. Deploy skein (the role gets the password in central-prod-krater.age),
+#      then weft once, then `systemctl start krater-prod-build` by hand.
+#   5. DNS: krater and krater-storage, proxied to alastor (patchworklabsorg/dns).
+#   6. Bump patchwork-infra in jaspermayone/infra and deploy alastor.
 { lib, ... }:
 let
-  # Client id of Krater's app in Weave staging (redirect URI
+  # Staging: Weave staging (https://weave-staging.patchworklabs.org). The client
+  # id of Krater's app there (redirect URI
   # https://krater-staging.patchworklabs.org/auth/callback). Not secret.
-  weaveClientId = "";
+  stagingWeaveIssuer = "https://weave-staging.patchworklabs.org";
+  stagingWeaveClientId = "vTt8nTKFw7Qau8S2aBfhXrBQuCi1PbduyF0x6sH5QJo";
+
+  # Production: Weave production (https://weave.patchworklabs.org). Empty until
+  # Krater's app exists there. Not secret.
+  productionWeaveIssuer = "https://weave.patchworklabs.org";
+  productionWeaveClientId = "";
+
   envFile = ../../secrets/krater-staging-env.age;
-  enable = weaveClientId != "" && builtins.pathExists envFile;
+  enable = stagingWeaveClientId != "" && builtins.pathExists envFile;
+
+  production = import ./krater-production.nix;
+  prodEnvFile = ../../secrets/krater-env.age;
+  prodEnable = production.enable;
+
+  # The proxies that each append one address to X-Forwarded-For: Cloudflare
+  # (the client), Traefik on alastor (Cloudflare's edge) and nginx on weft
+  # (alastor's tailnet address). Krater sees "client, cf_ip, alastor_ip" and
+  # takes the third address from the right as the client. nginx on weft
+  # does no real_ip rewrite (./configuration.nix), so the chain stays whole.
+  trustedProxyCount = "3";
 in
 {
   imports = [ ../../modules/krater ];
 
+  assertions = [
+    {
+      assertion = prodEnable -> productionWeaveClientId != "";
+      message = "hosts/weft/krater-production.nix turns Krater production on, but productionWeaveClientId in hosts/weft/krater.nix is empty";
+    }
+    {
+      assertion = prodEnable -> builtins.pathExists prodEnvFile;
+      message = "hosts/weft/krater-production.nix turns Krater production on, but secrets/krater-env.age does not exist (bin/new-krater-secrets production)";
+    }
+  ];
+
   # Recipients are in ../../secrets/secrets.nix (jsp + weft's host key).
-  age.secrets = lib.mkIf (builtins.pathExists envFile) {
-    krater-staging-env = {
-      file = envFile;
-      mode = "400";
-    };
-    # krater-staging-project-secrets-key = {
-    #   file = ../../secrets/krater-staging-project-secrets-key.age;
-    #   mode = "400";
-    # };
-    # krater-staging-vast-key = {
-    #   file = ../../secrets/krater-staging-vast-key.age;
-    #   mode = "400";
-    # };
-  };
+  age.secrets = lib.mkMerge [
+    (lib.mkIf prodEnable {
+      krater-env = {
+        file = prodEnvFile;
+        mode = "400";
+      };
+    })
+    (lib.mkIf (builtins.pathExists envFile) {
+      krater-staging-env = {
+        file = envFile;
+        mode = "400";
+      };
+      # krater-staging-project-secrets-key = {
+      #   file = ../../secrets/krater-staging-project-secrets-key.age;
+      #   mode = "400";
+      # };
+      # krater-staging-vast-key = {
+      #   file = ../../secrets/krater-staging-vast-key.age;
+      #   mode = "400";
+      # };
+    })
+  ];
 
   patchwork.services.krater = {
     inherit enable;
@@ -96,13 +151,9 @@ in
     # compute.vastKeyFile = config.age.secrets.krater-staging-vast-key.path;
     # projectSecretsKeyFile = config.age.secrets.krater-staging-project-secrets-key.path;
 
-    # The proxies that each append one address to X-Forwarded-For: Cloudflare
-    # (the client), Traefik on alastor (Cloudflare's edge) and nginx on weft
-    # (alastor's tailnet address). Krater sees "client, cf_ip, alastor_ip" and
-    # takes the third address from the right as the client. nginx on weft
-    # does no real_ip rewrite (./configuration.nix), so the chain stays whole.
+    # Cloudflare, Traefik on alastor and nginx on weft (see trustedProxyCount).
     extraEnv = {
-      KRATER_TRUSTED_PROXY_COUNT = "3";
+      KRATER_TRUSTED_PROXY_COUNT = trustedProxyCount;
       # Krater sends its events to Quilt only when this is set. Leave it
       # empty, or set it to Quilt staging. Never set it to production Quilt:
       # staging events would land in the real books. Events wait in Krater's
@@ -118,8 +169,8 @@ in
 
     weave = {
       # Exactly the `issuer` in Weave staging's discovery document.
-      issuer = "https://weave-staging.patchworklabs.org";
-      clientId = weaveClientId;
+      issuer = stagingWeaveIssuer;
+      clientId = stagingWeaveClientId;
       # The `krater` CLI's public Weave app (Krater's docs/compute/cli.md).
       # Empty keeps the CLI's API off.
       cliClientId = "";
@@ -131,6 +182,45 @@ in
 
     # alastor's Traefik routes here (nixosModules.edge-alastor), so no Traefik
     # on weft.
+    traefik.enable = false;
+  };
+
+  patchwork.services.krater-production = {
+    enable = prodEnable;
+    environmentFile = "/run/agenix/krater-env";
+
+    # Fallback build; deploys write /var/lib/krater-prod/source-rev instead.
+    rev = "b081a132fe1e6c2b8d998f45a65e507745052300";
+
+    domain = "krater.patchworklabs.org";
+    storage.domain = "krater-storage.patchworklabs.org";
+    # Staging and production share weft's 40 GB disk: 12 GB of objects each.
+    storage.maxVolumes = 12;
+
+    # Compute stays off until Krater's paid checks pass. The prefix is set now
+    # so that turning compute on cannot use staging's.
+    compute.enable = false;
+    compute.labelPrefix = "krater-prod-";
+
+    extraEnv = {
+      KRATER_TRUSTED_PROXY_COUNT = trustedProxyCount;
+      # Empty until Quilt production takes Krater's events. Events wait in
+      # Krater's quilt_outbox table until it is set.
+      KRATER_QUILT_URL = "";
+    };
+
+    # weft has no MagicDNS. KRATER_DATABASE_URL in krater-env.age names skein
+    # by its tailnet name (bin/new-krater-secrets production). Keep this in
+    # step with the pw-skein alias in jaspermayone/infra tailscale/policy.hujson.
+    extraHosts."skein.wildebeest-stargazer.ts.net" = "100.109.223.51";
+
+    weave = {
+      issuer = productionWeaveIssuer;
+      clientId = productionWeaveClientId;
+      cliClientId = "";
+    };
+
+    deployAuthorizedKeys = [ ];
     traefik.enable = false;
   };
 }

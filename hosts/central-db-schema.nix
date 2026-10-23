@@ -5,6 +5,14 @@
 # Add an app: add it here, add its password secret for each environment in
 # secrets/secrets.nix, deploy the DB hosts. See modules/central-db for what
 # each entry creates.
+let
+  # Krater production's one switch (weft/krater-production.nix). On, krater
+  # moves from stagingOnlyApps to apps, so skein creates its role and schema.
+  kraterProduction = (import ./weft/krater-production.nix).enable;
+  # Krater (Project Ganymede portal): proposals, budget ledger, audit log. It stores no personal
+  # data, only Patchwork IDs, and reads people through Weave's directory API, so no shared schemas.
+  krater = { };
+in
 {
   # patchwork_central — on skein (prod) and hem:5432 (staging).
   central = {
@@ -12,15 +20,12 @@
       # Weave is the IDP, so it owns people.* and runs its migrations.
       weave = { };
       selvage.read = [ "people" ];
-    };
+    }
+    // (if kraterProduction then { inherit krater; } else { });
     # Apps on staging (hem) only, until they have a production instance. skein
     # does not create their role or schema. Move an app to `apps` when it goes
     # to production.
-    stagingOnlyApps = {
-      # Krater (Project Ganymede portal): proposals, budget ledger, audit log. It stores no personal
-      # data, only Patchwork IDs, and reads people through Weave's directory API, so no shared schemas.
-      krater = { };
-    };
+    stagingOnlyApps = if kraterProduction then { } else { inherit krater; };
     sharedSchemas = {
       people.owner = "weave";
     };

@@ -8,14 +8,49 @@
 #
 # Tailnet tags: tag:patchwork (ssh from admins, port 80 from alastor) and
 # tag:patchwork-krater. The policy in jaspermayone/infra lets tag:patchwork-krater
-# reach hem:5432 (central staging). Only Krater staging runs here
-# (./krater.nix), and it uses hem only.
+# reach hem:5432 (central staging). Krater staging runs here (./krater.nix)
+# and uses hem only. Krater production is ready but off
+# (./krater-production.nix); it needs a grant to skein:5432 when it goes on.
 #
 # Built on 2026-10-22 with `qm create`, `tofu import` and nixos-anywhere. Its
 # host key is a recipient of ad-join.age (AD logon).
 { config, lib, ... }:
 let
   krater = config.patchwork.services.krater;
+  kraterProd = config.patchwork.services.krater-production;
+  listen = [
+    {
+      addr = "0.0.0.0";
+      port = 80;
+    }
+  ];
+  # The portal and its SeaweedFS S3 gateway. Browsers upload screenshots to
+  # the gateway, and rented machines their checkpoints and outputs: no size
+  # limit here (Cloudflare caps a request at 100 MB), and no buffering of the
+  # request on disk.
+  kraterVhosts = name: k: {
+    ${name} = {
+      serverName = k.domain;
+      inherit listen;
+      locations."/" = {
+        proxyPass = "http://127.0.0.1:${toString k.port}";
+        # More than the 1 MB nginx default, for form posts to the portal.
+        extraConfig = "client_max_body_size 50m;";
+      };
+    };
+    "${name}-storage" = {
+      serverName = k.storage.domain;
+      inherit listen;
+      locations."/" = {
+        proxyPass = "http://127.0.0.1:${toString k.storage.port}";
+        extraConfig = ''
+          client_max_body_size 0;
+          proxy_request_buffering off;
+          proxy_buffering off;
+        '';
+      };
+    };
+  };
 in
 {
   imports = [
@@ -48,43 +83,11 @@ in
       proxy_set_header X-Forwarded-Proto $http_x_forwarded_proto;
       proxy_set_header X-Forwarded-Host $host;
     '';
-    # Krater's two hostnames, only while Krater is on (./krater.nix).
-    virtualHosts = lib.mkIf krater.enable {
-      krater = {
-        serverName = krater.domain;
-        listen = [
-          {
-            addr = "0.0.0.0";
-            port = 80;
-          }
-        ];
-        locations."/" = {
-          proxyPass = "http://127.0.0.1:${toString krater.port}";
-          # More than the 1 MB nginx default, for form posts to the portal.
-          extraConfig = "client_max_body_size 50m;";
-        };
-      };
-      # SeaweedFS S3 gateway. Browsers upload screenshots to it, and rented
-      # machines their checkpoints and outputs: no size limit, and no
-      # buffering of the request on disk.
-      krater-storage = {
-        serverName = krater.storage.domain;
-        listen = [
-          {
-            addr = "0.0.0.0";
-            port = 80;
-          }
-        ];
-        locations."/" = {
-          proxyPass = "http://127.0.0.1:${toString krater.storage.port}";
-          extraConfig = ''
-            client_max_body_size 0;
-            proxy_request_buffering off;
-            proxy_buffering off;
-          '';
-        };
-      };
-    };
+    # Krater's hostnames, each instance only while it is on (./krater.nix).
+    virtualHosts = lib.mkMerge [
+      (lib.mkIf krater.enable (kraterVhosts "krater" krater))
+      (lib.mkIf kraterProd.enable (kraterVhosts "krater-prod" kraterProd))
+    ];
   };
   # nginx is a host service, so the NixOS firewall applies to it (Docker's
   # published ports would bypass it). Open only on the tailnet.

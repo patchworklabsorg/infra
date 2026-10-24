@@ -7,9 +7,10 @@
 # Staging follows the Patchwork staging standard: its own database (the
 # `krater` schema in patchwork_central on hem:5432), Weave staging for sign-in,
 # and its own hostnames. Krater Compute stays off, so no Vast account is used.
-# Krater itself has no staging mode (KRATER_ENV is `production` here, which
-# only turns on Krater's production checks). The construction border and the
-# STAGING label are a change in the Krater app.
+# KRATER_ENV is `production` here, which only turns on Krater's production
+# checks. KRATER_STAGING turns on the hazard-stripe frame and the STAGING tab,
+# the same as Weave and Quilt staging (needs patchworklabsorg/krater with
+# that setting; an older build ignores it).
 #
 # Network: the containers are on the `krater` bridge network. weft reaches
 # hem.wildebeest-stargazer.ts.net:5432 over the tailnet, through the
@@ -156,6 +157,7 @@ in
     # Cloudflare, Traefik on alastor and nginx on weft (see trustedProxyCount).
     extraEnv = {
       KRATER_TRUSTED_PROXY_COUNT = trustedProxyCount;
+      KRATER_STAGING = "true";
       # Krater sends its events to Quilt only when this is set. Leave it
       # empty, or set it to Quilt staging. Never set it to production Quilt:
       # staging events would land in the real books. Events wait in Krater's

@@ -103,6 +103,9 @@ let
     "nginx appends to X-Forwarded-For" =
       lib.hasInfix "X-Forwarded-For $proxy_add_x_forwarded_for" on.services.nginx.commonHttpConfig;
     "no events to Quilt" = on.patchwork.services.krater.extraEnv.KRATER_QUILT_URL == "";
+    "staging shows the staging marker" = on.patchwork.services.krater.extraEnv.KRATER_STAGING == "true";
+    "production has no staging marker" =
+      !(prod.patchwork.services.krater-production.extraEnv ? KRATER_STAGING);
     "staging label prefix" = on.patchwork.services.krater.compute.labelPrefix == "krater-staging-";
     "storage volume limit" =
       on.patchwork.services.krater.storage.maxVolumes == 8

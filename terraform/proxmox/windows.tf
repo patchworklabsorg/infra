@@ -79,12 +79,16 @@ resource "proxmox_virtual_environment_vm" "spool" {
     version      = "v2.0"
   }
 
+  # ssd: Windows sees an SSD, so it sends TRIM through discard and does not
+  # run defrag or prefetch work on this disk. The disk is still on the trunk
+  # HDD pool. A change here needs a stop and start of the VM.
   disk {
     datastore_id = var.datastore_id
     interface    = "sata0"
     size         = var.spool.disk_gb
     file_format  = "raw"
     discard      = "on"
+    ssd          = true
   }
 
   network_device {

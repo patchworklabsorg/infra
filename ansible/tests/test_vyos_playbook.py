@@ -11,6 +11,8 @@ TEMPLATES = glob.glob(os.path.join(HERE, "..", "templates", "vyos", "*.conf.j2")
 try:
     import yaml
 except ImportError:  # the nix check has pyyaml; a bare python3 may not
+    if os.environ.get("NIX_BUILD_TOP"):
+        raise
     yaml = None
 
 
@@ -23,10 +25,12 @@ def _tasks():
 class ConfigReads(unittest.TestCase):
     def test_full_config_reads_use_a_pipe(self):
         # Without a pipe, VyOS puts a space in place of every 512th character.
+        bare = re.compile(r"^show\s+conf\w*\s+commands\s*$")
         for task in _tasks():
-            cmd = task.get("vyos.vyos.vyos_command", {}).get("commands", "")
-            if str(cmd).strip() == "show configuration commands":
-                self.fail(f"{task['name']}: read with '| cat'")
+            cmds = task.get("vyos.vyos.vyos_command", {}).get("commands", [])
+            for cmd in cmds if isinstance(cmds, list) else [cmds]:
+                if bare.match(str(cmd).strip()):
+                    self.fail(f"{task['name']}: read with '| cat'")
 
     def test_apply_diffs_against_the_piped_read(self):
         apply = next(t for t in _tasks() if "vyos.vyos.vyos_config" in t)

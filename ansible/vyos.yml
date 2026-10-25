@@ -8,11 +8,13 @@
 #
 # First time, and after a change made on the router by hand:
 #   ansible-playbook vyos.yml -t pull
-# This reads `show configuration commands`, writes the template without the
+# This reads `show configuration commands | cat`, writes the template without the
 # secrets, and writes the secrets to the vault. It never prints a value.
 # Review the template diff, then commit the template and the vault.
 #
 # Apply the repo to the router (check first):
+# Do not add -vvv to an apply: it prints the module arguments, and these
+# hold the running config and the secrets from the vault.
 #   ansible-playbook vyos.yml --check --diff
 #   ansible-playbook vyos.yml
 #

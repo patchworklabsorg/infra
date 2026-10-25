@@ -24,6 +24,15 @@ let
   secretsDir = "${stateDir}/secrets";
   revFile = "${stateDir}/source-rev";
   deployUser = "${prefix}-deploy";
+  followFailedFile = "${stateDir}/follow-failed-rev";
+  followMaxAttempts = 3;
+  followHoldFile = "${stateDir}/follow-hold";
+  # owner/name of `repo` on GitHub, for the check-runs API. null for another host.
+  githubSlug =
+    let
+      m = builtins.match "https://github\\.com/([^/]+/[^/.]+)(\\.git)?/?" cfg.repo;
+    in
+    if m == null then null else builtins.head m;
   envDir = "/run/${prefix}";
 
   baseUrl = "https://${cfg.domain}";
@@ -344,6 +353,32 @@ in
       '';
     };
 
+    follow = {
+      branch = lib.mkOption {
+        type = lib.types.nullOr lib.types.str;
+        default = null;
+        example = "main";
+        description = ''
+          Deploy each new commit on this branch of `repo` with no action by hand. A timer
+          (${prefix}-follow) reads the head of the branch. When it is new, it writes source-rev,
+          builds and restarts ${prefix}-web: the same steps as a CI deploy. null turns it off.
+        '';
+      };
+      requireChecks = lib.mkOption {
+        type = lib.types.bool;
+        default = true;
+        description = ''
+          Deploy a commit only after all of its GitHub check runs passed. A commit with no check
+          runs waits. Needs `repo` on github.com.
+        '';
+      };
+      dates = lib.mkOption {
+        type = lib.types.str;
+        default = "*:0/5";
+        description = "When to check the branch (systemd OnCalendar).";
+      };
+    };
+
     traefik = {
       enable = lib.mkEnableOption ''
         a Traefik file-provider fragment (/etc/traefik/conf.d/${prefix}.toml) routing the portal and
@@ -379,6 +414,10 @@ in
             {
               assertion = cfg.compute.enable -> cfg.compute.vastKeyFile != null;
               message = "patchwork.services.${optName}.compute.vastKeyFile must be set when compute.enable is true";
+            }
+            {
+              assertion = cfg.follow.branch != null && cfg.follow.requireChecks -> githubSlug != null;
+              message = "patchwork.services.${optName}.follow.requireChecks needs `repo` on https://github.com";
             }
             {
               assertion = cfg.compute.enable -> cfg.compute.labelPrefix != null;
@@ -435,6 +474,9 @@ in
           ];
           # The Dockerfile uses BuildKit cache mounts.
           environment.DOCKER_BUILDKIT = "1";
+          # A switch must not stop a build that a deploy waits for. The next start uses the new
+          # unit anyway.
+          restartIfChanged = false;
           serviceConfig = {
             Type = "oneshot";
             TimeoutStartSec = "45min";
@@ -599,6 +641,116 @@ in
           '';
         };
       }
+
+      # ── Follow a branch ─────────────────────────────────────────────────────
+      # The deploy above, run from a timer on this host: nothing outside needs a way in. A
+      # build or a start that fails puts the old source-rev back and starts the old version
+      # again. A commit gets ${toString followMaxAttempts} tries, then waits for a new commit
+      # (${followFailedFile}; remove it to try again). A manual deploy of another commit holds
+      # only until the next run. To keep it, create ${followHoldFile} first.
+      (lib.mkIf (cfg.follow.branch != null) {
+        systemd.services."${prefix}-follow" = {
+          description = "Deploy the head of ${cfg.follow.branch} to ${prefix}";
+          after = [ "network-online.target" ];
+          wants = [ "network-online.target" ];
+          # A switch must not stop a deploy in the middle of its build.
+          restartIfChanged = false;
+          path = [
+            pkgs.coreutils
+            pkgs.curl
+            pkgs.git
+            pkgs.jq
+            config.systemd.package
+          ];
+          serviceConfig = {
+            Type = "oneshot";
+            # The build can take 45 minutes (${prefix}-build).
+            TimeoutStartSec = "1h";
+            StandardOutput = "journal";
+            StandardError = "journal";
+            SyslogIdentifier = "${prefix}-follow";
+          };
+          script = ''
+            set -euo pipefail
+            if [ -e ${followHoldFile} ]; then
+              echo "held: ${followHoldFile} exists"
+              exit 0
+            fi
+            remote=$(git ls-remote ${lib.escapeShellArg cfg.repo} ${lib.escapeShellArg "refs/heads/${cfg.follow.branch}"} | cut -f1)
+            if ! [[ $remote =~ ^[0-9a-f]{40}$ ]]; then
+              echo "cannot read the head of ${cfg.follow.branch}" >&2
+              exit 1
+            fi
+            current=$(tr -d '[:space:]' < ${revFile} 2>/dev/null || true)
+            if [ "''${current:-${cfg.rev}}" = "$remote" ]; then
+              exit 0
+            fi
+            # "<sha> <failed runs>". A build can fail for a short time (network, memory).
+            read -r failedRev failedRuns 2>/dev/null < ${followFailedFile} || true
+            if [ "''${failedRev:-}" = "$remote" ] && [ "''${failedRuns:-0}" -ge ${toString followMaxAttempts} ]; then
+              echo "$remote failed ${toString followMaxAttempts} times; waiting for a new commit on ${cfg.follow.branch}" >&2
+              exit 1
+            fi
+            failed() {
+              runs=1
+              if [ "''${failedRev:-}" = "$remote" ]; then
+                runs=$((''${failedRuns:-0} + 1))
+              fi
+              echo "$remote $runs" > ${followFailedFile}
+            }
+            # Back to the commit that ran before. An empty source-rev means the `rev` fallback.
+            restore() {
+              if [ -n "$current" ]; then
+                echo "$current" > ${revFile}
+              else
+                : > ${revFile}
+              fi
+            }
+            ${lib.optionalString cfg.follow.requireChecks ''
+              checks=$(curl -fsS -H 'Accept: application/vnd.github+json' \
+                "https://api.github.com/repos/${toString githubSlug}/commits/$remote/check-runs?per_page=100" \
+                | jq -r '
+                    if .total_count == 0 or any(.check_runs[]; .status != "completed") then "pending"
+                    elif all(.check_runs[]; .conclusion == "success" or .conclusion == "skipped" or .conclusion == "neutral") then "success"
+                    else "failure" end')
+              if [ "$checks" = pending ]; then
+                echo "$remote: checks are not done yet"
+                exit 0
+              fi
+              # Not recorded in ${followFailedFile}: a check that is run again and passes
+              # deploys the commit on the next run.
+              if [ "$checks" != success ]; then
+                echo "$remote: a check failed; not deploying it" >&2
+                exit 1
+              fi
+            ''}
+            echo "deploying $remote (was ''${current:-${cfg.rev}})"
+            echo "$remote" > ${revFile}
+            if ! systemctl start ${prefix}-build; then
+              restore
+              failed
+              echo "$remote did not build; the running version stays" >&2
+              exit 1
+            fi
+            if ! systemctl restart ${prefix}-web; then
+              # The old container is gone already, so start the old version again.
+              restore
+              failed
+              echo "$remote did not start; starting ''${current:-${cfg.rev}} again" >&2
+              systemctl restart ${prefix}-web || true
+              exit 1
+            fi
+          '';
+        };
+
+        systemd.timers."${prefix}-follow" = {
+          wantedBy = [ "timers.target" ];
+          timerConfig = {
+            OnCalendar = cfg.follow.dates;
+            RandomizedDelaySec = "1min";
+          };
+        };
+      })
 
       # ── CI deploy user ──────────────────────────────────────────────────────────
       (lib.mkIf (cfg.deployAuthorizedKeys != [ ]) {

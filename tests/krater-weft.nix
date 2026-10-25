@@ -146,6 +146,20 @@ let
       prod.patchwork.services.krater-production.compute.labelPrefix == "krater-prod-";
     "staging keeps weave staging" =
       prod.patchwork.services.krater.weave.issuer == "https://weave-staging.patchworklabs.org";
+    "staging follows main" =
+      on.patchwork.services.krater.follow.branch == "main"
+      && units ? "krater-follow.timer"
+      && !svc.krater-follow.restartIfChanged;
+    "production does not follow a branch" =
+      prod.patchwork.services.krater-production.follow.branch == null
+      && !(prod.systemd.units ? "krater-prod-follow.timer");
+    "every lab host follows infra main" =
+      lib.all (h: h.config.systemd.units ? "patchwork-upgrade.timer")
+        [
+          weft
+          skein
+          hem
+        ];
     "krater is on hem" = hem.config.containers.central-staging.config.patchwork.centralDb.apps ? krater;
   };
   failed = lib.attrNames (lib.filterAttrs (_: ok: !ok) checks);
@@ -210,6 +224,12 @@ pkgs.runCommand "krater-weft" { } ''
   # Staging's build cleans only its own repository, so it never removes a
   # production image.
   grep -F 'docker image ls krater ' ${svc.krater-build.serviceConfig.ExecStart}
+
+  # The follow timer gates on Krater's checks, and puts the old commit back
+  # when a build fails.
+  grep -F 'api.github.com/repos/patchworklabsorg/krater/commits/' ${svc.krater-follow.serviceConfig.ExecStart}
+  grep -F 'refs/heads/main' ${svc.krater-follow.serviceConfig.ExecStart}
+  grep -F 'echo "$current" > /var/lib/krater/source-rev' ${svc.krater-follow.serviceConfig.ExecStart}
   grep -F 'http://weft.wildebeest-stargazer.ts.net' ${edgeToml}
   touch $out
 ''

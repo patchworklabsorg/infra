@@ -57,6 +57,10 @@
             # does not get it.
             ./modules/banner
             ./hosts/${name}/configuration.nix
+            # modules/auto-upgrade compares this with the head of main. A
+            # deploy from a dirty tree gets "<sha>-dirty", so the next run
+            # switches the host back to main.
+            { system.configurationRevision = self.rev or self.dirtyRev or null; }
           ];
         };
     in

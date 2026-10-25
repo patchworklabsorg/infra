@@ -180,6 +180,13 @@ in
       cliClientId = "";
     };
 
+    # Staging deploys each commit on Krater's main after its CI passes
+    # (krater-follow, every 5 minutes). weft pulls, so GitHub needs no way in
+    # to the lab. `journalctl -u krater-follow` shows what it did. To run
+    # another commit for a while: `touch /var/lib/krater/follow-hold`, then
+    # deploy as in the README. Production does not follow a branch.
+    follow.branch = "main";
+
     # CI (krater repo, .github/workflows/deploy.yml) SSHes as krater-deploy.
     # Add its public key here once the KRATER_DEPLOY_SSH_KEY secret exists.
     deployAuthorizedKeys = [ ];

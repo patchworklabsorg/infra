@@ -17,6 +17,7 @@ Declarative infrastructure for Patchwork Labs: every Patchwork host, the NixOS m
 | `hosts/alastor/` | Modules that `jaspermayone/infra` imports for alastor. |
 | `modules/common/` | Accounts, SSH, sudo, Tailscale, Nix. Every host imports it. `keys.nix` holds the SSH keys. |
 | `modules/ad-join/` | Joins the host to `patchwork.internal` with sssd. `modules/common` imports it. |
+| `modules/auto-upgrade/` | Switches the host to each new commit on `main`. `modules/common` imports it. |
 | `modules/central-db/` | One central PostgreSQL cluster and its access model. |
 | `modules/weave/` | The Weave service module. |
 | `modules/quilt/` | The Quilt service module. |
@@ -103,6 +104,31 @@ To turn the banner off for a host, set `patchwork.banner.enable = false;`.
 
 The host name comes from `networking.hostName`. The option `patchwork.banner.art` replaces the art after login. Check the result with `nix eval --raw .#nixosConfigurations.<host>.config.users.motd`. The check `banner` tests the seam banner and the default.
 
+## Deploys from main
+
+The lab hosts follow `main` of this repo. Every 5 minutes, `patchwork-upgrade.timer` reads the head of `main`. If the host runs another revision, it builds that commit and switches to it (`modules/auto-upgrade`). So a merged PR reaches every lab host in about 5 minutes. alastor is not a lab host. It follows `jaspermayone/infra` (see "Weave on alastor").
+
+Krater staging also follows `main` of `patchworklabsorg/krater`. `krater-follow.timer` on weft reads the head of `main` every 5 minutes. When all of the commit's GitHub checks passed, it builds the commit and restarts Krater staging. Krater production does not follow a branch.
+
+```mermaid
+flowchart LR
+  pr["PR merged to infra main"] --> up["patchwork-upgrade.timer on each lab host"]
+  up -- "nixos-rebuild switch --flake github:patchworklabsorg/infra/<sha>" --> host["lab host"]
+  kpr["PR merged to krater main"] --> ci["krater CI passes"]
+  ci --> follow["krater-follow.timer on weft"]
+  follow -- "source-rev, krater-build, restart krater-web" --> staging["krater-staging.patchworklabs.org"]
+```
+
+Both timers pull from GitHub. GitHub needs no key and no way in to the lab.
+
+| Item | Infra | Krater staging |
+|---|---|---|
+| Log | `journalctl -u patchwork-upgrade` | `journalctl -u krater-follow` |
+| Hold a host on another commit | `sudo touch /var/lib/patchwork-upgrade/hold` | `sudo touch /var/lib/krater/follow-hold` |
+| A commit that fails | Written to `/var/lib/patchwork-upgrade/failed-rev`, not tried again | A failed build is written to `/var/lib/krater/follow-failed-rev`. The old build keeps serving. |
+
+A manual `deploy .#<host>` still works, but the next run switches the host back to `main`. Create the hold file first to keep a branch on a host. Remove the hold file when you are done.
+
 ## Install a host
 
 The installer ISO has the admin SSH keys on root. Nobody types in the Proxmox console. The keys come from `modules/common/keys.nix`, the same file the host accounts use.
@@ -163,7 +189,7 @@ alastor also rebuilds itself at 04:00 from `jaspermayone/infra` `main`. It uses 
 
 Krater staging runs on weft. Krater production is configured on weft too, and its secrets exist, but it is off until `hosts/weft/krater-production.nix` turns it on (the checklist is in `hosts/weft/krater.nix`). weft is its own VM, so the people who run Krater cannot read the other apps' secrets. alastor routes `krater-staging.patchworklabs.org` and `krater-staging-storage.patchworklabs.org` to nginx on weft over the tailnet (`nixosModules.edge-alastor`).
 
-Krater has no registry image. `krater-build` fetches one commit of `patchworklabsorg/krater` and builds it on weft with the repo's own Dockerfile. A deploy writes the commit to `/var/lib/krater/source-rev`, then runs `systemctl start krater-build` (the running site keeps serving) and `systemctl restart krater-web`. Production is the same with `krater-prod` in place of `krater` (`/var/lib/krater-prod/source-rev`, `krater-prod-build`, `krater-prod-web`). So Krater releases do not need a change here. Only the module and its settings do.
+Krater has no registry image. `krater-build` fetches one commit of `patchworklabsorg/krater` and builds it on weft with the repo's own Dockerfile. A deploy writes the commit to `/var/lib/krater/source-rev`, then runs `systemctl start krater-build` (the running site keeps serving) and `systemctl restart krater-web`. Production is the same with `krater-prod` in place of `krater` (`/var/lib/krater-prod/source-rev`, `krater-prod-build`, `krater-prod-web`). So Krater releases do not need a change here. Only the module and its settings do. Staging does this by itself for each commit on Krater's `main` (`krater-follow`, see "Deploys from main").
 
 `krater-web` requires `krater-build`, so a deploy that turns an instance on waits for its first build (minutes; `TimeoutStartSec` is 45 minutes). Run the build by hand first, or deploy with `--magic-rollback false` and a long `--activation-timeout`.
 

@@ -106,13 +106,14 @@ The host name comes from `networking.hostName`. The option `patchwork.banner.art
 
 ## Deploys from main
 
-The lab hosts follow `main` of this repo. Every 5 minutes, `patchwork-upgrade.timer` reads the head of `main`. If the host runs another revision, it builds that commit and switches to it (`modules/auto-upgrade`). So a merged PR reaches every lab host in about 5 minutes. alastor is not a lab host. It follows `jaspermayone/infra` (see "Weave on alastor").
+The lab hosts follow `main` of this repo. Every 5 minutes, `patchwork-upgrade.timer` reads the head of `main`. If the host runs another revision and CI (`.github/workflows/ci.yml`) passed on that commit, the host builds the commit and switches to it (`modules/auto-upgrade`). So a merged PR reaches every lab host a few minutes after CI passes. A red `main` stops every host. alastor is not a lab host. It follows `jaspermayone/infra` (see "Weave on alastor").
 
 Krater staging also follows `main` of `patchworklabsorg/krater`. `krater-follow.timer` on weft reads the head of `main` every 5 minutes. When all of the commit's GitHub checks passed, it builds the commit and restarts Krater staging. Krater production does not follow a branch.
 
 ```mermaid
 flowchart LR
-  pr["PR merged to infra main"] --> up["patchwork-upgrade.timer on each lab host"]
+  pr["PR merged to infra main"] --> ici["infra CI passes"]
+  ici --> up["patchwork-upgrade.timer on each lab host"]
   up -- "nixos-rebuild switch --flake github:patchworklabsorg/infra/<sha>" --> host["lab host"]
   kpr["PR merged to krater main"] --> ci["krater CI passes"]
   ci --> follow["krater-follow.timer on weft"]
@@ -125,9 +126,9 @@ Both timers pull from GitHub. GitHub needs no key and no way in to the lab.
 |---|---|---|
 | Log | `journalctl -u patchwork-upgrade` | `journalctl -u krater-follow` |
 | Hold a host on another commit | `sudo touch /var/lib/patchwork-upgrade/hold` | `sudo touch /var/lib/krater/follow-hold` |
-| A commit that fails | Written to `/var/lib/patchwork-upgrade/failed-rev`, not tried again | A failed build is written to `/var/lib/krater/follow-failed-rev`. The old build keeps serving. |
+| A commit that fails | 3 tries, then it waits for a new commit (`/var/lib/patchwork-upgrade/failed-rev`) | 3 tries, then it waits for a new commit (`/var/lib/krater/follow-failed-rev`). After a failed build or start, the old version runs again. |
 
-A manual `deploy .#<host>` still works, but the next run switches the host back to `main`. Create the hold file first to keep a branch on a host. Remove the hold file when you are done.
+Remove the `failed-rev` file to try a commit again. A manual `deploy .#<host>` still works, but the next run switches the host back to `main`. Create the hold file first to keep a branch on a host. Remove the hold file when you are done.
 
 ## Install a host
 

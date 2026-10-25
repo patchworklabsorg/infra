@@ -25,6 +25,7 @@ let
   revFile = "${stateDir}/source-rev";
   deployUser = "${prefix}-deploy";
   followFailedFile = "${stateDir}/follow-failed-rev";
+  followMaxAttempts = 3;
   followHoldFile = "${stateDir}/follow-hold";
   # owner/name of `repo` on GitHub, for the check-runs API. null for another host.
   githubSlug =
@@ -473,6 +474,9 @@ in
           ];
           # The Dockerfile uses BuildKit cache mounts.
           environment.DOCKER_BUILDKIT = "1";
+          # A switch must not stop a build that a deploy waits for. The next start uses the new
+          # unit anyway.
+          restartIfChanged = false;
           serviceConfig = {
             Type = "oneshot";
             TimeoutStartSec = "45min";
@@ -640,9 +644,10 @@ in
 
       # ── Follow a branch ─────────────────────────────────────────────────────
       # The deploy above, run from a timer on this host: nothing outside needs a way in. A
-      # build that fails puts the old source-rev back, so a later restart of ${prefix}-web does
-      # not need the broken commit, and the commit is not tried again. A manual deploy of another
-      # commit holds only until the next run. To keep it, create ${followHoldFile} first.
+      # build or a start that fails puts the old source-rev back and starts the old version
+      # again. A commit gets ${toString followMaxAttempts} tries, then waits for a new commit
+      # (${followFailedFile}; remove it to try again). A manual deploy of another commit holds
+      # only until the next run. To keep it, create ${followHoldFile} first.
       (lib.mkIf (cfg.follow.branch != null) {
         systemd.services."${prefix}-follow" = {
           description = "Deploy the head of ${cfg.follow.branch} to ${prefix}";
@@ -680,10 +685,27 @@ in
             if [ "''${current:-${cfg.rev}}" = "$remote" ]; then
               exit 0
             fi
-            if [ "$(cat ${followFailedFile} 2>/dev/null || true)" = "$remote" ]; then
-              echo "$remote failed before; waiting for a new commit on ${cfg.follow.branch}" >&2
+            # "<sha> <failed runs>". A build can fail for a short time (network, memory).
+            read -r failedRev failedRuns 2>/dev/null < ${followFailedFile} || true
+            if [ "''${failedRev:-}" = "$remote" ] && [ "''${failedRuns:-0}" -ge ${toString followMaxAttempts} ]; then
+              echo "$remote failed ${toString followMaxAttempts} times; waiting for a new commit on ${cfg.follow.branch}" >&2
               exit 1
             fi
+            failed() {
+              runs=1
+              if [ "''${failedRev:-}" = "$remote" ]; then
+                runs=$((''${failedRuns:-0} + 1))
+              fi
+              echo "$remote $runs" > ${followFailedFile}
+            }
+            # Back to the commit that ran before. An empty source-rev means the `rev` fallback.
+            restore() {
+              if [ -n "$current" ]; then
+                echo "$current" > ${revFile}
+              else
+                : > ${revFile}
+              fi
+            }
             ${lib.optionalString cfg.follow.requireChecks ''
               checks=$(curl -fsS -H 'Accept: application/vnd.github+json' \
                 "https://api.github.com/repos/${toString githubSlug}/commits/$remote/check-runs?per_page=100" \
@@ -705,13 +727,17 @@ in
             echo "deploying $remote (was ''${current:-${cfg.rev}})"
             echo "$remote" > ${revFile}
             if ! systemctl start ${prefix}-build; then
-              echo "$current" > ${revFile}
-              echo "$remote" > ${followFailedFile}
+              restore
+              failed
               echo "$remote did not build; the running version stays" >&2
               exit 1
             fi
             if ! systemctl restart ${prefix}-web; then
-              echo "$remote" > ${followFailedFile}
+              # The old container is gone already, so start the old version again.
+              restore
+              failed
+              echo "$remote did not start; starting ''${current:-${cfg.rev}} again" >&2
+              systemctl restart ${prefix}-web || true
               exit 1
             fi
           '';

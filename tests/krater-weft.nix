@@ -149,7 +149,8 @@ let
     "staging follows main" =
       on.patchwork.services.krater.follow.branch == "main"
       && units ? "krater-follow.timer"
-      && !svc.krater-follow.restartIfChanged;
+      && !svc.krater-follow.restartIfChanged
+      && !svc.krater-build.restartIfChanged;
     "production does not follow a branch" =
       prod.patchwork.services.krater-production.follow.branch == null
       && !(prod.systemd.units ? "krater-prod-follow.timer");
@@ -230,6 +231,8 @@ pkgs.runCommand "krater-weft" { } ''
   grep -F 'api.github.com/repos/patchworklabsorg/krater/commits/' ${svc.krater-follow.serviceConfig.ExecStart}
   grep -F 'refs/heads/main' ${svc.krater-follow.serviceConfig.ExecStart}
   grep -F 'echo "$current" > /var/lib/krater/source-rev' ${svc.krater-follow.serviceConfig.ExecStart}
+  # An empty source-rev (the `rev` fallback) stays empty, not one newline.
+  grep -F ': > /var/lib/krater/source-rev' ${svc.krater-follow.serviceConfig.ExecStart}
   grep -F 'http://weft.wildebeest-stargazer.ts.net' ${edgeToml}
   touch $out
 ''

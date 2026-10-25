@@ -128,11 +128,11 @@
                     '';
                 # modules/weave database roles on a real PostgreSQL 17.
                 weave-db-roles = import ./tests/weave-db-roles.nix { inherit pkgs; };
-                # ansible/filter_plugins (vyos_split_secrets for thimble).
+                # ansible/filter_plugins (vyos_split_secrets for thimble) and vyos.yml.
                 ansible-filters =
                   pkgs.runCommand "ansible-filters"
                     {
-                      nativeBuildInputs = [ (pkgs.python3.withPackages (p: [ p.jinja2 ])) ];
+                      nativeBuildInputs = [ (pkgs.python3.withPackages (p: [ p.jinja2 p.pyyaml ])) ];
                       src = ./ansible;
                     }
                     ''

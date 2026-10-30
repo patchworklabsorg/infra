@@ -146,6 +146,24 @@ let
       prod.patchwork.services.krater-production.compute.labelPrefix == "krater-prod-";
     "staging keeps weave staging" =
       prod.patchwork.services.krater.weave.issuer == "https://weave-staging.patchworklabs.org";
+    "CI deploy user for staging" =
+      on.users.users ? krater-deploy && on.users.users.krater-deploy.openssh.authorizedKeys.keys != [ ];
+    "CI deploy user may only build and restart staging" =
+      let
+        rules = lib.filter (r: r.users == [ "krater-deploy" ]) on.security.sudo.extraRules;
+        cmds = lib.concatMap (r: map (c: c.command) r.commands) rules;
+      in
+      lib.sort lib.lessThan cmds == [
+        "/run/current-system/sw/bin/systemctl restart krater-web"
+        "/run/current-system/sw/bin/systemctl start krater-build"
+      ];
+    "CI deploy user writes source-rev" =
+      lib.elem "f /var/lib/krater/source-rev 0644 krater-deploy users -" on.systemd.tmpfiles.rules;
+    "sshd on 2222 on the tailnet for CI" =
+      lib.elem 2222 on.services.openssh.ports
+      && lib.elem 2222 on.networking.firewall.interfaces.tailscale0.allowedTCPPorts;
+    "no CI deploy user for production" =
+      !(on.users.users ? krater-prod-deploy) && !(prod.users.users ? krater-prod-deploy);
     "krater is on hem" = hem.config.containers.central-staging.config.patchwork.centralDb.apps ? krater;
   };
   failed = lib.attrNames (lib.filterAttrs (_: ok: !ok) checks);

@@ -26,6 +26,42 @@ let
   deployUser = "${prefix}-deploy";
   envDir = "/run/${prefix}";
 
+  # The only command a CI deploy key may run (`restrict,command=` on each key). CI sends one full
+  # commit SHA as the ssh command, or `ping` to check that it can log in. No shell, no forwarding.
+  systemctl = "${config.systemd.package}/bin/systemctl";
+  deployCommand = pkgs.writeShellScript "${prefix}-deploy" ''
+    set -euo pipefail
+    sha=''${SSH_ORIGINAL_COMMAND:-}
+    if [ "$sha" = ping ]; then
+      echo ok
+      exit 0
+    fi
+    if ! [[ $sha =~ ^[0-9a-f]{40}$ ]]; then
+      echo "${prefix}-deploy: send one full 40-character commit SHA" >&2
+      exit 2
+    fi
+    # A failed build puts the old SHA back. Otherwise the next restart of ${prefix}-web (a reboot, a
+    # host deploy) would build the broken commit again and the site would stay down.
+    old=$(cat ${revFile} 2>/dev/null || true)
+    echo "$sha" > ${revFile}
+    if ! /run/wrappers/bin/sudo /run/current-system/sw/bin/systemctl start ${prefix}-build; then
+      echo "$old" > ${revFile}
+      echo "${prefix}-deploy: the build of $sha failed; source-rev is back at '$old'" >&2
+      exit 1
+    fi
+    /run/wrappers/bin/sudo /run/current-system/sw/bin/systemctl restart ${prefix}-web
+    # krater-worker restarts with krater-web (partOf) and can still be starting.
+    for _ in $(seq 1 30); do
+      if ${systemctl} is-active --quiet ${prefix}-web ${prefix}-worker; then
+        ${systemctl} is-active ${prefix}-web ${prefix}-worker
+        exit 0
+      fi
+      sleep 2
+    done
+    ${systemctl} is-active ${prefix}-web ${prefix}-worker
+    exit 1
+  '';
+
   baseUrl = "https://${cfg.domain}";
 
   # Non-secret settings for the portal, worker and migrations. Krater refuses to start in production
@@ -337,10 +373,12 @@ in
       type = lib.types.listOf lib.types.str;
       default = [ ];
       description = ''
-        SSH public keys for the ${prefix}-deploy CI user. That user may write
-        /var/lib/${prefix}/source-rev and run only:
+        SSH public keys for the ${prefix}-deploy CI user. Each key may run only the deploy command:
+        `ssh ${prefix}-deploy@<host> <full commit SHA>` writes /var/lib/${prefix}/source-rev, then runs
           sudo systemctl start ${prefix}-build
           sudo systemctl restart ${prefix}-web
+        and waits for the portal and the worker. `ssh ... ping` only checks the login. No shell, no
+        forwarding (`restrict`).
       '';
     };
 
@@ -606,7 +644,9 @@ in
           isNormalUser = true;
           group = "users";
           shell = pkgs.bash;
-          openssh.authorizedKeys.keys = cfg.deployAuthorizedKeys;
+          openssh.authorizedKeys.keys = map (
+            key: ''restrict,command="${deployCommand}" ${key}''
+          ) cfg.deployAuthorizedKeys;
         };
         security.sudo.extraRules = [
           {

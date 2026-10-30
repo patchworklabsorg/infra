@@ -180,9 +180,15 @@ in
       cliClientId = "";
     };
 
-    # CI (krater repo, .github/workflows/deploy.yml) SSHes as krater-deploy.
-    # Add its public key here once the KRATER_DEPLOY_SSH_KEY secret exists.
-    deployAuthorizedKeys = [ ];
+    # CI (krater repo, .github/workflows/deploy.yml) joins the tailnet as
+    # tag:ci-krater and SSHes as krater-deploy to sshd on 2222 (Tailscale SSH
+    # on 22 does not take keys). It deploys each main commit that passes CI.
+    # The key may only run the deploy command (modules/krater/instance.nix).
+    # Private key is KRATER_DEPLOY_SSH_KEY in the krater repo's `staging`
+    # environment.
+    deployAuthorizedKeys = [
+      "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIKC+mqvF2BF2QkxeRlf5LSOmtw9Mke9JBUVu8P68h0/B github-actions-krater-deploy"
+    ];
 
     # alastor's Traefik routes here (nixosModules.edge-alastor), so no Traefik
     # on weft.
@@ -224,6 +230,8 @@ in
       cliClientId = "";
     };
 
+    # No CI deploy for production yet: it gets its own key and user
+    # (krater-prod-deploy) when it goes on.
     deployAuthorizedKeys = [ ];
     traefik.enable = false;
   };

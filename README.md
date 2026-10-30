@@ -165,6 +165,8 @@ Krater staging runs on weft. Krater production is configured on weft too, and it
 
 Krater has no registry image. `krater-build` fetches one commit of `patchworklabsorg/krater` and builds it on weft with the repo's own Dockerfile. A deploy writes the commit to `/var/lib/krater/source-rev`, then runs `systemctl start krater-build` (the running site keeps serving) and `systemctl restart krater-web`. Production is the same with `krater-prod` in place of `krater` (`/var/lib/krater-prod/source-rev`, `krater-prod-build`, `krater-prod-web`). So Krater releases do not need a change here. Only the module and its settings do.
 
+Staging deploys itself. The `Deploy` workflow in `patchworklabsorg/krater` runs after `CI` passes on `main`. It joins the tailnet as `tag:ci-krater` (an ephemeral node, OAuth client in the krater repo secrets), then sends the commit over sshd on weft port 2222 as `krater-deploy`. The key may run only the deploy command, which does the three steps above and puts the old commit back if the build fails. The public key is in `hosts/weft/krater.nix`. `tag:ci-krater` reaches `tag:patchwork-krater:2222` and nothing else (`jaspermayone/infra` `tailscale/policy.hujson`). Production has no CI deploy yet.
+
 `krater-web` requires `krater-build`, so a deploy that turns an instance on waits for its first build (minutes; `TimeoutStartSec` is 45 minutes). Run the build by hand first, or deploy with `--magic-rollback false` and a long `--activation-timeout`.
 
 Krater staging's database is its schema `krater` in `patchwork_central` on hem (port 5432), like the other central apps. The module runs no Postgres of its own. weft reaches hem over the tailnet (`tag:patchwork-krater` to hem:5432). Sign-in is Weave staging.

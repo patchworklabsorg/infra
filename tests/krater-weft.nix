@@ -148,6 +148,15 @@ let
       prod.patchwork.services.krater.weave.issuer == "https://weave-staging.patchworklabs.org";
     "CI deploy user for staging" =
       on.users.users ? krater-deploy && on.users.users.krater-deploy.openssh.authorizedKeys.keys != [ ];
+    # Each key runs only the deploy command: no shell, no forwarding.
+    "CI deploy keys are restricted to the deploy command" = lib.all (
+      k:
+      lib.hasPrefix "restrict,command=\"/nix/store/" k && lib.hasInfix "-krater-deploy\" ssh-ed25519 " k
+    ) on.users.users.krater-deploy.openssh.authorizedKeys.keys;
+    "CI deploy user has no extra groups" = on.users.users.krater-deploy.extraGroups == [ ];
+    "CI deploy sudo is NOPASSWD only" = lib.all (
+      r: lib.all (c: c.options == [ "NOPASSWD" ]) r.commands
+    ) (lib.filter (r: r.users == [ "krater-deploy" ]) on.security.sudo.extraRules);
     "CI deploy user may only build and restart staging" =
       let
         rules = lib.filter (r: r.users == [ "krater-deploy" ]) on.security.sudo.extraRules;
@@ -229,5 +238,15 @@ pkgs.runCommand "krater-weft" { } ''
   # production image.
   grep -F 'docker image ls krater ' ${svc.krater-build.serviceConfig.ExecStart}
   grep -F 'http://weft.wildebeest-stargazer.ts.net' ${edgeToml}
+
+  # The CI deploy command takes one full SHA and nothing else, and puts the
+  # old SHA back when the build fails.
+  deploy=${lib.head (lib.match ''restrict,command="([^"]+)".*'' (lib.head on.users.users.krater-deploy.openssh.authorizedKeys.keys))}
+  grep -F '^[0-9a-f]{40}$' "$deploy"
+  grep -F '> /var/lib/krater/source-rev' "$deploy"
+  grep -F 'sudo /run/current-system/sw/bin/systemctl start krater-build' "$deploy"
+  grep -F 'sudo /run/current-system/sw/bin/systemctl restart krater-web' "$deploy"
+  grep -F 'echo "$old" > /var/lib/krater/source-rev' "$deploy"
+  absent 'krater-prod' "$deploy"
   touch $out
 ''

@@ -214,11 +214,17 @@ in
     compute.enable = false;
     compute.labelPrefix = "krater-prod-";
 
+    # The Ganymede Review app in the Patchwork workspace. Channel ids aren't
+    # secret; the bot token and signing secret are in krater-env.age.
+    slackFeedChannelId = "C0CF4UKJ9EY";
+
     extraEnv = {
       KRATER_TRUSTED_PROXY_COUNT = trustedProxyCount;
       # Empty until Quilt production takes Krater's events. Events wait in
       # Krater's quilt_outbox table until it is set.
       KRATER_QUILT_URL = "";
+      # Private channel for the worker's admin alerts.
+      KRATER_SLACK_ALERTS_CHANNEL_ID = "C0CF352PB17";
     };
 
     # weft has no MagicDNS. KRATER_DATABASE_URL in krater-env.age names skein

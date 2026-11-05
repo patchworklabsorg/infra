@@ -5,7 +5,7 @@ vyos_secrets: "{{ vault_vyos_thimble | default({}) }}"
 # The IKEv2 VPN rollout stage in templates/vyos/thimble.conf.j2 (0 to 5).
 # README.md, "VPN", gives the steps. Raise it one stage at a time, and only
 # after the stage before it works on the router.
-vyos_ikev2_stage: 1
+vyos_ikev2_stage: 4
 # true only when `set vpn ipsec remote-access connection pw-ikev2
 # authentication ?` on thimble lists always-send-cert (vyos-1x T8027).
-vyos_ikev2_always_send_cert: false
+vyos_ikev2_always_send_cert: true

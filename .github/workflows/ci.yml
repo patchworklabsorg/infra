@@ -1,0 +1,35 @@
+name: CI
+
+# The lab hosts switch to a commit on main only after these checks passed on
+# it (modules/auto-upgrade, requireChecks). A red main stops every host.
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      # No submodules: ansible/vault is private, and no check needs it.
+      - uses: actions/checkout@v4
+
+      - uses: cachix/install-nix-action@v31
+        with:
+          # kvm for the NixOS VM tests in checks.
+          extra_nix_config: |
+            system-features = nixos-test benchmark big-parallel kvm
+
+      - name: Evaluate every system
+        run: nix flake check --no-build --all-systems
+
+      - name: Build the x86_64-linux checks
+        run: nix flake check -L
+
+      - name: Build every lab host
+        run: |
+          for host in $(nix eval --json .#nixosConfigurations --apply builtins.attrNames | jq -r '.[]'); do
+            nix build -L --no-link ".#nixosConfigurations.$host.config.system.build.toplevel"
+          done

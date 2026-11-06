@@ -180,7 +180,14 @@ in
       cliClientId = "";
     };
 
-    # CI (krater repo, .github/workflows/deploy.yml) joins the tailnet as
+    # Staging deploys each commit on Krater's main after its CI passes
+    # (krater-follow, every 5 minutes). weft pulls, so GitHub needs no way in
+    # to the lab. `journalctl -u krater-follow` shows what it did. To run
+    # another commit for a while: `touch /var/lib/krater/follow-hold`, then
+    # deploy as in the README. Production does not follow a branch.
+    follow.branch = "main";
+
+        # CI (krater repo, .github/workflows/deploy.yml) joins the tailnet as
     # tag:ci-krater and SSHes as krater-deploy to sshd on 2222 (Tailscale SSH
     # on 22 does not take keys). It deploys each main commit that passes CI.
     # The key may only run the deploy command (modules/krater/instance.nix).

@@ -1,5 +1,6 @@
 # Base for every Patchwork NixOS host: accounts, SSH, sudo, Nix, Tailscale,
-# the Proxmox guest agent and the patchwork.internal join (modules/ad-join).
+# the Proxmox guest agent, the patchwork.internal join (modules/ad-join) and
+# the switch to each new commit on main (modules/auto-upgrade).
 # Each host in hosts/ imports this.
 #
 # The local accounts below are the break-glass way in. Staff log in with their
@@ -20,7 +21,10 @@ let
   keys = import ./keys.nix;
 in
 {
-  imports = [ ../ad-join ];
+  imports = [
+    ../ad-join
+    ../auto-upgrade
+  ];
 
   options.patchwork = {
     admins = lib.mkOption {

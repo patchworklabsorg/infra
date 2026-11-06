@@ -270,6 +270,9 @@ pkgs.runCommand "krater-weft" { } ''
 
   # The CI deploy command takes one full SHA and nothing else, and puts the
   # old SHA back when the build fails.
+  # lib.match drops string context, so name the key itself here too: that
+  # puts the deploy script in the sandbox.
+  : ${lib.escapeShellArg (lib.head on.users.users.krater-deploy.openssh.authorizedKeys.keys)}
   deploy=${lib.head (lib.match ''restrict,command="([^"]+)".*'' (lib.head on.users.users.krater-deploy.openssh.authorizedKeys.keys))}
   grep -F '^[0-9a-f]{40}$' "$deploy"
   grep -F '> /var/lib/krater/source-rev' "$deploy"

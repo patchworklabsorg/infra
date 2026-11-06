@@ -8,11 +8,13 @@
 #
 # First time, and after a change made on the router by hand:
 #   ansible-playbook vyos.yml -t pull
-# This reads `show configuration commands`, writes the template without the
+# This reads `show configuration commands | cat`, writes the template without the
 # secrets, and writes the secrets to the vault. It never prints a value.
 # Review the template diff, then commit the template and the vault.
 #
 # Apply the repo to the router (check first):
+# Do not add -vvv to an apply: it prints the module arguments, and these
+# hold the running config and the secrets from the vault.
 #   ansible-playbook vyos.yml --check --diff
 #   ansible-playbook vyos.yml
 #
@@ -28,9 +30,13 @@
     vyos_vault_key: "vault_vyos_{{ inventory_hostname }}"
   tasks:
     # ------------------------------------------------------------------ pull
+    # "| cat" on each config read: the vyos terminal plugin sets
+    # "terminal width 512", and without a pipe VyOS puts a space in place of
+    # every 512th character of a long line. The pki ca certificates are
+    # longer than that, so the read would not match the router.
     - name: Pull | Read the running config
       vyos.vyos.vyos_command:
-        commands: show configuration commands
+        commands: show configuration commands | cat
       register: vyos_running
       no_log: true
       tags: [pull, never]
@@ -99,8 +105,18 @@
         quiet: true
       when: vyos_ikev2_stage | default(0) | int >= 5
 
+    # vyos_config reads the running config without a pipe (see the pull read
+    # above), so each long line looks changed and is sent on every run.
+    - name: Apply | Read the running config
+      vyos.vyos.vyos_command:
+        commands: show configuration commands | cat
+      register: vyos_running_apply
+      check_mode: false
+      no_log: true
+
     - name: Apply | Load the template and commit it
       vyos.vyos.vyos_config:
         src: "{{ vyos_template }}"
+        config: "{{ vyos_running_apply.stdout[0] }}"
         save: true
       diff: true

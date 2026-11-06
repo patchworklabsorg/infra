@@ -200,7 +200,9 @@ in
     environmentFile = "/run/agenix/krater-env";
 
     # Fallback build; deploys write /var/lib/krater-prod/source-rev instead.
-    rev = "b081a132fe1e6c2b8d998f45a65e507745052300";
+    # Production has no CI deploy yet, so its first build is this commit:
+    # Krater's main on 2026-11-03, after staging passed the whole flow live.
+    rev = "9673bbee867ae33c9743b9565b0b5004cd44f194";
 
     domain = "krater.patchworklabs.org";
     storage.domain = "krater-storage.patchworklabs.org";
@@ -212,11 +214,17 @@ in
     compute.enable = false;
     compute.labelPrefix = "krater-prod-";
 
+    # The Ganymede Review app in the Patchwork workspace. Channel ids aren't
+    # secret; the bot token and signing secret are in krater-env.age.
+    slackFeedChannelId = "C0CF4UKJ9EY";
+
     extraEnv = {
       KRATER_TRUSTED_PROXY_COUNT = trustedProxyCount;
       # Empty until Quilt production takes Krater's events. Events wait in
       # Krater's quilt_outbox table until it is set.
       KRATER_QUILT_URL = "";
+      # Private channel for the worker's admin alerts.
+      KRATER_SLACK_ALERTS_CHANNEL_ID = "C0CF352PB17";
     };
 
     # weft has no MagicDNS. KRATER_DATABASE_URL in krater-env.age names skein

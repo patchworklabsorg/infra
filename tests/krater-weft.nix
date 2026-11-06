@@ -1,5 +1,5 @@
 # Evaluates weft (hosts/weft) as it is: Krater staging on (its Weave client id
-# and env file exist), Krater production off (hosts/weft/krater-production.nix).
+# and env file exist), Krater production as hosts/weft/krater-production.nix sets it.
 # Checks the units, the nginx routes and the alastor edge routes. Then turns
 # staging off, and production on with a placeholder id, to check both
 # switches, and checks the database schema for both values of the production
@@ -56,6 +56,8 @@ let
       ];
     }).config;
   edge = mkEdge { };
+  edgeOff = mkEdge { patchwork.edge.kraterProduction = false; };
+  edgeOffToml = edgeOff.environment.etc."traefik/conf.d/patchwork.toml".source;
   edgeProd = mkEdge { patchwork.edge.kraterProduction = true; };
   edgeProdToml = edgeProd.environment.etc."traefik/conf.d/patchwork.toml".source;
   units = on.systemd.units;
@@ -110,11 +112,13 @@ let
     "storage volume limit" =
       on.patchwork.services.krater.storage.maxVolumes == 8
       && prod.patchwork.services.krater-production.storage.maxVolumes == 8;
-    "krater is not on skein" = !(skein.config.patchwork.centralDb.apps ? krater);
-    "production is off by default" = !on.patchwork.services.krater-production.enable;
-    "no production unit by default" = !(units ? "krater-prod-web.service");
-    "no production vhost by default" = !(vhosts ? krater-prod);
-    "no production secret by default" = !(on.age.secrets ? krater-env);
+    # Each of these follows the switch file: on and off are both valid states.
+    "krater is on skein only with the switch" =
+      (skein.config.patchwork.centralDb.apps ? krater) == switchFile;
+    "production follows the switch file" = on.patchwork.services.krater-production.enable == switchFile;
+    "production unit follows the switch file" = (units ? "krater-prod-web.service") == switchFile;
+    "production vhost follows the switch file" = (vhosts ? krater-prod) == switchFile;
+    "production secret follows the switch file" = (on.age.secrets ? krater-env) == switchFile;
     "edge default follows the switch file" = edge.patchwork.edge.kraterProduction == switchFile;
     "switch off: krater only on hem" =
       !(schemaOff.central.apps ? krater)
@@ -161,6 +165,33 @@ let
           skein
           hem
         ];
+    "CI deploy user for staging" =
+      on.users.users ? krater-deploy && on.users.users.krater-deploy.openssh.authorizedKeys.keys != [ ];
+    # Each key runs only the deploy command: no shell, no forwarding.
+    "CI deploy keys are restricted to the deploy command" = lib.all (
+      k:
+      lib.hasPrefix "restrict,command=\"/nix/store/" k && lib.hasInfix "-krater-deploy\" ssh-ed25519 " k
+    ) on.users.users.krater-deploy.openssh.authorizedKeys.keys;
+    "CI deploy user has no extra groups" = on.users.users.krater-deploy.extraGroups == [ ];
+    "CI deploy sudo is NOPASSWD only" = lib.all (
+      r: lib.all (c: c.options == [ "NOPASSWD" ]) r.commands
+    ) (lib.filter (r: r.users == [ "krater-deploy" ]) on.security.sudo.extraRules);
+    "CI deploy user may only build and restart staging" =
+      let
+        rules = lib.filter (r: r.users == [ "krater-deploy" ]) on.security.sudo.extraRules;
+        cmds = lib.concatMap (r: map (c: c.command) r.commands) rules;
+      in
+      lib.sort lib.lessThan cmds == [
+        "/run/current-system/sw/bin/systemctl restart krater-web"
+        "/run/current-system/sw/bin/systemctl start krater-build"
+      ];
+    "CI deploy user writes source-rev" =
+      lib.elem "f /var/lib/krater/source-rev 0644 krater-deploy users -" on.systemd.tmpfiles.rules;
+    "sshd on 2222 on the tailnet for CI" =
+      lib.elem 2222 on.services.openssh.ports
+      && lib.elem 2222 on.networking.firewall.interfaces.tailscale0.allowedTCPPorts;
+    "no CI deploy user for production" =
+      !(on.users.users ? krater-prod-deploy) && !(prod.users.users ? krater-prod-deploy);
     "krater is on hem" = hem.config.containers.central-staging.config.patchwork.centralDb.apps ? krater;
   };
   failed = lib.attrNames (lib.filterAttrs (_: ok: !ok) checks);
@@ -205,8 +236,10 @@ pkgs.runCommand "krater-weft" { } ''
   # alastor routes both names to weft over the tailnet.
   grep -F 'Host(`krater-staging.patchworklabs.org`)' ${edgeToml}
   grep -F 'Host(`krater-staging-storage.patchworklabs.org`)' ${edgeToml}
-  absent 'Host(`krater.patchworklabs.org`)' ${edgeToml}
-  absent 'Host(`krater-storage.patchworklabs.org`)' ${edgeToml}
+  # With the switch off, alastor has no production routes.
+  absent 'Host(`krater.patchworklabs.org`)' ${edgeOffToml}
+  absent 'Host(`krater-storage.patchworklabs.org`)' ${edgeOffToml}
+  grep -F 'Host(`krater-staging.patchworklabs.org`)' ${edgeOffToml}
 
   # Production: its own network, image repository, state and ports, and skein.
   skein="--add-host skein.wildebeest-stargazer.ts.net:100.109.223.51"
@@ -234,5 +267,15 @@ pkgs.runCommand "krater-weft" { } ''
   # An empty source-rev (the `rev` fallback) stays empty, not one newline.
   grep -F ': > /var/lib/krater/source-rev' ${svc.krater-follow.serviceConfig.ExecStart}
   grep -F 'http://weft.wildebeest-stargazer.ts.net' ${edgeToml}
+
+  # The CI deploy command takes one full SHA and nothing else, and puts the
+  # old SHA back when the build fails.
+  deploy=${lib.head (lib.match ''restrict,command="([^"]+)".*'' (lib.head on.users.users.krater-deploy.openssh.authorizedKeys.keys))}
+  grep -F '^[0-9a-f]{40}$' "$deploy"
+  grep -F '> /var/lib/krater/source-rev' "$deploy"
+  grep -F 'sudo /run/current-system/sw/bin/systemctl start krater-build' "$deploy"
+  grep -F 'sudo /run/current-system/sw/bin/systemctl restart krater-web' "$deploy"
+  grep -F 'echo "$old" > /var/lib/krater/source-rev' "$deploy"
+  absent 'krater-prod' "$deploy"
   touch $out
 ''

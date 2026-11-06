@@ -34,8 +34,10 @@ let
 in
 {
   # Weave (Patchwork IDP) runtime env. Must contain:
-  #   RAILS_MASTER_KEY=...   (decrypts config/credentials)
-  #   POSTGRES_PASSWORD=...  (Rails DB password + postgres container init)
+  #   RAILS_MASTER_KEY=...       (decrypts config/credentials)
+  #   POSTGRES_PASSWORD=...      (Rails DB password + postgres container init)
+  #   GITHUB_CLIENT_ID=...       (production GitHub app, for linking GitHub
+  #   GITHUB_CLIENT_SECRET=...    profiles, patchworklabsorg/weave#108)
   "weave-env.age".publicKeys = [
     jsp
     alastor
@@ -52,8 +54,10 @@ in
 
   # Weave staging (weave-staging.patchworklabs.org) runtime env. Same keys as
   # weave-env.age:
-  #   RAILS_MASTER_KEY=...   (the staging credentials key, not production's)
-  #   POSTGRES_PASSWORD=...  (staging Rails DB password + postgres container init)
+  #   RAILS_MASTER_KEY=...       (the staging credentials key, not production's)
+  #   POSTGRES_PASSWORD=...      (staging Rails DB password + postgres container init)
+  #   GITHUB_CLIENT_ID=...       (the GitHub app shared by staging and local dev,
+  #   GITHUB_CLIENT_SECRET=...    not production's)
   "weave-staging-env.age".publicKeys = [
     jsp
     alastor

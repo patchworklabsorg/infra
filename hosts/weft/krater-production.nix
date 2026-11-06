@@ -7,5 +7,5 @@
 # ./krater.nix. With it true and the Weave client id still empty, the weft
 # build fails on purpose.
 {
-  enable = false;
+  enable = true;
 }

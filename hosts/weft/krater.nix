@@ -187,9 +187,15 @@ in
     # deploy as in the README. Production does not follow a branch.
     follow.branch = "main";
 
-    # CI (krater repo, .github/workflows/deploy.yml) SSHes as krater-deploy.
-    # Add its public key here once the KRATER_DEPLOY_SSH_KEY secret exists.
-    deployAuthorizedKeys = [ ];
+        # CI (krater repo, .github/workflows/deploy.yml) joins the tailnet as
+    # tag:ci-krater and SSHes as krater-deploy to sshd on 2222 (Tailscale SSH
+    # on 22 does not take keys). It deploys each main commit that passes CI.
+    # The key may only run the deploy command (modules/krater/instance.nix).
+    # Private key is KRATER_DEPLOY_SSH_KEY in the krater repo's `staging`
+    # environment.
+    deployAuthorizedKeys = [
+      "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIKC+mqvF2BF2QkxeRlf5LSOmtw9Mke9JBUVu8P68h0/B github-actions-krater-deploy"
+    ];
 
     # alastor's Traefik routes here (nixosModules.edge-alastor), so no Traefik
     # on weft.
@@ -201,7 +207,9 @@ in
     environmentFile = "/run/agenix/krater-env";
 
     # Fallback build; deploys write /var/lib/krater-prod/source-rev instead.
-    rev = "b081a132fe1e6c2b8d998f45a65e507745052300";
+    # Production has no CI deploy yet, so its first build is this commit:
+    # Krater's main on 2026-11-03, after staging passed the whole flow live.
+    rev = "9673bbee867ae33c9743b9565b0b5004cd44f194";
 
     domain = "krater.patchworklabs.org";
     storage.domain = "krater-storage.patchworklabs.org";
@@ -213,11 +221,17 @@ in
     compute.enable = false;
     compute.labelPrefix = "krater-prod-";
 
+    # The Ganymede Review app in the Patchwork workspace. Channel ids aren't
+    # secret; the bot token and signing secret are in krater-env.age.
+    slackFeedChannelId = "C0CF4UKJ9EY";
+
     extraEnv = {
       KRATER_TRUSTED_PROXY_COUNT = trustedProxyCount;
       # Empty until Quilt production takes Krater's events. Events wait in
       # Krater's quilt_outbox table until it is set.
       KRATER_QUILT_URL = "";
+      # Private channel for the worker's admin alerts.
+      KRATER_SLACK_ALERTS_CHANNEL_ID = "C0CF352PB17";
     };
 
     # weft has no MagicDNS. KRATER_DATABASE_URL in krater-env.age names skein
@@ -231,6 +245,8 @@ in
       cliClientId = "";
     };
 
+    # No CI deploy for production yet: it gets its own key and user
+    # (krater-prod-deploy) when it goes on.
     deployAuthorizedKeys = [ ];
     traefik.enable = false;
   };

@@ -184,10 +184,10 @@ in
     # (krater-follow, every 5 minutes). weft pulls, so GitHub needs no way in
     # to the lab. `journalctl -u krater-follow` shows what it did. To run
     # another commit for a while: `touch /var/lib/krater/follow-hold`, then
-    # deploy as in the README. Production does not follow a branch.
+    # deploy as in the README. Production follows its own branch, below.
     follow.branch = "main";
 
-        # CI (krater repo, .github/workflows/deploy.yml) joins the tailnet as
+    # CI (krater repo, .github/workflows/deploy.yml) joins the tailnet as
     # tag:ci-krater and SSHes as krater-deploy to sshd on 2222 (Tailscale SSH
     # on 22 does not take keys). It deploys each main commit that passes CI.
     # The key may only run the deploy command (modules/krater/instance.nix).
@@ -206,10 +206,20 @@ in
     enable = prodEnable;
     environmentFile = "/run/agenix/krater-env";
 
-    # Fallback build; deploys write /var/lib/krater-prod/source-rev instead.
-    # Production has no CI deploy yet, so its first build is this commit:
-    # Krater's main on 2026-11-03, after staging passed the whole flow live.
+    # Fallback build; krater-prod-follow writes /var/lib/krater-prod/source-rev
+    # instead. Production's first build: Krater's main on 2026-11-03, after
+    # staging passed the whole flow live.
     rev = "9673bbee867ae33c9743b9565b0b5004cd44f194";
+
+    # Production deploys the head of Krater's `production` branch after its CI
+    # passed (krater-prod-follow, every 5 minutes). To ship, move the branch to
+    # a commit of main that staging already runs:
+    #   git push origin <sha>:production
+    # A commit with no CI runs waits, so only commits that CI tested deploy.
+    # To roll back, push an older commit (`git push -f origin <old-sha>:production`).
+    # `journalctl -u krater-prod-follow` shows what it did. To stop it for a
+    # while: `touch /var/lib/krater-prod/follow-hold`.
+    follow.branch = "production";
 
     domain = "krater.patchworklabs.org";
     storage.domain = "krater-storage.patchworklabs.org";

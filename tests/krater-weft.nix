@@ -155,9 +155,11 @@ let
       && units ? "krater-follow.timer"
       && !svc.krater-follow.restartIfChanged
       && !svc.krater-build.restartIfChanged;
-    "production does not follow a branch" =
-      prod.patchwork.services.krater-production.follow.branch == null
-      && !(prod.systemd.units ? "krater-prod-follow.timer");
+    "production follows its own branch" =
+      prod.patchwork.services.krater-production.follow.branch == "production"
+      && prod.systemd.units ? "krater-prod-follow.timer"
+      && !pvc.krater-prod-follow.restartIfChanged
+      && !pvc.krater-prod-build.restartIfChanged;
     "every lab host follows infra main" =
       lib.all (h: h.config.systemd.units ? "patchwork-upgrade.timer")
         [
@@ -266,6 +268,11 @@ pkgs.runCommand "krater-weft" { } ''
   grep -F 'echo "$current" > /var/lib/krater/source-rev' ${svc.krater-follow.serviceConfig.ExecStart}
   # An empty source-rev (the `rev` fallback) stays empty, not one newline.
   grep -F ': > /var/lib/krater/source-rev' ${svc.krater-follow.serviceConfig.ExecStart}
+  # Production follows its own branch, into its own state directory.
+  grep -F 'refs/heads/production' ${pvc.krater-prod-follow.serviceConfig.ExecStart}
+  grep -F '/var/lib/krater-prod/source-rev' ${pvc.krater-prod-follow.serviceConfig.ExecStart}
+  absent 'refs/heads/main' ${pvc.krater-prod-follow.serviceConfig.ExecStart}
+  absent '/var/lib/krater/source-rev' ${pvc.krater-prod-follow.serviceConfig.ExecStart}
   grep -F 'http://weft.wildebeest-stargazer.ts.net' ${edgeToml}
 
   # The CI deploy command takes one full SHA and nothing else, and puts the

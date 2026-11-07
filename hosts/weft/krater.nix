@@ -218,9 +218,10 @@ in
     # It deploys only a commit that is on main and whose CI passed. It waits
     # until /healthz and /healthz/worker answer 200, and starts the old
     # version again if they don't.
-    # To undo a change, revert it on main and ship the revert. Do not push an
-    # older commit: the database keeps the newer migrations, and the older
-    # code may not start on them.
+    # To undo a change, revert its code on main and ship the revert, but keep
+    # its migration files: the database stays at the newer migration. An older
+    # release starts on a newer database without migrating (krater-prod-web
+    # logs it), which works because Krater's migrations only add.
     # `journalctl -u krater-prod-follow` shows what it did. To stop it for a
     # while: `touch /var/lib/krater-prod/follow-hold`.
     follow.branch = "production";

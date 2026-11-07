@@ -285,6 +285,8 @@ pkgs.runCommand "krater-weft" { } ''
   grep -F '/var/lib/krater-prod/skip-backup' ${pvc.krater-prod-follow.serviceConfig.ExecStart}
   # The password never reaches pg_dump's command line.
   grep -F 'PGPASSFILE' ${pvc.krater-prod-backup.serviceConfig.ExecStart}
+  # An older release starts on a database a newer one migrated.
+  grep -rF 'The database is at a newer migration than this release' ${lib.concatStringsSep " " (lib.filter (lib.hasPrefix "/nix/store/") (lib.toList pvc.krater-prod-web.serviceConfig.ExecStartPre))}
   absent '"$url"' ${pvc.krater-prod-backup.serviceConfig.ExecStart}
   grep -F -- '--schema=krater' ${pvc.krater-prod-backup.serviceConfig.ExecStart}
   grep -F 'PGHOSTADDR=100.109.223.51' ${pvc.krater-prod-backup.serviceConfig.ExecStart}

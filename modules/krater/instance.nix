@@ -36,6 +36,22 @@ let
     if m == null then null else builtins.head m;
   envDir = "/run/${prefix}";
 
+  # Exits 3 when the database is at a migration this image does not have: a newer release ran
+  # it, and this is an older one starting again (a failed deploy, a revert). Migrations only add
+  # (Krater's docs/dev/production.md), so the older code can run on that schema, but
+  # `alembic upgrade head` would fail on the unknown revision.
+  dbIsNewer = lib.escapeShellArg ''
+    import sys
+    from alembic.config import Config
+    from alembic.runtime.migration import MigrationContext
+    from alembic.script import ScriptDirectory
+    from krater.db import get_engine
+    known = {r.revision for r in ScriptDirectory.from_config(Config("alembic.ini")).walk_revisions()}
+    with get_engine().connect() as c:
+        current = set(MigrationContext.configure(c).get_current_heads())
+    sys.exit(3 if current - known else 0)
+  '';
+
   # The only command a CI deploy key may run (`restrict,command=` on each key). CI sends one full
   # commit SHA as the ssh command, or `ping` to check that it can log in. No shell, no forwarding.
   systemctl = "${config.systemd.package}/bin/systemctl";
@@ -677,14 +693,19 @@ in
                 python -c 'from krater.db import get_engine; get_engine().connect().close()'; do
                 sleep 5
               done
-              # Migrations, then the screenshot bucket and its CORS rule. Both are idempotent.
+              # Migrations, then the screenshot bucket and its CORS rule. Both are idempotent. An
+              # older release on a database a newer one migrated starts without migrating.
               ${dockerBin} run --rm \
                 --network ${prefix} \
                 ${hostArgs} \
                 --env-file ${envDir}/app.env \
                 ${envArgs appEnv} \
                 "$image" \
-                sh -c 'alembic upgrade head && python -m krater.storage.ensure_bucket'
+                sh -c 'python -c "$1"; s=$?
+                  if [ "$s" = 3 ]; then echo "The database is at a newer migration than this release; starting without migrating."
+                  elif [ "$s" = 0 ]; then alembic upgrade head || exit 1
+                  else exit "$s"; fi
+                  python -m krater.storage.ensure_bucket' sh ${dbIsNewer}
             '')
           ];
           start = ''

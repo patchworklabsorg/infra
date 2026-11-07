@@ -211,15 +211,20 @@ in
     # staging passed the whole flow live.
     rev = "9673bbee867ae33c9743b9565b0b5004cd44f194";
 
-    # Production deploys the head of Krater's `production` branch after its CI
-    # passed (krater-prod-follow, every 5 minutes). To ship, move the branch to
-    # a commit of main that staging already runs:
+    # Production deploys the head of Krater's `production` branch
+    # (krater-prod-follow, every 5 minutes). To ship, move the branch to a
+    # commit of main that staging already runs:
     #   git push origin <sha>:production
-    # A commit with no CI runs waits, so only commits that CI tested deploy.
-    # To roll back, push an older commit (`git push -f origin <old-sha>:production`).
+    # It deploys only a commit that is on main and whose CI passed. It waits
+    # until /healthz and /healthz/worker answer 200, and starts the old
+    # version again if they don't.
+    # To undo a change, revert it on main and ship the revert. Do not push an
+    # older commit: the database keeps the newer migrations, and the older
+    # code may not start on them.
     # `journalctl -u krater-prod-follow` shows what it did. To stop it for a
     # while: `touch /var/lib/krater-prod/follow-hold`.
     follow.branch = "production";
+    follow.ancestorOf = "main";
 
     domain = "krater.patchworklabs.org";
     storage.domain = "krater-storage.patchworklabs.org";

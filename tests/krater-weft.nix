@@ -157,6 +157,7 @@ let
       && !svc.krater-build.restartIfChanged;
     "production follows its own branch" =
       prod.patchwork.services.krater-production.follow.branch == "production"
+      && prod.patchwork.services.krater-production.follow.ancestorOf == "main"
       && prod.systemd.units ? "krater-prod-follow.timer"
       && !pvc.krater-prod-follow.restartIfChanged
       && !pvc.krater-prod-build.restartIfChanged;
@@ -273,6 +274,13 @@ pkgs.runCommand "krater-weft" { } ''
   grep -F '/var/lib/krater-prod/source-rev' ${pvc.krater-prod-follow.serviceConfig.ExecStart}
   absent 'refs/heads/main' ${pvc.krater-prod-follow.serviceConfig.ExecStart}
   absent '/var/lib/krater/source-rev' ${pvc.krater-prod-follow.serviceConfig.ExecStart}
+  # Only a commit on main deploys to production, and only once it answers.
+  grep -F 'compare/main...$remote' ${pvc.krater-prod-follow.serviceConfig.ExecStart}
+  grep -F 'http://127.0.0.1:3012/healthz/worker' ${pvc.krater-prod-follow.serviceConfig.ExecStart}
+  absent 'compare/' ${svc.krater-follow.serviceConfig.ExecStart}
+  # Staging and production build one image at a time.
+  grep -F 'flock /run/krater-docker-build.lock docker build' ${svc.krater-build.serviceConfig.ExecStart}
+  grep -F 'flock /run/krater-docker-build.lock docker build' ${pvc.krater-prod-build.serviceConfig.ExecStart}
   grep -F 'http://weft.wildebeest-stargazer.ts.net' ${edgeToml}
 
   # The CI deploy command takes one full SHA and nothing else, and puts the

@@ -158,11 +158,11 @@ in
     extraEnv = {
       KRATER_TRUSTED_PROXY_COUNT = trustedProxyCount;
       KRATER_STAGING = "true";
-      # Krater sends its events to Quilt only when this is set. Leave it
-      # empty, or set it to Quilt staging. Never set it to production Quilt:
-      # staging events would land in the real books. Events wait in Krater's
-      # quilt_outbox table until it is set.
-      KRATER_QUILT_URL = "";
+      # Krater sends its events to Quilt staging. Never set it to production
+      # Quilt: staging events would land in the real books. Quilt staging
+      # takes them only while its ganymede patch has stagingWeaveClientId as
+      # its Weave client id; until then they wait in Krater's quilt_outbox.
+      KRATER_QUILT_URL = "https://quilt-staging.patchworklabs.org";
     };
 
     # weft has no MagicDNS. KRATER_DATABASE_URL names hem by its tailnet name

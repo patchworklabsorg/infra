@@ -391,6 +391,33 @@ in
       '';
     };
 
+    backup = {
+      beforeDeploy = lib.mkOption {
+        type = lib.types.bool;
+        default = false;
+        description = ''
+          Dump the database schema (`schema`) to `dir` before each follow deploy, with
+          ${prefix}-backup. A deploy whose dump fails does not run. Run the dump by hand with
+          `systemctl start ${prefix}-backup`.
+        '';
+      };
+      schema = lib.mkOption {
+        type = lib.types.str;
+        default = "krater";
+        description = "The schema to dump: the database role's own schema.";
+      };
+      dir = lib.mkOption {
+        type = lib.types.str;
+        default = "${stateDir}/backups";
+        description = "Where the dumps go (pg_dump custom format, root only).";
+      };
+      keep = lib.mkOption {
+        type = lib.types.ints.positive;
+        default = 14;
+        description = "How many dumps to keep. Older ones are deleted after each new dump.";
+      };
+    };
+
     follow = {
       branch = lib.mkOption {
         type = lib.types.nullOr lib.types.str;
@@ -700,6 +727,52 @@ in
       # again. A commit gets ${toString followMaxAttempts} tries, then waits for a new commit
       # (${followFailedFile}; remove it to try again). A manual deploy of another commit holds
       # only until the next run. To keep it, create ${followHoldFile} first.
+      # A dump of the schema, before a deploy migrates it. On this host, so not on the database
+      # host's disk.
+      (lib.mkIf cfg.backup.beforeDeploy {
+        systemd.services."${prefix}-backup" = {
+          description = "Dump the ${prefix} database schema";
+          after = [ "network-online.target" ];
+          wants = [ "network-online.target" ];
+          path = [
+            pkgs.coreutils
+            pkgs.gnused
+            pkgs.findutils
+            pkgs.postgresql_18
+          ];
+          serviceConfig = {
+            Type = "oneshot";
+            TimeoutStartSec = "15min";
+            UMask = "0077";
+            StandardOutput = "journal";
+            StandardError = "journal";
+            SyslogIdentifier = "${prefix}-backup";
+          };
+          script = ''
+            set -euo pipefail
+            # SQLAlchemy's URL (postgresql+psycopg://) as a libpq URL.
+            url=$(sed -n 's/^KRATER_DATABASE_URL=//p' ${cfg.environmentFile} | sed -E 's/^postgresql\+[a-z0-9]+:/postgresql:/')
+            if [ -z "$url" ]; then
+              echo "${prefix}-backup: KRATER_DATABASE_URL is missing from ${cfg.environmentFile}" >&2
+              exit 1
+            fi
+            # The host may have no DNS for the database host (extraHosts).
+            ${lib.concatStringsSep "\n" (
+              lib.mapAttrsToList (name: ip: ''
+                if [[ $url == *"@${name}:"* || $url == *"@${name}/"* ]]; then export PGHOSTADDR=${lib.escapeShellArg ip}; fi
+              '') cfg.extraHosts
+            )}
+            install -d -m 0700 ${cfg.backup.dir}
+            file=${cfg.backup.dir}/${cfg.backup.schema}-$(date -u +%Y%m%dT%H%M%SZ).dump
+            pg_dump --format=custom --schema=${lib.escapeShellArg cfg.backup.schema} --file="$file.partial" "$url"
+            mv "$file.partial" "$file"
+            echo "${prefix}-backup: $file ($(du -h "$file" | cut -f1))"
+            # Newest first; delete all after the first ${toString cfg.backup.keep}.
+            ls -1t ${cfg.backup.dir}/*.dump | tail -n +${toString (cfg.backup.keep + 1)} | xargs -r rm -f
+          '';
+        };
+      })
+
       (lib.mkIf (cfg.follow.branch != null) {
         systemd.services."${prefix}-follow" = {
           description = "Deploy the head of ${cfg.follow.branch} to ${prefix}";
@@ -783,6 +856,13 @@ in
                 | jq -r '.status')
               if [ "$onBranch" != behind ] && [ "$onBranch" != identical ]; then
                 echo "$remote is not on ${cfg.follow.ancestorOf} ($onBranch); not deploying it" >&2
+                exit 1
+              fi
+            ''}
+            ${lib.optionalString cfg.backup.beforeDeploy ''
+              # A dump first: the new version can migrate the database.
+              if ! systemctl start ${prefix}-backup; then
+                echo "$remote: the database dump failed; not deploying it" >&2
                 exit 1
               fi
             ''}

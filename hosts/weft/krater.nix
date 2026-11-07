@@ -226,6 +226,11 @@ in
     follow.branch = "production";
     follow.ancestorOf = "main";
 
+    # Before each deploy, krater-prod-follow dumps the `krater` schema to
+    # /var/lib/krater-prod/backups on weft (the last 14). A failed dump stops
+    # the deploy. By hand: `systemctl start krater-prod-backup`.
+    backup.beforeDeploy = true;
+
     domain = "krater.patchworklabs.org";
     storage.domain = "krater-storage.patchworklabs.org";
     # At most 8 volumes of 1 GB, as for staging (see the disk note there).

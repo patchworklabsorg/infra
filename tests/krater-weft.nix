@@ -158,6 +158,8 @@ let
     "production follows its own branch" =
       prod.patchwork.services.krater-production.follow.branch == "production"
       && prod.patchwork.services.krater-production.follow.ancestorOf == "main"
+      && prod.patchwork.services.krater-production.backup.beforeDeploy
+      && !(units ? "krater-backup.service")
       && prod.systemd.units ? "krater-prod-follow.timer"
       && !pvc.krater-prod-follow.restartIfChanged
       && !pvc.krater-prod-build.restartIfChanged;
@@ -278,6 +280,12 @@ pkgs.runCommand "krater-weft" { } ''
   grep -F 'compare/main...$remote' ${pvc.krater-prod-follow.serviceConfig.ExecStart}
   grep -F 'http://127.0.0.1:3012/healthz/worker' ${pvc.krater-prod-follow.serviceConfig.ExecStart}
   absent 'compare/' ${svc.krater-follow.serviceConfig.ExecStart}
+  # Production dumps its schema before a deploy, from skein by address.
+  grep -F 'systemctl start krater-prod-backup' ${pvc.krater-prod-follow.serviceConfig.ExecStart}
+  grep -F -- '--schema=krater' ${pvc.krater-prod-backup.serviceConfig.ExecStart}
+  grep -F 'PGHOSTADDR=100.109.223.51' ${pvc.krater-prod-backup.serviceConfig.ExecStart}
+  grep -F '/var/lib/krater-prod/backups' ${pvc.krater-prod-backup.serviceConfig.ExecStart}
+  absent 'krater-backup' ${svc.krater-follow.serviceConfig.ExecStart}
   # Staging and production build one image at a time.
   grep -F 'flock /run/krater-docker-build.lock docker build' ${svc.krater-build.serviceConfig.ExecStart}
   grep -F 'flock /run/krater-docker-build.lock docker build' ${pvc.krater-prod-build.serviceConfig.ExecStart}

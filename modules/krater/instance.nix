@@ -410,6 +410,16 @@ in
           runs waits. Needs `repo` on github.com.
         '';
       };
+      ancestorOf = lib.mkOption {
+        type = lib.types.nullOr lib.types.str;
+        default = null;
+        example = "main";
+        description = ''
+          Deploy a commit only when it is on this branch of `repo` too (the GitHub compare API).
+          With "main", a commit pushed only to a feature branch never deploys, even with green
+          checks. Needs `repo` on github.com.
+        '';
+      };
       dates = lib.mkOption {
         type = lib.types.str;
         default = "*:0/5";
@@ -454,7 +464,9 @@ in
               message = "patchwork.services.${optName}.compute.vastKeyFile must be set when compute.enable is true";
             }
             {
-              assertion = cfg.follow.branch != null && cfg.follow.requireChecks -> githubSlug != null;
+              assertion =
+                cfg.follow.branch != null && (cfg.follow.requireChecks || cfg.follow.ancestorOf != null)
+                -> githubSlug != null;
               message = "patchwork.services.${optName}.follow.requireChecks needs `repo` on https://github.com";
             }
             {
@@ -508,6 +520,7 @@ in
           requires = [ "docker.service" ];
           path = [
             pkgs.git
+            pkgs.util-linux
             config.virtualisation.docker.package
           ];
           # The Dockerfile uses BuildKit cache mounts.
@@ -535,7 +548,8 @@ in
               git -C "$src" init -q
               git -C "$src" fetch -q --depth 1 ${lib.escapeShellArg cfg.repo} "$rev"
               git -C "$src" checkout -q FETCH_HEAD
-              docker build --label "org.patchworklabs.krater.rev=$rev" --tag "$image" "$src"
+              # One image build at a time on the host: staging and production share its memory.
+              flock /run/krater-docker-build.lock docker build --label "org.patchworklabs.krater.rev=$rev" --tag "$image" "$src"
             fi
             # Drop older builds so the disk doesn't fill. An image a container still runs can't be
             # removed, so the running version survives until after the restart.
@@ -762,6 +776,16 @@ in
                 exit 1
               fi
             ''}
+            ${lib.optionalString (cfg.follow.ancestorOf != null) ''
+              # "behind" or "identical": $remote is on ${cfg.follow.ancestorOf}.
+              onBranch=$(curl -fsS -H 'Accept: application/vnd.github+json' \
+                "https://api.github.com/repos/${toString githubSlug}/compare/${cfg.follow.ancestorOf}...$remote" \
+                | jq -r '.status')
+              if [ "$onBranch" != behind ] && [ "$onBranch" != identical ]; then
+                echo "$remote is not on ${cfg.follow.ancestorOf} ($onBranch); not deploying it" >&2
+                exit 1
+              fi
+            ''}
             echo "deploying $remote (was ''${current:-${cfg.rev}})"
             echo "$remote" > ${revFile}
             if ! systemctl start ${prefix}-build; then
@@ -778,6 +802,21 @@ in
               systemctl restart ${prefix}-web || true
               exit 1
             fi
+            # The worker restarts with web (partOf). /healthz/worker answers 200 only while the
+            # worker beats, so both answering 200 means the new version runs.
+            for _ in $(seq 1 60); do
+              sleep 2
+              if curl -fsS -o /dev/null http://127.0.0.1:${toString cfg.port}/healthz \
+                && curl -fsS -o /dev/null http://127.0.0.1:${toString cfg.port}/healthz/worker; then
+                echo "$remote is live"
+                exit 0
+              fi
+            done
+            restore
+            failed
+            echo "$remote did not stay up; starting ''${current:-${cfg.rev}} again" >&2
+            systemctl restart ${prefix}-web || true
+            exit 1
           '';
         };
 

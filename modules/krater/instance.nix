@@ -27,6 +27,7 @@ let
   followFailedFile = "${stateDir}/follow-failed-rev";
   followMaxAttempts = 3;
   followHoldFile = "${stateDir}/follow-hold";
+  skipBackupFile = "${stateDir}/skip-backup";
   # owner/name of `repo` on GitHub, for the check-runs API. null for another host.
   githubSlug =
     let
@@ -396,9 +397,12 @@ in
         type = lib.types.bool;
         default = false;
         description = ''
-          Dump the database schema (`schema`) to `dir` before each follow deploy, with
-          ${prefix}-backup. A deploy whose dump fails does not run. Run the dump by hand with
-          `systemctl start ${prefix}-backup`.
+          Dump the database schema (`schema`) to `dir` with ${prefix}-backup before each follow
+          deploy restarts the portal (which migrates). A failed dump fails the deploy; touch
+          ${stateDir}/skip-backup to deploy once without one. Run a dump by hand with
+          `systemctl start ${prefix}-backup`. Restore on the database host with
+          `pg_restore --clean --if-exists --schema=<schema> -d <database> <file>`. pg_dump is
+          PostgreSQL 18, the version of modules/central-db: it refuses a newer server.
         '';
       };
       schema = lib.mkOption {
@@ -414,7 +418,7 @@ in
       keep = lib.mkOption {
         type = lib.types.ints.positive;
         default = 14;
-        description = "How many dumps to keep. Older ones are deleted after each new dump.";
+        description = "How many dumps to keep (one per deploy, not per day). Older ones are deleted after each new dump.";
       };
     };
 
@@ -751,20 +755,36 @@ in
           script = ''
             set -euo pipefail
             # SQLAlchemy's URL (postgresql+psycopg://) as a libpq URL.
-            url=$(sed -n 's/^KRATER_DATABASE_URL=//p' ${cfg.environmentFile} | sed -E 's/^postgresql\+[a-z0-9]+:/postgresql:/')
-            if [ -z "$url" ]; then
-              echo "${prefix}-backup: KRATER_DATABASE_URL is missing from ${cfg.environmentFile}" >&2
+            url=$(sed -n 's/^KRATER_DATABASE_URL=//p' ${cfg.environmentFile} | tail -n 1 | tr -d '\r' \
+              | sed -E 's/^postgresql\+[a-z0-9]+:/postgresql:/')
+            # The password goes to libpq in a file, not on the command line where `ps` shows it.
+            re='^postgresql://([^:@/]+):([^@]+)@([^:/?]+)(:([0-9]+))?/([^?]+)(\?(.*))?$'
+            if ! [[ $url =~ $re ]]; then
+              echo "${prefix}-backup: KRATER_DATABASE_URL in ${cfg.environmentFile} is missing or not user:password@host/db" >&2
               exit 1
             fi
+            decode() { printf '%b' "''${1//%/\\x}"; }
+            export PGUSER PGHOST PGPORT PGDATABASE
+            PGUSER=$(decode "''${BASH_REMATCH[1]}")
+            pass=$(decode "''${BASH_REMATCH[2]}")
+            PGHOST=''${BASH_REMATCH[3]}
+            PGPORT=''${BASH_REMATCH[5]:-5432}
+            PGDATABASE=$(decode "''${BASH_REMATCH[6]}")
+            if [[ ''${BASH_REMATCH[8]} =~ (^|&)sslmode=([a-z-]+) ]]; then export PGSSLMODE=''${BASH_REMATCH[2]}; fi
             # The host may have no DNS for the database host (extraHosts).
             ${lib.concatStringsSep "\n" (
               lib.mapAttrsToList (name: ip: ''
-                if [[ $url == *"@${name}:"* || $url == *"@${name}/"* ]]; then export PGHOSTADDR=${lib.escapeShellArg ip}; fi
+                if [ "$PGHOST" = ${lib.escapeShellArg name} ]; then export PGHOSTADDR=${lib.escapeShellArg ip}; fi
               '') cfg.extraHosts
             )}
+            export PGPASSFILE=$(mktemp)
             install -d -m 0700 ${cfg.backup.dir}
             file=${cfg.backup.dir}/${cfg.backup.schema}-$(date -u +%Y%m%dT%H%M%SZ).dump
-            pg_dump --format=custom --schema=${lib.escapeShellArg cfg.backup.schema} --file="$file.partial" "$url"
+            trap 'rm -f "$PGPASSFILE" "$file.partial"' EXIT
+            # pgpass escapes : and \ in each field.
+            esc() { local v=''${1//\\/\\\\}; printf '%s' "''${v//:/\\:}"; }
+            printf '*:*:*:*:%s\n' "$(esc "$pass")" > "$PGPASSFILE"
+            pg_dump --format=custom --schema=${lib.escapeShellArg cfg.backup.schema} --file="$file.partial"
             mv "$file.partial" "$file"
             echo "${prefix}-backup: $file ($(du -h "$file" | cut -f1))"
             # Newest first; delete all after the first ${toString cfg.backup.keep}.
@@ -859,13 +879,6 @@ in
                 exit 1
               fi
             ''}
-            ${lib.optionalString cfg.backup.beforeDeploy ''
-              # A dump first: the new version can migrate the database.
-              if ! systemctl start ${prefix}-backup; then
-                echo "$remote: the database dump failed; not deploying it" >&2
-                exit 1
-              fi
-            ''}
             echo "deploying $remote (was ''${current:-${cfg.rev}})"
             echo "$remote" > ${revFile}
             if ! systemctl start ${prefix}-build; then
@@ -874,6 +887,19 @@ in
               echo "$remote did not build; the running version stays" >&2
               exit 1
             fi
+            ${lib.optionalString cfg.backup.beforeDeploy ''
+              # A dump just before the restart, which migrates the database. A failed dump counts
+              # as a failed deploy (3 tries). ${skipBackupFile} skips the dump for one deploy.
+              if [ -e ${skipBackupFile} ]; then
+                rm -f ${skipBackupFile}
+                echo "WARNING: $remote deploys with NO database dump (${skipBackupFile} was set)" >&2
+              elif ! systemctl start ${prefix}-backup; then
+                restore
+                failed
+                echo "$remote: the database dump failed; not deploying it. To deploy without one: touch ${skipBackupFile}" >&2
+                exit 1
+              fi
+            ''}
             if ! systemctl restart ${prefix}-web; then
               # The old container is gone already, so start the old version again.
               restore

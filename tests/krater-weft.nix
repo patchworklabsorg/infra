@@ -282,6 +282,10 @@ pkgs.runCommand "krater-weft" { } ''
   absent 'compare/' ${svc.krater-follow.serviceConfig.ExecStart}
   # Production dumps its schema before a deploy, from skein by address.
   grep -F 'systemctl start krater-prod-backup' ${pvc.krater-prod-follow.serviceConfig.ExecStart}
+  grep -F '/var/lib/krater-prod/skip-backup' ${pvc.krater-prod-follow.serviceConfig.ExecStart}
+  # The password never reaches pg_dump's command line.
+  grep -F 'PGPASSFILE' ${pvc.krater-prod-backup.serviceConfig.ExecStart}
+  absent '"$url"' ${pvc.krater-prod-backup.serviceConfig.ExecStart}
   grep -F -- '--schema=krater' ${pvc.krater-prod-backup.serviceConfig.ExecStart}
   grep -F 'PGHOSTADDR=100.109.223.51' ${pvc.krater-prod-backup.serviceConfig.ExecStart}
   grep -F '/var/lib/krater-prod/backups' ${pvc.krater-prod-backup.serviceConfig.ExecStart}

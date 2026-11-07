@@ -27,6 +27,7 @@ let
   followFailedFile = "${stateDir}/follow-failed-rev";
   followMaxAttempts = 3;
   followHoldFile = "${stateDir}/follow-hold";
+  skipBackupFile = "${stateDir}/skip-backup";
   # owner/name of `repo` on GitHub, for the check-runs API. null for another host.
   githubSlug =
     let
@@ -34,6 +35,22 @@ let
     in
     if m == null then null else builtins.head m;
   envDir = "/run/${prefix}";
+
+  # Exits 3 when the database is at a migration this image does not have: a newer release ran
+  # it, and this is an older one starting again (a failed deploy, a revert). Migrations only add
+  # (Krater's docs/dev/production.md), so the older code can run on that schema, but
+  # `alembic upgrade head` would fail on the unknown revision.
+  dbIsNewer = lib.escapeShellArg ''
+    import sys
+    from alembic.config import Config
+    from alembic.runtime.migration import MigrationContext
+    from alembic.script import ScriptDirectory
+    from krater.db import get_engine
+    known = {r.revision for r in ScriptDirectory.from_config(Config("alembic.ini")).walk_revisions()}
+    with get_engine().connect() as c:
+        current = set(MigrationContext.configure(c).get_current_heads())
+    sys.exit(3 if current - known else 0)
+  '';
 
   # The only command a CI deploy key may run (`restrict,command=` on each key). CI sends one full
   # commit SHA as the ssh command, or `ping` to check that it can log in. No shell, no forwarding.
@@ -391,6 +408,36 @@ in
       '';
     };
 
+    backup = {
+      beforeDeploy = lib.mkOption {
+        type = lib.types.bool;
+        default = false;
+        description = ''
+          Dump the database schema (`schema`) to `dir` with ${prefix}-backup before each follow
+          deploy restarts the portal (which migrates). A failed dump fails the deploy; touch
+          ${stateDir}/skip-backup to deploy once without one. Run a dump by hand with
+          `systemctl start ${prefix}-backup`. Restore on the database host with
+          `pg_restore --clean --if-exists --schema=<schema> -d <database> <file>`. pg_dump is
+          PostgreSQL 18, the version of modules/central-db: it refuses a newer server.
+        '';
+      };
+      schema = lib.mkOption {
+        type = lib.types.str;
+        default = "krater";
+        description = "The schema to dump: the database role's own schema.";
+      };
+      dir = lib.mkOption {
+        type = lib.types.str;
+        default = "${stateDir}/backups";
+        description = "Where the dumps go (pg_dump custom format, root only).";
+      };
+      keep = lib.mkOption {
+        type = lib.types.ints.positive;
+        default = 14;
+        description = "How many dumps to keep (one per deploy, not per day). Older ones are deleted after each new dump.";
+      };
+    };
+
     follow = {
       branch = lib.mkOption {
         type = lib.types.nullOr lib.types.str;
@@ -646,14 +693,19 @@ in
                 python -c 'from krater.db import get_engine; get_engine().connect().close()'; do
                 sleep 5
               done
-              # Migrations, then the screenshot bucket and its CORS rule. Both are idempotent.
+              # Migrations, then the screenshot bucket and its CORS rule. Both are idempotent. An
+              # older release on a database a newer one migrated starts without migrating.
               ${dockerBin} run --rm \
                 --network ${prefix} \
                 ${hostArgs} \
                 --env-file ${envDir}/app.env \
                 ${envArgs appEnv} \
                 "$image" \
-                sh -c 'alembic upgrade head && python -m krater.storage.ensure_bucket'
+                sh -c 'python -c "$1"; s=$?
+                  if [ "$s" = 3 ]; then echo "The database is at a newer migration than this release; starting without migrating."
+                  elif [ "$s" = 0 ]; then alembic upgrade head || exit 1
+                  else exit "$s"; fi
+                  python -m krater.storage.ensure_bucket' sh ${dbIsNewer}
             '')
           ];
           start = ''
@@ -700,6 +752,68 @@ in
       # again. A commit gets ${toString followMaxAttempts} tries, then waits for a new commit
       # (${followFailedFile}; remove it to try again). A manual deploy of another commit holds
       # only until the next run. To keep it, create ${followHoldFile} first.
+      # A dump of the schema, before a deploy migrates it. On this host, so not on the database
+      # host's disk.
+      (lib.mkIf cfg.backup.beforeDeploy {
+        systemd.services."${prefix}-backup" = {
+          description = "Dump the ${prefix} database schema";
+          after = [ "network-online.target" ];
+          wants = [ "network-online.target" ];
+          path = [
+            pkgs.coreutils
+            pkgs.gnused
+            pkgs.findutils
+            pkgs.postgresql_18
+          ];
+          serviceConfig = {
+            Type = "oneshot";
+            TimeoutStartSec = "15min";
+            UMask = "0077";
+            StandardOutput = "journal";
+            StandardError = "journal";
+            SyslogIdentifier = "${prefix}-backup";
+          };
+          script = ''
+            set -euo pipefail
+            # SQLAlchemy's URL (postgresql+psycopg://) as a libpq URL.
+            url=$(sed -n 's/^KRATER_DATABASE_URL=//p' ${cfg.environmentFile} | tail -n 1 | tr -d '\r' \
+              | sed -E 's/^postgresql\+[a-z0-9]+:/postgresql:/')
+            # The password goes to libpq in a file, not on the command line where `ps` shows it.
+            re='^postgresql://([^:@/]+):([^@]+)@([^:/?]+)(:([0-9]+))?/([^?]+)(\?(.*))?$'
+            if ! [[ $url =~ $re ]]; then
+              echo "${prefix}-backup: KRATER_DATABASE_URL in ${cfg.environmentFile} is missing or not user:password@host/db" >&2
+              exit 1
+            fi
+            decode() { printf '%b' "''${1//%/\\x}"; }
+            export PGUSER PGHOST PGPORT PGDATABASE
+            PGUSER=$(decode "''${BASH_REMATCH[1]}")
+            pass=$(decode "''${BASH_REMATCH[2]}")
+            PGHOST=''${BASH_REMATCH[3]}
+            PGPORT=''${BASH_REMATCH[5]:-5432}
+            PGDATABASE=$(decode "''${BASH_REMATCH[6]}")
+            if [[ ''${BASH_REMATCH[8]} =~ (^|&)sslmode=([a-z-]+) ]]; then export PGSSLMODE=''${BASH_REMATCH[2]}; fi
+            # The host may have no DNS for the database host (extraHosts).
+            ${lib.concatStringsSep "\n" (
+              lib.mapAttrsToList (name: ip: ''
+                if [ "$PGHOST" = ${lib.escapeShellArg name} ]; then export PGHOSTADDR=${lib.escapeShellArg ip}; fi
+              '') cfg.extraHosts
+            )}
+            export PGPASSFILE=$(mktemp)
+            install -d -m 0700 ${cfg.backup.dir}
+            file=${cfg.backup.dir}/${cfg.backup.schema}-$(date -u +%Y%m%dT%H%M%SZ).dump
+            trap 'rm -f "$PGPASSFILE" "$file.partial"' EXIT
+            # pgpass escapes : and \ in each field.
+            esc() { local v=''${1//\\/\\\\}; printf '%s' "''${v//:/\\:}"; }
+            printf '*:*:*:*:%s\n' "$(esc "$pass")" > "$PGPASSFILE"
+            pg_dump --format=custom --schema=${lib.escapeShellArg cfg.backup.schema} --file="$file.partial"
+            mv "$file.partial" "$file"
+            echo "${prefix}-backup: $file ($(du -h "$file" | cut -f1))"
+            # Newest first; delete all after the first ${toString cfg.backup.keep}.
+            ls -1t ${cfg.backup.dir}/*.dump | tail -n +${toString (cfg.backup.keep + 1)} | xargs -r rm -f
+          '';
+        };
+      })
+
       (lib.mkIf (cfg.follow.branch != null) {
         systemd.services."${prefix}-follow" = {
           description = "Deploy the head of ${cfg.follow.branch} to ${prefix}";
@@ -794,6 +908,19 @@ in
               echo "$remote did not build; the running version stays" >&2
               exit 1
             fi
+            ${lib.optionalString cfg.backup.beforeDeploy ''
+              # A dump just before the restart, which migrates the database. A failed dump counts
+              # as a failed deploy (3 tries). ${skipBackupFile} skips the dump for one deploy.
+              if [ -e ${skipBackupFile} ]; then
+                rm -f ${skipBackupFile}
+                echo "WARNING: $remote deploys with NO database dump (${skipBackupFile} was set)" >&2
+              elif ! systemctl start ${prefix}-backup; then
+                restore
+                failed
+                echo "$remote: the database dump failed; not deploying it. To deploy without one: touch ${skipBackupFile}" >&2
+                exit 1
+              fi
+            ''}
             if ! systemctl restart ${prefix}-web; then
               # The old container is gone already, so start the old version again.
               restore

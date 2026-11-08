@@ -17,6 +17,7 @@ let
   hem = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIHFHZ/2Q8x+Z9toPli2yQZpQ4e8dBMOqDAFyAFaxgsIE";
   batting = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIEN68vw2ir+q4fMQV8WBJvH7WDG4D2uFjChwkkA93LJC";
   weft = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIAbzni2Be82ORFcHSPVr7OPpfs80Py04JtwyCKc4L28X";
+  hank = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAICKNDAtCadjdzqG+5t6BncycydzqfqV3z02uvIejmO8S";
   #
   # Central DB passwords, one file per app and environment, password only:
   #   central-prod-<app>.age        recipients: jsp, skein
@@ -182,6 +183,7 @@ in
   # `agenix -r`.
   "stash-env.age".publicKeys = [
     jsp
+    hank
   ];
 
   # Stash staging (stash-staging.patchworklabs.org on hank, RAILS_ENV=staging)
@@ -190,6 +192,7 @@ in
   # and STASH_HOSTS are also set in hosts/hank/stash.nix and override this file.
   "stash-staging-env.age".publicKeys = [
     jsp
+    hank
   ];
 
   # Stash's role password in patchwork_central (skein) and on hem:5432.
@@ -256,5 +259,6 @@ in
     hem
     batting
     weft
+    hank
   ];
 }

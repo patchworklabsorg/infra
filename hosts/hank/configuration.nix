@@ -14,8 +14,8 @@
 # more than the other app VMs. Memory: Chromium and LibreOffice run in the
 # worker container, with a 3 GB limit.
 #
-# Not built yet: add it to terraform/proxmox (done), run bin/install-host
-# hank, then put its host key in secrets/secrets.nix and re-key.
+# Built on 2026-11-08 with nixos-anywhere from the installer ISO. Its host key
+# is in secrets/secrets.nix.
 { config, ... }:
 {
   imports = [

@@ -93,6 +93,12 @@ locals {
       wiki           = false
       projects       = false
     }
+    "stash" = {
+      description = "The Patchwork Labs archive: web pages, repositories, documents and media, kept as submitted"
+      visibility  = "public"
+      wiki        = false
+      projects    = false
+    }
   }
 
   # Org owners. Everyone else is a member.

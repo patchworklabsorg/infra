@@ -93,6 +93,14 @@ locals {
       wiki           = false
       projects       = false
     }
+    "stash" = {
+      description = "The Patchwork Labs archive: web pages, repositories, documents and media, kept as submitted"
+      visibility  = "public"
+      # The repo is empty until the first push, so it has no default branch yet.
+      default_branch = null
+      wiki           = false
+      projects       = false
+    }
   }
 
   # Org owners. Everyone else is a member.

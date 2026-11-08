@@ -56,7 +56,7 @@ Two things are not in the provider schema, so this root cannot manage them: the 
 3. To give a team access, add the repository to `local.team_repos`.
 4. To protect the default branch, add an entry to `local.rulesets`.
 
-If the repository already exists, also add an `import` block for it.
+While `imports.tf` exists, its import blocks cover every entry in `local.repos`. A repository that GitHub does not know yet must set `exists = false`, or the plan fails on the import. Remove `exists` after `imports.tf` is deleted.
 
 ## Add a team member
 

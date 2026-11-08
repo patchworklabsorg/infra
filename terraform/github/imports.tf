@@ -1,14 +1,17 @@
 # These objects already exist. The import blocks adopt them into state.
 # After the first apply, you may delete this file.
+#
+# A repository entry with `exists = false` is new: the plan creates it and must not import it.
+# Importing a name that GitHub does not know fails the whole plan.
 
 import {
-  for_each = local.repos
+  for_each = { for k, v in local.repos : k => v if try(v.exists, true) }
   to       = github_repository.repo[each.key]
   id       = each.key
 }
 
 import {
-  for_each = { for k, v in local.repos : k => v if try(v.default_branch, "main") != null }
+  for_each = { for k, v in local.repos : k => v if try(v.exists, true) && try(v.default_branch, "main") != null }
   to       = github_branch_default.repo[each.key]
   id       = each.key
 }

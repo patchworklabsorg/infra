@@ -105,12 +105,12 @@ let
     "nginx appends to X-Forwarded-For" =
       lib.hasInfix "X-Forwarded-For $proxy_add_x_forwarded_for" on.services.nginx.commonHttpConfig;
     # Staging's events go to Quilt staging only, so they never land in the real books; production's go to
-    # production Quilt, or nowhere yet.
+    # production Quilt.
     "staging events go to Quilt staging" =
       on.patchwork.services.krater.extraEnv.KRATER_QUILT_URL == "https://quilt-staging.patchworklabs.org";
-    "production events go to production Quilt or nowhere" = lib.elem
+    "production events go to production Quilt" =
       prod.patchwork.services.krater-production.extraEnv.KRATER_QUILT_URL
-      [ "" "https://quilt.patchworklabs.org" ];
+      == "https://quilt.patchworklabs.org";
     "staging shows the staging marker" = on.patchwork.services.krater.extraEnv.KRATER_STAGING == "true";
     "production has no staging marker" =
       !(prod.patchwork.services.krater-production.extraEnv ? KRATER_STAGING);

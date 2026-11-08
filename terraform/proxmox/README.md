@@ -12,6 +12,7 @@ This root manages the Patchwork NixOS VMs on the Proxmox node `pve01`. It uses t
 | `hem` | 358 | 10.100.90.58 | 2 GB |
 | `batting` | 360 | 10.100.90.60 | 4 GB |
 | `weft` | 361 | 10.100.90.61 | 4 GB |
+| `hank` | 362 | 10.100.90.62 | 6 GB |
 
 hem, batting and weft are in the state (created with `qm create` and `tofu import`). To change one VM, target it, for example `tofu apply -target='proxmox_virtual_environment_vm.nixos["weft"]'`. A plan for an imported VM shows `agent.timeout` 15m to 2m. That value is only in the state.
 

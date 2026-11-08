@@ -104,6 +104,8 @@ let
       };
 
       # The data dir is owned by uid 1000, the `rails` user inside the image.
+      # The host must reserve uid 1000 for a system account (hosts/hank gives
+      # it to `stash`), or the first local login account owns the archive.
       prepareData = pkgs.writeShellScript "${name}-prepare-data" ''
         set -e
         mkdir -p ${lib.escapeShellArg dataDir}
@@ -127,6 +129,9 @@ let
       # ── Web (Rails) ─────────────────────────────────────────────────────────
       systemd.services."${name}-web" = lib.recursiveUpdate (common "web") {
         description = "${label} web";
+        # Until the env file decrypts on this host (its key must be a recipient),
+        # the unit does not start, instead of restarting and pulling every 10 s.
+        unitConfig.ConditionPathExists = environmentFile;
         serviceConfig = {
           ExecStartPre = [
             prepareData
@@ -167,7 +172,7 @@ let
             '')
           ];
           ExecStart = pkgs.writeShellScript "${name}-worker-start" ''
-            exec ${run "worker" "--shm-size 1g --memory ${workerMemory} \\\n  "} \
+            exec ${run "worker" "--shm-size 1g --memory ${workerMemory} --memory-swap ${workerMemory} \\\n  "} \
               bundle exec good_job start
           '';
         };
@@ -214,7 +219,11 @@ let
     workerMemory = lib.mkOption {
       type = lib.types.str;
       default = "3g";
-      description = "Docker memory limit of the worker container (Chromium, LibreOffice, yt-dlp).";
+      description = ''
+        Docker memory limit of the worker container (Chromium, LibreOffice,
+        yt-dlp). Swap is capped at the same value, so the limit is the whole
+        footprint and zram on the host does not stretch it.
+      '';
     };
 
     extraEnv = lib.mkOption {

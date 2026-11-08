@@ -30,6 +30,17 @@
 
   virtualisation.docker.enable = true;
 
+  # The containers run as uid 1000 (`rails` in the image) and own /data/stash.
+  # Reserve that uid for a system account here, so NixOS gives the local login
+  # accounts (modules/common) 1001 and up, and no person owns the archive.
+  users.users.stash = {
+    uid = 1000;
+    group = "stash";
+    isSystemUser = true;
+    description = "Stash containers (uid of the image's rails user)";
+  };
+  users.groups.stash.gid = 1000;
+
   # The lab hosts do not use MagicDNS (modules/common, --accept-dns=false),
   # so *.ts.net names do not resolve here. The Stash env files connect to
   # skein and hem by tailnet name. The containers use the host network, and

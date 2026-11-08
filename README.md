@@ -68,10 +68,12 @@ flowchart LR
   alastor -- "tailnet, HTTP :80" --> warp["warp: misc"]
   alastor -- "tailnet, HTTP :80" --> batting["batting: Quilt"]
   alastor -- "tailnet, HTTP :80" --> weft["weft: Krater staging"]
+  alastor -- "tailnet, HTTP :80" --> hank["hank: Stash (not built yet)"]
   batting -- "tailnet :5432" --> seam["seam: patchwork_central_restricted"]
   batting -. "staging :5433" .-> hem["hem: :5432 / :5433"]
   weft -. "staging :5432" .-> hem
-  skein["skein: patchwork_central (no app connects yet)"]
+  hank -- "tailnet :5432" --> skein["skein: patchwork_central"]
+  hank -. "staging :5432" .-> hem
 ```
 
 ## Login

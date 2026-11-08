@@ -58,6 +58,8 @@
       extraEnv = {
         WEAVE_ISSUER = "https://weave-staging.patchworklabs.org";
         STASH_HOSTS = "stash-staging.patchworklabs.org";
+        # One capture at a time on staging: production's two plus this on 6 GB.
+        GOOD_JOB_MAX_THREADS = "1";
       };
     };
   };

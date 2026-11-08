@@ -22,6 +22,9 @@ let
         # Weave is the IDP, so it owns people.* and runs its migrations.
         weave = { };
         selvage.read = [ "people" ];
+        # Stash (the archive): archives, captures, artifacts, audit events, GoodJob, Active Storage
+        # rows. It stores requesters' Patchwork IDs only, so no shared schemas.
+        stash = { };
       }
       // (if kraterProduction then { inherit krater; } else { });
       # Apps on staging (hem) only, until they have a production instance. skein

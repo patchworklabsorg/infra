@@ -42,6 +42,15 @@ let
       backend = "weft";
       hosts = [ "krater-staging-storage.patchworklabs.org" ];
     };
+    # Stash on hank (../hank/stash.nix): production and staging.
+    stash-hank = {
+      backend = "hank";
+      hosts = [ "stash.patchworklabs.org" ];
+    };
+    stash-staging-hank = {
+      backend = "hank";
+      hosts = [ "stash-staging.patchworklabs.org" ];
+    };
     # Every host in ../warp/redirects.nix. A new path on an existing host
     # needs no change here.
     redirects = {

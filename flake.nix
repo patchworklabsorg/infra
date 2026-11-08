@@ -42,6 +42,8 @@
         "warp" # misc: redirects and other low-risk shared things
         "batting" # Quilt
         "weft" # Krater
+        "hank" # Stash
+        "hank" # Stash
         "skein" # patchwork_central, prod
         "seam" # patchwork_central_restricted, prod
         "hem" # both staging clusters

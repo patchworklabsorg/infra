@@ -248,9 +248,11 @@ in
 
     extraEnv = {
       KRATER_TRUSTED_PROXY_COUNT = trustedProxyCount;
-      # Empty until Quilt production takes Krater's events. Events wait in
-      # Krater's quilt_outbox table until it is set.
-      KRATER_QUILT_URL = "";
+      # Krater production sends its events to Quilt production. Quilt takes
+      # them only while its ganymede patch has productionWeaveClientId as its
+      # Weave client id and Krater's Weave app allows the `quilt` scope.
+      # Until then they wait in Krater's quilt_outbox and retry.
+      KRATER_QUILT_URL = "https://quilt.patchworklabs.org";
       # Private channel for the worker's admin alerts.
       KRATER_SLACK_ALERTS_CHANNEL_ID = "C0CF352PB17";
     };

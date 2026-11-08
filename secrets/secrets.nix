@@ -17,6 +17,7 @@ let
   hem = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIHFHZ/2Q8x+Z9toPli2yQZpQ4e8dBMOqDAFyAFaxgsIE";
   batting = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIEN68vw2ir+q4fMQV8WBJvH7WDG4D2uFjChwkkA93LJC";
   weft = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIAbzni2Be82ORFcHSPVr7OPpfs80Py04JtwyCKc4L28X";
+  hank = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAICKNDAtCadjdzqG+5t6BncycydzqfqV3z02uvIejmO8S";
   #
   # Central DB passwords, one file per app and environment, password only:
   #   central-prod-<app>.age        recipients: jsp, skein
@@ -168,6 +169,44 @@ in
     batting
   ];
 
+  # Stash (stash.patchworklabs.org on hank) runtime env. bin/new-stash-secrets
+  # writes it. Must contain the variables in docs/deploy.md of
+  # patchworklabsorg/stash:
+  #   CENTRAL_DATABASE_URL=postgres://stash:<password>@skein.wildebeest-stargazer.ts.net:5432/patchwork_central?sslmode=disable
+  #     (<password> is the value in central-prod-stash.age)
+  #   SECRET_KEY_BASE=...
+  #   STASH_HOSTS=stash.patchworklabs.org
+  #   WEAVE_ISSUER=https://weave.patchworklabs.org
+  #   WEAVE_CLIENT_ID=...  WEAVE_CLIENT_SECRET=...  (the Stash app in Weave)
+  #   GITHUB_TOKEN=        (optional, read-only public access)
+  # hank is not built yet: add its host key here after the install, then
+  # `agenix -r`.
+  "stash-env.age".publicKeys = [
+    jsp
+    hank
+  ];
+
+  # Stash staging (stash-staging.patchworklabs.org on hank, RAILS_ENV=staging)
+  # runtime env. Same variables, with staging values: the password in
+  # central-staging-stash.age, hem:5432, a Weave staging app. WEAVE_ISSUER
+  # and STASH_HOSTS are also set in hosts/hank/stash.nix and override this file.
+  "stash-staging-env.age".publicKeys = [
+    jsp
+    hank
+  ];
+
+  # Stash's role password in patchwork_central (skein) and on hem:5432.
+  # Password only. hank does not get these files: the same password is in the
+  # env file, so a rotation must change both files.
+  "central-prod-stash.age".publicKeys = [
+    jsp
+    skein
+  ];
+  "central-staging-stash.age".publicKeys = [
+    jsp
+    hem
+  ];
+
   # App role passwords in patchwork_central (skein). Password only. Add the
   # host that runs the app as a recipient when the app connects, and put the
   # same password in that app's env file.
@@ -220,5 +259,6 @@ in
     hem
     batting
     weft
+    hank
   ];
 }

@@ -22,6 +22,9 @@ Declarative infrastructure for Patchwork Labs: every Patchwork host, the NixOS m
 | `modules/weave/` | The Weave service module. |
 | `modules/quilt/` | The Quilt service module. |
 | `modules/krater/` | The Krater service module (portal, worker, screenshot storage; Krater Compute off by default). Exported as `nixosModules.krater`. |
+| `modules/stash/` | The Stash service module (web, worker, archived files on a host directory). |
+| `hosts/hank/stash.nix` | Stash production and staging on hank: instance settings and secrets. |
+| `bin/new-stash-secrets` | Writes the two secrets of Stash staging or production with a new random database password and `SECRET_KEY_BASE`. Prints no value. |
 | `hosts/weft/krater.nix` | Krater staging and production on weft: instance settings and secrets. Production is off until `hosts/weft/krater-production.nix` turns it on. |
 | `tests/` | NixOS VM tests. |
 | `secrets/` | agenix secrets. `secrets.nix` lists the recipients of each file. |
@@ -46,6 +49,7 @@ The lab hosts below are NixOS VMs on pve01, VLAN 90 (`patchwork.internal`). alas
 | `hem` | 358 | 10.100.90.58 | 2 GB | Both staging clusters: central on 5432, restricted on 5433. Quilt staging uses the restricted one. |
 | `batting` | 360 | 10.100.90.60 | 4 GB | Quilt prod + staging. nginx on `tailscale0:80` for alastor. |
 | `weft` | 361 | 10.100.90.61 | 4 GB | Krater staging, and Krater production (off until its switch). nginx on `tailscale0:80` for alastor. |
+| `hank` | 362 | 10.100.90.62 | 6 GB | Stash prod + staging (declared, not built yet). 80 GB disk for the archived files. nginx on `tailscale0:80` for alastor. |
 
 The Windows hosts are managed by Ansible (`ansible/`):
 
@@ -64,10 +68,12 @@ flowchart LR
   alastor -- "tailnet, HTTP :80" --> warp["warp: misc"]
   alastor -- "tailnet, HTTP :80" --> batting["batting: Quilt"]
   alastor -- "tailnet, HTTP :80" --> weft["weft: Krater staging"]
+  alastor -- "tailnet, HTTP :80" --> hank["hank: Stash (not built yet)"]
   batting -- "tailnet :5432" --> seam["seam: patchwork_central_restricted"]
   batting -. "staging :5433" .-> hem["hem: :5432 / :5433"]
   weft -. "staging :5432" .-> hem
-  skein["skein: patchwork_central (no app connects yet)"]
+  hank -- "tailnet :5432" --> skein["skein: patchwork_central"]
+  hank -. "staging :5432" .-> hem
 ```
 
 ## Login

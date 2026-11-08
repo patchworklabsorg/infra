@@ -93,6 +93,14 @@ variable "vms" {
       disk_gb   = 40
       ip        = "10.100.90.61"
     }
+    # Stash: the archive. More disk than the others, because the archived files live on it.
+    hank = {
+      vmid      = 362
+      memory_mb = 6144
+      cores     = 2
+      disk_gb   = 80
+      ip        = "10.100.90.62"
+    }
   }
 }
 

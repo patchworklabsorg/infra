@@ -42,6 +42,7 @@
         "warp" # misc: redirects and other low-risk shared things
         "batting" # Quilt
         "weft" # Krater
+        "hank" # Stash
         "skein" # patchwork_central, prod
         "seam" # patchwork_central_restricted, prod
         "hem" # both staging clusters
@@ -79,6 +80,9 @@
         # The Krater service module alone, with no instance settings. weft
         # imports it through hosts/weft/krater.nix.
         krater = ./modules/krater;
+        # The Stash service module alone, with no instance settings. hank
+        # imports it through hosts/hank/stash.nix.
+        stash = ./modules/stash;
       };
 
       nixosConfigurations = nixpkgs.lib.genAttrs hosts mkHost;
@@ -136,7 +140,12 @@
                 ansible-filters =
                   pkgs.runCommand "ansible-filters"
                     {
-                      nativeBuildInputs = [ (pkgs.python3.withPackages (p: [ p.jinja2 p.pyyaml ])) ];
+                      nativeBuildInputs = [
+                        (pkgs.python3.withPackages (p: [
+                          p.jinja2
+                          p.pyyaml
+                        ]))
+                      ];
                       src = ./ansible;
                     }
                     ''
@@ -193,6 +202,8 @@
               # agenix -e / -r, and bin/new-quilt-staging-secrets.
               agenix.packages.${system}.default
               pkgs.openssl
+              # bin/new-stash-secrets encrypts with age itself.
+              pkgs.age
             ];
           };
         }

@@ -1,2 +1,3 @@
 # Run on Linux even from a Windows checkout (core.autocrlf would turn them CRLF).
 bin/new-krater-secrets text eol=lf
+bin/new-stash-secrets text eol=lf

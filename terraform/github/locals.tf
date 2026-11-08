@@ -96,13 +96,8 @@ locals {
     "stash" = {
       description = "The Patchwork Labs archive: web pages, repositories, documents and media, kept as submitted"
       visibility  = "public"
-      # New: the plan creates it, imports.tf skips it. Remove `exists` once imports.tf is gone.
-      exists = false
-      # The repo is empty until the first push, so it has no default branch yet. Set it to
-      # "main" after the push.
-      default_branch = null
-      wiki           = false
-      projects       = false
+      wiki        = false
+      projects    = false
     }
   }
 

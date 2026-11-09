@@ -126,6 +126,35 @@ in
     })
   ];
 
+  # The units read their env file only when they start, and the file's path
+  # never changes, so a new secret alone restarts nothing. Restart them when
+  # the encrypted file changes, so an `agenix -e` reaches Krater on the next
+  # switch. The trigger is the file's hash, not its path: the path is inside
+  # the flake's source, which changes on every commit. The worker is partOf
+  # the web unit, and web requires storage, so a storage restart covers both.
+  systemd.services = lib.mkMerge [
+    (lib.mkIf prodEnable (
+      let
+        hash = builtins.hashFile "sha256" prodEnvFile;
+      in
+      {
+        krater-prod-storage.restartTriggers = [ hash ];
+        krater-prod-web.restartTriggers = [ hash ];
+        krater-prod-worker.restartTriggers = [ hash ];
+      }
+    ))
+    (lib.mkIf enable (
+      let
+        hash = builtins.hashFile "sha256" envFile;
+      in
+      {
+        krater-storage.restartTriggers = [ hash ];
+        krater-web.restartTriggers = [ hash ];
+        krater-worker.restartTriggers = [ hash ];
+      }
+    ))
+  ];
+
   patchwork.services.krater = {
     inherit enable;
     # agenix's default path for the secret above.

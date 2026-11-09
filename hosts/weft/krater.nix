@@ -1,8 +1,8 @@
 # Krater on weft: staging and production, with their settings and agenix
 # secrets. nginx on weft (./configuration.nix) fronts the ports, and alastor
 # routes the public names here over the tailnet (nixosModules.edge-alastor).
-# Staging runs now. Production is ready but off: ./krater-production.nix is
-# its one switch.
+# Staging and production both run. ./krater-production.nix is production's
+# one switch.
 #
 # Staging follows the Patchwork staging standard: its own database (the
 # `krater` schema in patchwork_central on hem:5432), Weave staging for sign-in,

@@ -33,6 +33,24 @@
     };
   };
 
+  # The containers read their env file only when they start, and the file's
+  # path never changes, so a new secret alone restarts nothing. Restart the
+  # units when the encrypted file changes, so an `agenix -e` reaches Stash on
+  # the next switch. The trigger is the file's hash, not its path: the path is
+  # inside the flake's source, which changes on every commit. The worker is
+  # partOf the web unit, so the web trigger covers it too.
+  systemd.services =
+    let
+      prod = builtins.hashFile "sha256" ../../secrets/stash-env.age;
+      staging = builtins.hashFile "sha256" ../../secrets/stash-staging-env.age;
+    in
+    {
+      stash-web.restartTriggers = [ prod ];
+      stash-worker.restartTriggers = [ prod ];
+      stash-staging-web.restartTriggers = [ staging ];
+      stash-staging-worker.restartTriggers = [ staging ];
+    };
+
   patchwork.services.stash = {
     enable = true;
     # Pin to ghcr.io/patchworklabsorg/stash:<sha> once a build is known good.

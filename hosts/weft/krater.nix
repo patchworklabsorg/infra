@@ -63,7 +63,7 @@
 #      then weft once, then `systemctl start krater-prod-build` by hand.
 #   5. DNS: krater and krater-storage, proxied to alastor (patchworklabsorg/dns).
 #   6. Bump patchwork-infra in jaspermayone/infra and deploy alastor.
-{ lib, ... }:
+{ config, lib, ... }:
 let
   # Staging: Weave staging (https://weave-staging.patchworklabs.org). The client
   # id of Krater's app there (redirect URI
@@ -133,7 +133,7 @@ in
   # the flake's source, which changes on every commit. The worker is partOf
   # the web unit, and web requires storage, so a storage restart covers both.
   systemd.services = lib.mkMerge [
-    (lib.mkIf prodEnable (
+    (lib.mkIf config.patchwork.services.krater-production.enable (
       let
         hash = builtins.hashFile "sha256" prodEnvFile;
       in
@@ -143,7 +143,7 @@ in
         krater-prod-worker.restartTriggers = [ hash ];
       }
     ))
-    (lib.mkIf enable (
+    (lib.mkIf config.patchwork.services.krater.enable (
       let
         hash = builtins.hashFile "sha256" envFile;
       in

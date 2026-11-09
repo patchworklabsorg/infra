@@ -111,6 +111,12 @@ let
     "production events go to production Quilt" =
       prod.patchwork.services.krater-production.extraEnv.KRATER_QUILT_URL
       == "https://quilt.patchworklabs.org";
+    # The same split for Stash: staging archives go to Stash staging only.
+    "staging archives go to Stash staging" =
+      on.patchwork.services.krater.extraEnv.KRATER_STASH_URL == "https://stash-staging.patchworklabs.org";
+    "production archives go to production Stash" =
+      prod.patchwork.services.krater-production.extraEnv.KRATER_STASH_URL
+      == "https://stash.patchworklabs.org";
     "staging shows the staging marker" = on.patchwork.services.krater.extraEnv.KRATER_STAGING == "true";
     "production has no staging marker" =
       !(prod.patchwork.services.krater-production.extraEnv ? KRATER_STAGING);

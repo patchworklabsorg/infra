@@ -163,6 +163,10 @@ in
       # takes them only while its ganymede patch has stagingWeaveClientId as
       # its Weave client id; until then they wait in Krater's quilt_outbox.
       KRATER_QUILT_URL = "https://quilt-staging.patchworklabs.org";
+      # Krater sends submission URLs to Stash staging to archive. Never set it
+      # to production Stash. Stash takes them only while Krater's Weave app
+      # allows the `stash` scope; until then they wait in stash_archives.
+      KRATER_STASH_URL = "https://stash-staging.patchworklabs.org";
     };
 
     # weft has no MagicDNS. KRATER_DATABASE_URL names hem by its tailnet name
@@ -253,6 +257,10 @@ in
       # Weave client id and Krater's Weave app allows the `quilt` scope.
       # Until then they wait in Krater's quilt_outbox and retry.
       KRATER_QUILT_URL = "https://quilt.patchworklabs.org";
+      # Krater production sends submission URLs to Stash production to
+      # archive. Stash takes them only while Krater's Weave app allows the
+      # `stash` scope. Until then they wait in stash_archives and retry.
+      KRATER_STASH_URL = "https://stash.patchworklabs.org";
       # Private channel for the worker's admin alerts.
       KRATER_SLACK_ALERTS_CHANNEL_ID = "C0CF352PB17";
     };

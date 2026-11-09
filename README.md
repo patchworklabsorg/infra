@@ -25,6 +25,7 @@ Declarative infrastructure for Patchwork Labs: every Patchwork host, the NixOS m
 | `modules/stash/` | The Stash service module (web, worker, archived files on a host directory). |
 | `hosts/hank/stash.nix` | Stash production and staging on hank: instance settings and secrets. |
 | `bin/new-stash-secrets` | Writes the two secrets of Stash staging or production with a new random database password and `SECRET_KEY_BASE`. Prints no value. |
+| `bin/set-env-secret` | Sets keys in an agenix env file, for example a Weave client id and secret. Asks for each value with the echo off. Prints no value. |
 | `hosts/weft/krater.nix` | Krater staging and production on weft: instance settings and secrets. Production is off until `hosts/weft/krater-production.nix` turns it on. |
 | `tests/` | NixOS VM tests. |
 | `secrets/` | agenix secrets. `secrets.nix` lists the recipients of each file. |

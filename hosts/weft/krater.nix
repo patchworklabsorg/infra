@@ -1,8 +1,8 @@
 # Krater on weft: staging and production, with their settings and agenix
 # secrets. nginx on weft (./configuration.nix) fronts the ports, and alastor
 # routes the public names here over the tailnet (nixosModules.edge-alastor).
-# Staging runs now. Production is ready but off: ./krater-production.nix is
-# its one switch.
+# Staging and production both run. ./krater-production.nix is production's
+# one switch.
 #
 # Staging follows the Patchwork staging standard: its own database (the
 # `krater` schema in patchwork_central on hem:5432), Weave staging for sign-in,
@@ -63,7 +63,7 @@
 #      then weft once, then `systemctl start krater-prod-build` by hand.
 #   5. DNS: krater and krater-storage, proxied to alastor (patchworklabsorg/dns).
 #   6. Bump patchwork-infra in jaspermayone/infra and deploy alastor.
-{ lib, ... }:
+{ config, lib, ... }:
 let
   # Staging: Weave staging (https://weave-staging.patchworklabs.org). The client
   # id of Krater's app there (redirect URI
@@ -124,6 +124,35 @@ in
       #   mode = "400";
       # };
     })
+  ];
+
+  # The units read their env file only when they start, and the file's path
+  # never changes, so a new secret alone restarts nothing. Restart them when
+  # the encrypted file changes, so an `agenix -e` reaches Krater on the next
+  # switch. The trigger is the file's hash, not its path: the path is inside
+  # the flake's source, which changes on every commit. The worker is partOf
+  # the web unit, and web requires storage, so a storage restart covers both.
+  systemd.services = lib.mkMerge [
+    (lib.mkIf config.patchwork.services.krater-production.enable (
+      let
+        hash = builtins.hashFile "sha256" prodEnvFile;
+      in
+      {
+        krater-prod-storage.restartTriggers = [ hash ];
+        krater-prod-web.restartTriggers = [ hash ];
+        krater-prod-worker.restartTriggers = [ hash ];
+      }
+    ))
+    (lib.mkIf config.patchwork.services.krater.enable (
+      let
+        hash = builtins.hashFile "sha256" envFile;
+      in
+      {
+        krater-storage.restartTriggers = [ hash ];
+        krater-web.restartTriggers = [ hash ];
+        krater-worker.restartTriggers = [ hash ];
+      }
+    ))
   ];
 
   patchwork.services.krater = {

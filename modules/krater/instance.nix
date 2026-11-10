@@ -246,7 +246,21 @@ let
       // lib.optionalAttrs (timeoutStart != null) { TimeoutStartSec = timeoutStart; };
     };
 
-  pull = image: "${dockerBin} pull ${image}";
+  # Pull the image, but start with the local copy when the pull fails and one is
+  # there. A failed start of storage fails web and the worker for good ("Dependency
+  # failed", no retry), so a registry or DNS blip at a switch must not stop it.
+  pull =
+    image:
+    pkgs.writeShellScript "${prefix}-pull" ''
+      # A bound well under the unit's 90s start timeout, so a pull that hangs on DNS still falls back.
+      if ! ${pkgs.coreutils}/bin/timeout 45 ${dockerBin} pull ${lib.escapeShellArg image}; then
+        if ${dockerBin} image inspect ${lib.escapeShellArg image} >/dev/null 2>&1; then
+          echo "${prefix}: pull of ${image} failed; starting the local copy" >&2
+        else
+          exit 1
+        fi
+      fi
+    '';
 in
 {
   options.patchwork.services.${optName} = {

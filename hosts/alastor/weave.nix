@@ -47,7 +47,13 @@
     enable = true;
     environmentFile = config.age.secrets.weave-env.path;
     # Sender domain verified in Resend. The weave repo's lib/weave.rb reads it.
-    extraEnv.MAIL_DOMAIN = "weave.patchworklabs.org";
+    extraEnv = {
+      MAIL_DOMAIN = "weave.patchworklabs.org";
+      # The identity team's private channel in the Patchwork Slack. Weave posts
+      # new review work there (weave repo, docs/KYC.md, "Team notices"). The
+      # Weave bot must be a member of the channel.
+      SLACK_IDENTITY_CHANNEL = "C0CG7NDU0G6";
+    };
     # CI (weave repo, .github/workflows/deploy.yml) SSHes as weave-deploy and runs
     # `sudo systemctl restart weave-web`. Private key is the WEAVE_DEPLOY_SSH_KEY
     # repo secret.
@@ -80,6 +86,8 @@
         # this domain. Who receives staging mail is the weave repo's
         # `mail_allowlist` credential.
         MAIL_DOMAIN = "sandbox.patchworklabs.org";
+        # The identity team's channel in the sandbox Slack workspace.
+        SLACK_IDENTITY_CHANNEL = "C0CG4N1BCBF";
 
         # AD as the password store (weave repo, docs/ACTIVE_DIRECTORY.md).
         # Staging only. Production stays off until the staging test plan

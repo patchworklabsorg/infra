@@ -252,7 +252,8 @@ let
   pull =
     image:
     pkgs.writeShellScript "${prefix}-pull" ''
-      if ! ${dockerBin} pull ${lib.escapeShellArg image}; then
+      # A bound well under the unit's 90s start timeout, so a pull that hangs on DNS still falls back.
+      if ! ${pkgs.coreutils}/bin/timeout 45 ${dockerBin} pull ${lib.escapeShellArg image}; then
         if ${dockerBin} image inspect ${lib.escapeShellArg image} >/dev/null 2>&1; then
           echo "${prefix}: pull of ${image} failed; starting the local copy" >&2
         else

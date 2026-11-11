@@ -1,4 +1,4 @@
-# weft — Krater host (pve01 VMID 361, 10.100.90.61, 4 GB, 40 GB disk)
+# weft — Krater host (pve01 VMID 361, 10.100.90.61, 4 GB, 100 GB disk)
 #
 # One app per VM. Sudo and the docker group are root here, so only the
 # break-glass admins (modules/common) and lnx-weft-admins get them. Only this
@@ -68,6 +68,14 @@ in
   # 4 GB, a Python portal and worker, SeaweedFS, and image builds on the host:
   # zram gives room for a build without the OOM killer.
   zramSwap.enable = true;
+
+  # The disk is 100 GB (terraform/proxmox/variables.tf; it was 40 GB at the
+  # install). Proxmox grows the virtual disk in place, but the GPT root
+  # partition and its ext4 keep their old size until these run: on each boot,
+  # growpart grows the root partition to the end of the disk, then
+  # systemd-growfs grows ext4 online. Both do nothing once it's full size.
+  boot.growPartition = true;
+  fileSystems."/".autoResize = true;
 
   services.nginx = {
     enable = true;

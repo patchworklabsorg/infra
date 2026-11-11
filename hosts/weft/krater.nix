@@ -210,7 +210,7 @@ in
       clientId = stagingWeaveClientId;
       # The `krater` CLI's public Weave app (Krater's docs/compute/cli.md).
       # Empty keeps the CLI's API off.
-      cliClientId = "";
+      cliClientId = "C1Z8WVdKDknqOARIXAuyqAvTlg0BM9EgGZVQThB2luA";
     };
 
     # Staging deploys each commit on Krater's main after its CI passes
@@ -302,7 +302,7 @@ in
     weave = {
       issuer = productionWeaveIssuer;
       clientId = productionWeaveClientId;
-      cliClientId = "";
+      cliClientId = "xp1VXxTDi-rsRWe9PMrmx75CJn3pOryT3j4RlyKzvnc";
     };
 
     # No CI deploy for production yet: it gets its own key and user

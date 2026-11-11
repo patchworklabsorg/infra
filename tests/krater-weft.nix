@@ -123,7 +123,7 @@ let
     "staging label prefix" = on.patchwork.services.krater.compute.labelPrefix == "krater-staging-";
     "storage volume limit" =
       on.patchwork.services.krater.storage.maxVolumes == 8
-      && prod.patchwork.services.krater-production.storage.maxVolumes == 8;
+      && prod.patchwork.services.krater-production.storage.maxVolumes == 50;
     # Each of these follows the switch file: on and off are both valid states.
     "krater is on skein only with the switch" =
       (skein.config.patchwork.centralDb.apps ? krater) == switchFile;

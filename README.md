@@ -291,7 +291,7 @@ Do the steps in this order.
 8. Create the secrets: `nix develop -c bin/new-quilt-staging-secrets`. The script writes `restricted-staging-quilt.age` and `quilt-staging-env.age` with a random password and `SECRET_KEY_BASE`. It leaves the Weave client and the Mercury tokens empty.
 9. In Weave staging (`https://weave-staging.patchworklabs.org`), register Quilt as a confidential app:
    - Redirect URI: `https://quilt-staging.patchworklabs.org/auth/callback`.
-   - Scopes: `openid profile email roles directory introspect`. A superadmin allows `directory` and `introspect`.
+   - Scopes: `openid profile email roles patches directory introspect`. A superadmin allows `directory` and `introspect`. Quilt asks for `patches` at sign-in once patchworklabsorg/quilt#63 is deployed: without it in the app's scopes, every sign-in fails with `invalid_scope`.
    - App roles: `viewer`, `finance`, `admin`.
 10. In the Mercury sandbox dashboard (Settings, API Tokens), create a read-only token. Staging refuses to boot without `MERCURY_API_TOKEN`.
 11. Add the values: `cd secrets && agenix -e quilt-staging-env.age`. Set `WEAVE_CLIENT_ID`, `WEAVE_CLIENT_SECRET` and `MERCURY_API_TOKEN`. Keep `QUILT_TOPUPS=off`.

@@ -108,6 +108,14 @@ in
         file = prodEnvFile;
         mode = "400";
       };
+      krater-project-secrets-key = {
+        file = ../../secrets/krater-project-secrets-key.age;
+        mode = "400";
+      };
+      krater-vast-key = {
+        file = ../../secrets/krater-vast-key.age;
+        mode = "400";
+      };
     })
     (lib.mkIf (builtins.pathExists envFile) {
       krater-staging-env = {
@@ -134,7 +142,15 @@ in
   systemd.services = lib.mkMerge [
     (lib.mkIf config.patchwork.services.krater-production.enable (
       let
-        hash = builtins.hashFile "sha256" prodEnvFile;
+        # The env file and the key files: a new Vast key or Fernet key must
+        # reach the units too.
+        hash = builtins.hashString "sha256" (
+          lib.concatMapStrings (builtins.hashFile "sha256") [
+            prodEnvFile
+            ../../secrets/krater-project-secrets-key.age
+            ../../secrets/krater-vast-key.age
+          ]
+        );
       in
       {
         krater-prod-storage.restartTriggers = [ hash ];
@@ -286,10 +302,15 @@ in
     # weft's root filesystem must keep that much free (`df -h /`).
     storage.maxVolumes = 50;
 
-    # Compute stays off until Krater's paid checks pass. The prefix is set now
-    # so that turning compute on cannot use staging's.
-    compute.enable = false;
+    # Compute rents on Vast with production's own key, not staging's. The
+    # scheduler destroys any instance under this prefix that it does not know,
+    # so no other machine may use it.
+    compute.enable = true;
     compute.labelPrefix = "krater-prod-";
+    compute.vastKeyFile = config.age.secrets.krater-vast-key.path;
+    # Fernet keys for project secrets, one per line, newest first. A backup is
+    # in 1Password (Patchwork Labs, "Krater production Fernet key").
+    projectSecretsKeyFile = config.age.secrets.krater-project-secrets-key.path;
 
     # The Ganymede Review app in the Patchwork workspace. Channel ids aren't
     # secret; the bot token and signing secret are in krater-env.age.

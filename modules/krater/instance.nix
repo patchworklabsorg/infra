@@ -110,6 +110,11 @@ let
     KRATER_S3_ENDPOINT_URL = "http://${prefix}-storage:8333";
     KRATER_S3_PUBLIC_ENDPOINT_URL = "https://${cfg.storage.domain}";
   }
+  # The store's size, for Krater's "storage 80% full" alert and its admin overview. Each volume is 1 GB. With 0
+  # volumes (sized from free disk) Krater can't know it, so the variable is left out and the alert is off.
+  // lib.optionalAttrs (cfg.storage.maxVolumes > 0) {
+    KRATER_COMPUTE_STORE_CAPACITY_GB = toString cfg.storage.maxVolumes;
+  }
   // lib.optionalAttrs cfg.compute.enable {
     KRATER_VAST_MODE = "live";
     # The scheduler destroys unknown instances with this prefix: unique per deployment on one Vast account.

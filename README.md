@@ -318,7 +318,7 @@ To test top-ups on staging, add a sandbox `MERCURY_WRITE_TOKEN` with batting's p
 | Item | Value |
 |---|---|
 | URL | `https://selvage.patchworklabs.org` (router `selvage-twill` in `edge-alastor`). nginx on twill passes only `POST /slack/*` and `GET /up`. Every other path is 404. |
-| Units | `selvage-web` (`./bin/rails server` on `127.0.0.1:3009`, migrates on start) and `selvage-worker` (`bundle exec good_job start`) |
+| Units | `selvage-web` (`./bin/rails db:migrate` in a one-off container, then `./bin/rails server` on `127.0.0.1:3009`) and `selvage-worker` (`bundle exec good_job start`, on the web container's image) |
 | Image | `ghcr.io/patchworklabsorg/selvage:main` (option `image`). Pin it to `:<sha>` for a known build. |
 | Databases | `patchwork_central` on skein and `patchwork_central_restricted` on seam. Role and schema `selvage` in each. |
 | Secrets | `selvage-env.age`, `selvage-ghcr-token.age` (twill), `central-prod-selvage.age` (skein), `restricted-prod-selvage.age` (seam) |
@@ -336,7 +336,9 @@ flowchart LR
   worker --> seam
 ```
 
-The env file has `CENTRAL_DATABASE_URL` and `RESTRICTED_DATABASE_URL`. Their passwords must be the values in `central-prod-selvage.age` and `restricted-prod-selvage.age`. skein and seam set those values on the role `selvage`. The role has no `CREATE` on either database, so the image must migrate with `db:migrate`, not `db:prepare`, and must not run `CREATE SCHEMA` or `enable_extension`.
+The env file has `CENTRAL_DATABASE_URL` and `RESTRICTED_DATABASE_URL`. Their passwords must be the values in `central-prod-selvage.age` and `restricted-prod-selvage.age`. skein and seam set those values on the role `selvage`. The role has no `CREATE` on either database. `selvage-web` runs `db:migrate`, never `db:prepare`, and the migrations must not run `CREATE SCHEMA` or `enable_extension`.
+
+The units do not start while `CENTRAL_DATABASE_URL`, `RESTRICTED_DATABASE_URL`, `SECRET_KEY_BASE`, `SLACK_SIGNING_SECRET` or `SLACK_BOT_TOKEN` is missing or empty in the env file (option `requiredEnv`). An empty signing secret would let anyone sign a Slack request.
 
 To deploy a new `main` image, run `sudo systemctl restart selvage-web` on twill. That restarts the worker too.
 
@@ -346,15 +348,22 @@ Do the steps in this order. Steps 5 to 11 are on this repo's branch, before the 
 
 1. Merge the tailnet policy change in `jaspermayone/infra` (`tag:patchwork-selvage`, with grants to skein:5432 and seam:5432).
 2. Merge the DNS record `selvage` (proxied to alastor) in `patchworklabsorg/dns`.
-3. In `patchworklabsorg/selvage`, make sure that `image.yml` pushed `ghcr.io/patchworklabsorg/selvage:main`, and that `bin/docker-entrypoint` runs `db:migrate`.
+3. In `patchworklabsorg/selvage`, merge the image workflow and make sure that `image.yml` pushed `ghcr.io/patchworklabsorg/selvage:main`. The migrations must not run `CREATE SCHEMA` or `enable_extension`.
 4. Make sure that VMID 363 and `10.100.90.63` are free, and that pve01 has 3 GiB of memory to spare (`terraform/proxmox/README.md`, "Memory warning").
 5. Prepare AD for twill: run `.\converge.ps1` (it creates `twill-admins`), then `cd ansible && ansible-playbook ad.yml -t host-groups`. See "Login".
 6. Create and install the VM: `bin/install-host twill`.
 7. On twill, join the tailnet with both tags: `sudo tailscale up --advertise-tags=tag:patchwork,tag:patchwork-selvage`.
 8. Get the host key: `ssh-keyscan -t ed25519 10.100.90.63`. Add it as `twill` in `secrets/secrets.nix`. Add `twill` to `selvage-env.age`, `selvage-ghcr-token.age` and `ad-join.age`. Remove the "not built yet" notes.
 9. Write the secrets: `nix develop -c bin/new-selvage-secrets`. It writes `restricted-prod-selvage.age`, `selvage-env.age` and `selvage-ghcr-token.age`. It decrypts `central-prod-selvage.age` and `quilt-ghcr-token.age` with your age identity (`~/.ssh/id_ed25519`, or `AGE_IDENTITY`).
-10. Re-key, so that twill can decrypt `ad-join.age`: `cd secrets && agenix -r`.
-11. Fill in the Slack and Weave values: `bin/set-env-secret selvage-env.age SLACK_SIGNING_SECRET SLACK_BOT_TOKEN SLACK_ADMIN_TOKEN WEAVE_CLIENT_ID WEAVE_CLIENT_SECRET SELVAGE_AUDIT_CHANNEL`. Add `SLACK_BROWSER_TOKEN` and `SLACK_BROWSER_COOKIE` the same way when you need them.
+10. Re-encrypt only `ad-join.age`, so that twill can decrypt it. Do not run `agenix -r`: it re-encrypts every file, and the hash-based restart triggers then restart Stash and Krater with no change.
+
+    ```bash
+    cd secrets
+    age -d -i ~/.ssh/id_ed25519 ad-join.age | age -e -o ad-join.age.new \
+      -R <(nix eval --raw -f secrets.nix '"ad-join.age".publicKeys' --apply 'k: builtins.concatStringsSep "\n" k')
+    mv ad-join.age.new ad-join.age
+    ```
+11. Fill in the Slack and Weave values. Selvage does not start without `SLACK_SIGNING_SECRET` and `SLACK_BOT_TOKEN`: `bin/set-env-secret selvage-env.age SLACK_SIGNING_SECRET SLACK_BOT_TOKEN SLACK_ADMIN_TOKEN WEAVE_CLIENT_ID WEAVE_CLIENT_SECRET SELVAGE_AUDIT_CHANNEL`. Add `SLACK_BROWSER_TOKEN` and `SLACK_BROWSER_COOKIE` the same way when you need them.
 12. Commit the `.age` files and `secrets.nix`, and merge after CI passes. The lab hosts follow `main`, so seam creates the role `selvage` with its password, and twill starts Selvage. To do it at once: `deploy .#seam`, then `deploy .#twill`.
 13. On seam, make sure that `central-db-setup` succeeded: `journalctl -u central-db-setup`. On twill, check `systemctl status selvage-web selvage-worker` and `curl -i http://127.0.0.1:3009/up`.
 14. Route the public name: in `jaspermayone/infra`, run `nix flake update patchwork-infra`, then `deploy .#alastor`.

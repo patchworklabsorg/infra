@@ -21,9 +21,14 @@
 # sslmode=disable.
 #
 # The role has no CREATE on either database, so the app must not run CREATE
-# SCHEMA or enable_extension. The web container migrates both databases with
-# the image's entrypoint before the server starts (`db:migrate`, as Stash
-# does). The worker never migrates.
+# SCHEMA or enable_extension. selvage-web runs `./bin/rails db:migrate` (both
+# databases) in a one-off container before the server starts, so the
+# migration does not depend on how the image's entrypoint matches its
+# arguments. The worker never migrates.
+#
+# Required keys: the units refuse to start while a key in `requiredEnv` is
+# missing or empty in the env file. An empty SLACK_SIGNING_SECRET would let
+# anyone sign a Slack request with the empty key.
 #
 # Network: both containers use the host network (`--network host`), as Stash
 # and Quilt do, so the tailnet names in the env file resolve through the
@@ -31,11 +36,12 @@
 # host proxies to it.
 #
 # Units:
-#   selvage-web     pulls the image, runs `./bin/rails server`. The image's
-#                   entrypoint migrates before the server starts.
+#   selvage-web     pulls the image, runs `./bin/rails db:migrate`, then
+#                   `./bin/rails server`.
 #   selvage-worker  `bundle exec good_job start`. Waits for GET /up on the
-#                   web server (so the migrations ran), and restarts on
-#                   failure until the schema is there. partOf selvage-web, so
+#                   web server (so the migrations ran), then runs the image
+#                   that the web container runs, not a new pull, so it never
+#                   runs code newer than the schema. partOf selvage-web, so
 #                   `systemctl restart selvage-web` moves both to a new image.
 #
 # Image: `image` is a full ref. The default tag `main` follows the newest push
@@ -70,6 +76,22 @@ let
     ${dockerBin} pull ${lib.escapeShellArg cfg.image}
   '';
 
+  # Stops the start when a required key is missing or empty in the env file.
+  checkEnv = pkgs.writeShellScript "${name}-check-env" ''
+    set -eu
+    missing=""
+    for key in ${lib.escapeShellArgs cfg.requiredEnv}; do
+      if ! ${pkgs.gnugrep}/bin/grep -Eq "^$key=.+" ${lib.escapeShellArg cfg.environmentFile}; then
+        missing="$missing $key"
+      fi
+    done
+    if [ -n "$missing" ]; then
+      echo "Empty or missing in ${cfg.environmentFile}:$missing" >&2
+      echo "Set them with bin/set-env-secret selvage-env.age$missing" >&2
+      exit 1
+    fi
+  '';
+
   common = unit: {
     after = [ "docker.service" ];
     requires = [ "docker.service" ];
@@ -91,14 +113,15 @@ let
     };
   };
 
-  run = unit: ''
+  # `image` is an argument: the worker runs the web container's image ID.
+  run = unit: image: ''
     ${dockerBin} run \
       --name ${name}-${unit} \
       --network host \
       --env-file ${lib.escapeShellArg cfg.environmentFile} \
       --env RAILS_ENV=production \
       ${envArgs}--restart no \
-      ${lib.escapeShellArg cfg.image}'';
+      ${image}'';
 in
 {
   options.patchwork.services.selvage = {
@@ -148,6 +171,21 @@ in
       description = "GitHub user that owns the token in registryCredentialsFile.";
     };
 
+    requiredEnv = lib.mkOption {
+      type = lib.types.listOf (lib.types.strMatching "[A-Z][A-Z0-9_]*");
+      default = [
+        "CENTRAL_DATABASE_URL"
+        "RESTRICTED_DATABASE_URL"
+        "SECRET_KEY_BASE"
+        "SLACK_SIGNING_SECRET"
+        "SLACK_BOT_TOKEN"
+      ];
+      description = ''
+        Keys that must be set and not empty in the env file. The units do not
+        start without them.
+      '';
+    };
+
     extraEnv = lib.mkOption {
       type = lib.types.attrsOf lib.types.str;
       default = { };
@@ -167,14 +205,26 @@ in
       description = "Selvage web";
       serviceConfig = {
         ExecStartPre = [
+          checkEnv
           pull
           "-${dockerBin} stop ${name}-web"
           "-${dockerBin} rm ${name}-web"
+          "-${dockerBin} rm -f ${name}-migrate"
+          # Both databases. The role cannot CREATE, so never db:prepare.
+          (pkgs.writeShellScript "${name}-migrate" ''
+            exec ${dockerBin} run --rm \
+              --name ${name}-migrate \
+              --network host \
+              --env-file ${lib.escapeShellArg cfg.environmentFile} \
+              --env RAILS_ENV=production \
+              ${envArgs}--entrypoint "" \
+              ${lib.escapeShellArg cfg.image} \
+              ./bin/rails db:migrate
+          '')
         ];
-        # Same command as the image's CMD, on the loopback port. The
-        # entrypoint matches `./bin/rails server` and migrates first.
+        # Same command as the image's CMD, on the loopback port.
         ExecStart = pkgs.writeShellScript "${name}-web-start" ''
-          exec ${run "web"} \
+          exec ${run "web" (lib.escapeShellArg cfg.image)} \
             ./bin/rails server -b 127.0.0.1 -p ${toString cfg.port}
         '';
       };
@@ -192,7 +242,7 @@ in
       partOf = [ "${name}-web.service" ];
       serviceConfig = {
         ExecStartPre = [
-          pull
+          checkEnv
           "-${dockerBin} stop ${name}-worker"
           "-${dockerBin} rm ${name}-worker"
           (pkgs.writeShellScript "${name}-wait-for-web" ''
@@ -203,8 +253,12 @@ in
             done
           '')
         ];
+        # The image ID of the running web container, so web and worker run
+        # the same build even when `main` moved since the web unit started.
         ExecStart = pkgs.writeShellScript "${name}-worker-start" ''
-          exec ${run "worker"} \
+          set -e
+          image="$(${dockerBin} inspect -f '{{.Image}}' ${name}-web)"
+          exec ${run "worker" "\"$image\""} \
             bundle exec good_job start
         '';
       };

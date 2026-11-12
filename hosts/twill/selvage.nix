@@ -20,7 +20,8 @@
 #   - secrets/selvage-ghcr-token.age (jsp + twill), while the image package
 #     is private.
 #   - The Slack and Weave values in the env file:
-#     `bin/set-env-secret selvage-env.age SLACK_SIGNING_SECRET ...`.
+#     `bin/set-env-secret selvage-env.age SLACK_SIGNING_SECRET ...`. The
+#     units do not start without SLACK_SIGNING_SECRET and SLACK_BOT_TOKEN.
 #   - DNS for selvage.patchworklabs.org, proxied to alastor
 #     (patchworklabsorg/dns).
 #

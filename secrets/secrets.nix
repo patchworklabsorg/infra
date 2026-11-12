@@ -21,7 +21,8 @@ let
   # twill (Selvage) is not built yet. After its install, add
   #   twill = "<its /etc/ssh/ssh_host_ed25519_key.pub>";
   # here, add twill to selvage-env.age, selvage-ghcr-token.age and
-  # ad-join.age below, then `agenix -r`.
+  # ad-join.age below, then re-encrypt ad-join.age alone (README.md,
+  # "Selvage on twill", step 10).
   #
   # Central DB passwords, one file per app and environment, password only:
   #   central-prod-<app>.age        recipients: jsp, skein
@@ -255,8 +256,8 @@ in
   #   WEAVE_ISSUER=https://weave.patchworklabs.org
   #   WEAVE_CLIENT_ID=...  WEAVE_CLIENT_SECRET=...  (the Selvage app in Weave)
   #   SELVAGE_AUDIT_CHANNEL=...
-  # twill is not built yet: add its host key here after the install, then
-  # `agenix -r`.
+  # twill is not built yet: add its host key here after the install, before
+  # bin/new-selvage-secrets writes this file.
   "selvage-env.age".publicKeys = [
     jsp
   ];

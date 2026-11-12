@@ -33,10 +33,9 @@
 #   - DNS for the two hostnames below, proxied to alastor (patchworklabsorg/dns)
 # The full checklist is in Krater's docs/dev/production.md.
 #
-# Krater Compute stays off (KRATER_COMPUTE_MODE=off) until Krater's paid checks
-# pass (its docs/compute/README.md). Turning it on: put a Vast key in
-# secrets/krater-staging-vast-key.age, uncomment the secret below, and set
-# compute.enable and compute.vastKeyFile.
+# Krater Compute is on in staging with its own Vast key in
+# secrets/krater-staging-vast-key.age (Krater's docs/compute/README.md). To
+# turn it off, set compute.enable = false; keep the secrets.
 #
 # Project secrets (a member's HF_TOKEN for their jobs) need
 # secrets/krater-staging-project-secrets-key.age: one Fernet key per line,
@@ -115,14 +114,14 @@ in
         file = envFile;
         mode = "400";
       };
-      # krater-staging-project-secrets-key = {
-      #   file = ../../secrets/krater-staging-project-secrets-key.age;
-      #   mode = "400";
-      # };
-      # krater-staging-vast-key = {
-      #   file = ../../secrets/krater-staging-vast-key.age;
-      #   mode = "400";
-      # };
+      krater-staging-project-secrets-key = {
+        file = ../../secrets/krater-staging-project-secrets-key.age;
+        mode = "400";
+      };
+      krater-staging-vast-key = {
+        file = ../../secrets/krater-staging-vast-key.age;
+        mode = "400";
+      };
     })
   ];
 
@@ -145,7 +144,15 @@ in
     ))
     (lib.mkIf config.patchwork.services.krater.enable (
       let
-        hash = builtins.hashFile "sha256" envFile;
+        # The env file and the key files: a new Vast key or Fernet key must
+        # reach the units too.
+        hash = builtins.hashString "sha256" (
+          lib.concatMapStrings (builtins.hashFile "sha256") [
+            envFile
+            ../../secrets/krater-staging-project-secrets-key.age
+            ../../secrets/krater-staging-vast-key.age
+          ]
+        );
       in
       {
         krater-storage.restartTriggers = [ hash ];
@@ -177,12 +184,14 @@ in
     # be larger than that.
     storage.maxVolumes = 8;
 
-    # Krater Compute (see the comment at the top). The label prefix must be
-    # unique to this deployment on the Vast account.
-    compute.enable = false;
+    # Krater Compute (see the comment at the top), with staging's own Vast key,
+    # not production's, for Adam's test runs. The label prefix must be unique
+    # to this deployment on the Vast account.
+    compute.enable = true;
     compute.labelPrefix = "krater-staging-";
-    # compute.vastKeyFile = config.age.secrets.krater-staging-vast-key.path;
-    # projectSecretsKeyFile = config.age.secrets.krater-staging-project-secrets-key.path;
+    compute.vastKeyFile = config.age.secrets.krater-staging-vast-key.path;
+    # A backup is in 1Password (Patchwork Labs, "Krater staging Fernet key").
+    projectSecretsKeyFile = config.age.secrets.krater-staging-project-secrets-key.path;
 
     # Cloudflare, Traefik on alastor and nginx on weft (see trustedProxyCount).
     extraEnv = {

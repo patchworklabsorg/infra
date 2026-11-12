@@ -119,8 +119,8 @@ in
   ];
 
   # The Vast.ai API key Krater staging's Compute rents with: the bare key,
-  # nothing else in the file. Only Krater's worker reads it. Not used while
-  # Krater's compute is off.
+  # nothing else in the file. Only Krater's worker reads it. A backup is in
+  # 1Password (Patchwork Labs).
   "krater-staging-vast-key.age".publicKeys = [
     jsp
     weft

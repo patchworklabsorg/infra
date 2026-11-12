@@ -77,6 +77,7 @@
     { "name": "ganymede-admins", "formerNames": ["GG-Ganymede-Admins"], "description": "Project Ganymede admins", "members": ["mayonej", "adam.sidwa"] },
     { "name": "weft-admins", "description": "Root on weft (Krater): logon and sudo on weft only, through hostGroupMembers. Sudo and the docker group on weft give every Krater secret.", "members": ["mayonej", "adam.sidwa"] },
     { "name": "hank-admins", "description": "Root on hank (Stash): logon and sudo on hank only, through hostGroupMembers. Sudo and the docker group on hank give every Stash secret and every archived file.", "members": ["mayonej"] },
+    { "name": "twill-admins", "description": "Root on twill (Selvage): logon and sudo on twill only, through hostGroupMembers. Sudo and the docker group on twill give every Selvage secret, including its Slack admin token.", "members": ["mayonej"] },
     { "name": "ganymede-users", "formerNames": ["GG-Ganymede-Users"], "description": "Project Ganymede users", "members": [], "manageMembers": false },
     { "name": "hackboston-organizers", "formerNames": ["GG-HackBoston-Organizers"], "description": "HackBoston organizers", "members": ["cj", "daniel", "logan", "mayonej"] },
     { "name": "hackathonhelp-organizers", "formerNames": ["GG-HackathonHelp-Organizers"], "description": "hackathon.help organizers", "members": ["wei"] },
@@ -94,7 +95,7 @@
       "members": [] }
   ],
 
-  "linuxHosts": ["batting", "hank", "hem", "seam", "skein", "warp", "weft"],
+  "linuxHosts": ["batting", "hank", "hem", "seam", "skein", "twill", "warp", "weft"],
   "retiredHosts": ["sampler", "swatch"],
   "hostGroups": [
     { "name": "lnx-{host}-users", "description": "Linux logon on {host}", "members": ["infra"] },
@@ -102,7 +103,8 @@
   ],
   "hostGroupMembers": {
     "weft": { "users": ["weft-admins"], "admins": ["weft-admins"] },
-    "hank": { "users": ["hank-admins"], "admins": ["hank-admins"] }
+    "hank": { "users": ["hank-admins"], "admins": ["hank-admins"] },
+    "twill": { "users": ["twill-admins"], "admins": ["twill-admins"] }
   },
   "resourceGroups": [
     { "name": "password-reset", "formerNames": ["DL-Users-PasswordReset"], "description": "Reset password, unlock, change at next logon: Users/Staff, Board-Only, Sponsored-Projects",

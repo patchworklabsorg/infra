@@ -25,6 +25,9 @@ Declarative infrastructure for Patchwork Labs: every Patchwork host, the NixOS m
 | `modules/stash/` | The Stash service module (web, worker, archived files on a host directory). |
 | `hosts/hank/stash.nix` | Stash production and staging on hank: instance settings and secrets. |
 | `bin/new-stash-secrets` | Writes the two secrets of Stash staging or production with a new random database password and `SECRET_KEY_BASE`. Prints no value. |
+| `modules/selvage/` | The Selvage service module (web and worker, production only). |
+| `hosts/twill/selvage.nix` | Selvage production on twill: instance settings and secrets. |
+| `bin/new-selvage-secrets` | Writes Selvage's restricted database password and env file. Reads the existing central password with your age identity. Prints no value. |
 | `bin/set-env-secret` | Sets keys in an agenix env file, for example a Weave client id and secret. Asks for each value with the echo off. Prints no value. |
 | `hosts/weft/krater.nix` | Krater staging and production on weft: instance settings and secrets. Production is off until `hosts/weft/krater-production.nix` turns it on. |
 | `tests/` | NixOS VM tests. |
@@ -51,6 +54,7 @@ The lab hosts below are NixOS VMs on pve01, VLAN 90 (`patchwork.internal`). alas
 | `batting` | 360 | 10.100.90.60 | 4 GB | Quilt prod + staging. nginx on `tailscale0:80` for alastor. |
 | `weft` | 361 | 10.100.90.61 | 4 GB | Krater staging, and Krater production (off until its switch). nginx on `tailscale0:80` for alastor. |
 | `hank` | 362 | 10.100.90.62 | 6 GB | Stash prod + staging (declared, not built yet). 80 GB disk for the archived files. nginx on `tailscale0:80` for alastor. |
+| `twill` | 363 | 10.100.90.63 | 3 GB | Selvage prod (declared, not built yet). No staging yet. nginx on `tailscale0:80` for alastor, `/slack/` and `/up` only. |
 
 The Windows hosts are managed by Ansible (`ansible/`):
 
@@ -75,6 +79,9 @@ flowchart LR
   weft -. "staging :5432" .-> hem
   hank -- "tailnet :5432" --> skein["skein: patchwork_central"]
   hank -. "staging :5432" .-> hem
+  alastor -- "tailnet, HTTP :80" --> twill["twill: Selvage (not built yet)"]
+  twill -- "tailnet :5432" --> skein
+  twill -- "tailnet :5432" --> seam
 ```
 
 ## Login
@@ -303,6 +310,55 @@ Do the steps in this order.
 17. On batting, check `systemctl status quilt-staging-web quilt-staging-worker` and `curl -i http://127.0.0.1:3006/up`. Then sign in at `https://quilt-staging.patchworklabs.org`.
 
 To test top-ups on staging, add a sandbox `MERCURY_WRITE_TOKEN` with batting's public IP on its allowlist, and set `QUILT_TOPUPS` to `approval_only`.
+
+## Selvage on twill
+
+[Selvage](https://github.com/patchworklabsorg/selvage), the Patchwork Slack bot, runs on twill as two Docker containers, like Stash on hank. `hosts/twill/selvage.nix` is the instance. `modules/selvage` is the service module. Production only: there is no Selvage staging instance yet.
+
+| Item | Value |
+|---|---|
+| URL | `https://selvage.patchworklabs.org` (router `selvage-twill` in `edge-alastor`). nginx on twill passes only `POST /slack/*` and `GET /up`. Every other path is 404. |
+| Units | `selvage-web` (`./bin/rails server` on `127.0.0.1:3009`, migrates on start) and `selvage-worker` (`bundle exec good_job start`) |
+| Image | `ghcr.io/patchworklabsorg/selvage:main` (option `image`). Pin it to `:<sha>` for a known build. |
+| Databases | `patchwork_central` on skein and `patchwork_central_restricted` on seam. Role and schema `selvage` in each. |
+| Secrets | `selvage-env.age`, `selvage-ghcr-token.age` (twill), `central-prod-selvage.age` (skein), `restricted-prod-selvage.age` (seam) |
+| Tailnet | `tag:patchwork` and `tag:patchwork-selvage`. The second tag reaches skein:5432 and seam:5432 only. |
+
+```mermaid
+flowchart LR
+  slack((Slack)) --> traefik["alastor: Traefik"]
+  traefik -- "tailnet :80" --> nginx["twill: nginx, /slack/ and /up only"]
+  nginx -- "127.0.0.1:3009" --> web[selvage-web]
+  worker[selvage-worker] -- "waits for /up" --> web
+  web -- "tailnet :5432" --> skein["skein: patchwork_central, schema selvage"]
+  web -- "tailnet :5432" --> seam["seam: patchwork_central_restricted, schema selvage"]
+  worker --> skein
+  worker --> seam
+```
+
+The env file has `CENTRAL_DATABASE_URL` and `RESTRICTED_DATABASE_URL`. Their passwords must be the values in `central-prod-selvage.age` and `restricted-prod-selvage.age`. skein and seam set those values on the role `selvage`. The role has no `CREATE` on either database, so the image must migrate with `db:migrate`, not `db:prepare`, and must not run `CREATE SCHEMA` or `enable_extension`.
+
+To deploy a new `main` image, run `sudo systemctl restart selvage-web` on twill. That restarts the worker too.
+
+### Go live
+
+Do the steps in this order. Steps 5 to 11 are on this repo's branch, before the merge.
+
+1. Merge the tailnet policy change in `jaspermayone/infra` (`tag:patchwork-selvage`, with grants to skein:5432 and seam:5432).
+2. Merge the DNS record `selvage` (proxied to alastor) in `patchworklabsorg/dns`.
+3. In `patchworklabsorg/selvage`, make sure that `image.yml` pushed `ghcr.io/patchworklabsorg/selvage:main`, and that `bin/docker-entrypoint` runs `db:migrate`.
+4. Make sure that VMID 363 and `10.100.90.63` are free, and that pve01 has 3 GiB of memory to spare (`terraform/proxmox/README.md`, "Memory warning").
+5. Prepare AD for twill: run `.\converge.ps1` (it creates `twill-admins`), then `cd ansible && ansible-playbook ad.yml -t host-groups`. See "Login".
+6. Create and install the VM: `bin/install-host twill`.
+7. On twill, join the tailnet with both tags: `sudo tailscale up --advertise-tags=tag:patchwork,tag:patchwork-selvage`.
+8. Get the host key: `ssh-keyscan -t ed25519 10.100.90.63`. Add it as `twill` in `secrets/secrets.nix`. Add `twill` to `selvage-env.age`, `selvage-ghcr-token.age` and `ad-join.age`. Remove the "not built yet" notes.
+9. Write the secrets: `nix develop -c bin/new-selvage-secrets`. It writes `restricted-prod-selvage.age`, `selvage-env.age` and `selvage-ghcr-token.age`. It decrypts `central-prod-selvage.age` and `quilt-ghcr-token.age` with your age identity (`~/.ssh/id_ed25519`, or `AGE_IDENTITY`).
+10. Re-key, so that twill can decrypt `ad-join.age`: `cd secrets && agenix -r`.
+11. Fill in the Slack and Weave values: `bin/set-env-secret selvage-env.age SLACK_SIGNING_SECRET SLACK_BOT_TOKEN SLACK_ADMIN_TOKEN WEAVE_CLIENT_ID WEAVE_CLIENT_SECRET SELVAGE_AUDIT_CHANNEL`. Add `SLACK_BROWSER_TOKEN` and `SLACK_BROWSER_COOKIE` the same way when you need them.
+12. Commit the `.age` files and `secrets.nix`, and merge after CI passes. The lab hosts follow `main`, so seam creates the role `selvage` with its password, and twill starts Selvage. To do it at once: `deploy .#seam`, then `deploy .#twill`.
+13. On seam, make sure that `central-db-setup` succeeded: `journalctl -u central-db-setup`. On twill, check `systemctl status selvage-web selvage-worker` and `curl -i http://127.0.0.1:3009/up`.
+14. Route the public name: in `jaspermayone/infra`, run `nix flake update patchwork-infra`, then `deploy .#alastor`.
+15. Point the Slack app's request URLs at `https://selvage.patchworklabs.org/slack/events`, `/slack/commands` and `/slack/interactions`.
 
 ## Commands
 

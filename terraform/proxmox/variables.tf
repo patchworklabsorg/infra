@@ -103,6 +103,14 @@ variable "vms" {
       disk_gb   = 80
       ip        = "10.100.90.62"
     }
+    # Selvage: the Slack bot. Web and worker containers, no files of its own.
+    twill = {
+      vmid      = 363
+      memory_mb = 3072
+      cores     = 2
+      disk_gb   = 20
+      ip        = "10.100.90.63"
+    }
   }
 }
 

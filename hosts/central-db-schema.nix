@@ -43,6 +43,10 @@ let
       apps = {
         # Quilt (funding and records). Its own schema only, no shared schemas.
         quilt = { };
+        # Selvage (the Slack bot): moderation and reports. Its own schema only, no shared schemas.
+        # Production only for now: hem:5433 creates the role too, but with no
+        # restricted-staging-selvage.age it cannot log in there.
+        selvage = { };
       };
       sharedSchemas = { };
     };

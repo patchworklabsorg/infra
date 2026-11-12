@@ -169,11 +169,12 @@ in
     # Added by a PR to patchworklabsorg/dns, like weave-staging's.
     domain = "krater-staging.patchworklabs.org";
     storage.domain = "krater-staging-storage.patchworklabs.org";
-    # weft's 40 GB disk holds the system, two SeaweedFS stores (staging and
+    # weft's disk holds the system, two SeaweedFS stores (staging and
     # production), two image repositories (krater, krater-prod) and the shared
-    # BuildKit cache. So each store gets at most 8 volumes of 1 GB. Cloudflare
-    # in front of alastor caps each request body at 100 MB, so one upload
-    # through the public hostname cannot be larger than that.
+    # BuildKit cache. Staging's store gets at most 8 volumes of 1 GB;
+    # production's gets 50 (below). Cloudflare in front of alastor caps each
+    # request body at 100 MB, so one upload through the public hostname cannot
+    # be larger than that.
     storage.maxVolumes = 8;
 
     # Krater Compute (see the comment at the top). The label prefix must be
@@ -267,8 +268,10 @@ in
 
     domain = "krater.patchworklabs.org";
     storage.domain = "krater-storage.patchworklabs.org";
-    # At most 8 volumes of 1 GB, as for staging (see the disk note there).
-    storage.maxVolumes = 8;
+    # At most 50 volumes of 1 GB: room for one project's whole default
+    # storage quota (50 GB) of checkpoints and outputs, plus gallery images.
+    # weft's root filesystem must keep that much free (`df -h /`).
+    storage.maxVolumes = 50;
 
     # Compute stays off until Krater's paid checks pass. The prefix is set now
     # so that turning compute on cannot use staging's.

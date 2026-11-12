@@ -121,6 +121,13 @@ let
     "production has no staging marker" =
       !(prod.patchwork.services.krater-production.extraEnv ? KRATER_STAGING);
     "staging label prefix" = on.patchwork.services.krater.compute.labelPrefix == "krater-staging-";
+    # Each deployment rents with its own Vast key, never the other's.
+    "staging compute uses its own key" =
+      on.patchwork.services.krater.compute.enable
+      && on.patchwork.services.krater.compute.vastKeyFile == "/run/agenix/krater-staging-vast-key"
+      &&
+        on.patchwork.services.krater.projectSecretsKeyFile
+        == "/run/agenix/krater-staging-project-secrets-key";
     "storage volume limit" =
       on.patchwork.services.krater.storage.maxVolumes == 8
       && prod.patchwork.services.krater-production.storage.maxVolumes == 50;

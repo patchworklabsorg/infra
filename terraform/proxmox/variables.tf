@@ -86,11 +86,13 @@ variable "vms" {
       disk_gb   = 20
       ip        = "10.100.90.60"
     }
+    # Krater: two SeaweedFS stores (production's up to 50 GB of members'
+    # checkpoints and outputs), two image repositories and the BuildKit cache.
     weft = {
       vmid      = 361
       memory_mb = 4096
       cores     = 2
-      disk_gb   = 40
+      disk_gb   = 100
       ip        = "10.100.90.61"
     }
     # Stash: the archive. More disk than the others, because the archived files live on it.

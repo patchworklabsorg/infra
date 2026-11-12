@@ -6,7 +6,7 @@
 #
 # Staging follows the Patchwork staging standard: its own database (the
 # `krater` schema in patchwork_central on hem:5432), Weave staging for sign-in,
-# and its own hostnames. Krater Compute stays off, so no Vast account is used.
+# and its own hostnames. Krater Compute rents on Vast with staging's own key.
 # KRATER_ENV is `production` here, which only turns on Krater's production
 # checks. KRATER_STAGING turns on the hazard-stripe frame and the STAGING tab,
 # the same as Weave and Quilt staging (needs patchworklabsorg/krater with

@@ -134,8 +134,8 @@ in
     weft
   ];
 
-  # Production's Vast key and project-secrets keys, as for staging. Not
-  # created yet: compute and project secrets are off in production too.
+  # Production's Vast key and project-secrets keys, as for staging. Backups
+  # are in 1Password (Patchwork Labs).
   "krater-vast-key.age".publicKeys = [
     jsp
     weft

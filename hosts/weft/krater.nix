@@ -178,11 +178,15 @@ in
     storage.domain = "krater-staging-storage.patchworklabs.org";
     # weft's disk holds the system, two SeaweedFS stores (staging and
     # production), two image repositories (krater, krater-prod) and the shared
-    # BuildKit cache. Staging's store gets at most 8 volumes of 1 GB;
-    # production's gets 50 (below). Cloudflare in front of alastor caps each
+    # BuildKit cache. Staging's store gets at most 16 volumes of 1 GB;
+    # production's gets 50 (below). SeaweedFS gives each bucket 7 volumes on
+    # its first write, so 8 left none for the second bucket: with compute on,
+    # every upload to krater-compute (job outputs, checkpoints, inputs) failed
+    # with a 500 while the screenshot bucket held 7. 16 fits both buckets
+    # (14) with room for one to grow. Cloudflare in front of alastor caps each
     # request body at 100 MB, so one upload through the public hostname cannot
     # be larger than that.
-    storage.maxVolumes = 8;
+    storage.maxVolumes = 16;
 
     # Krater Compute (see the comment at the top), with staging's own Vast key,
     # not production's, for Adam's test runs. The label prefix must be unique

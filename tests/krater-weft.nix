@@ -129,7 +129,7 @@ let
         on.patchwork.services.krater.projectSecretsKeyFile
         == "/run/agenix/krater-staging-project-secrets-key";
     "storage volume limit" =
-      on.patchwork.services.krater.storage.maxVolumes == 8
+      on.patchwork.services.krater.storage.maxVolumes == 16
       && prod.patchwork.services.krater-production.storage.maxVolumes == 50;
     # Each of these follows the switch file: on and off are both valid states.
     "krater is on skein only with the switch" =

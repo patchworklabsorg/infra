@@ -317,7 +317,7 @@ To test top-ups on staging, add a sandbox `MERCURY_WRITE_TOKEN` with batting's p
 
 | Item | Value |
 |---|---|
-| URL | `https://selvage.patchworklabs.org` (router `selvage-twill` in `edge-alastor`). nginx on twill passes only `POST /slack/*` and `GET /up`. Every other path is 404. |
+| URL | `https://selvage.patchworklabs.org` (router `selvage-twill` in `edge-alastor`). nginx on twill passes `POST /slack/*`, `GET /up`, and the moderator web UI under `/admin`, `/auth/` and `/assets/`. The app checks the weave role on every `/admin` request. Every other path is 404. |
 | Units | `selvage-web` (`./bin/rails db:migrate` in a one-off container, then `./bin/rails server` on `127.0.0.1:3009`) and `selvage-worker` (`bundle exec good_job start`, on the web container's image) |
 | Image | `ghcr.io/patchworklabsorg/selvage:main` (option `image`). Pin it to `:<sha>` for a known build. |
 | Databases | `patchwork_central` on skein and `patchwork_central_restricted` on seam. Role and schema `selvage` in each. |

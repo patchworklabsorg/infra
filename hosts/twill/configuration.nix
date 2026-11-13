@@ -67,7 +67,10 @@
           }
         ];
         # Slack calls the three request URLs under /slack/ (POST only), and
-        # the health check is GET /up. Nothing else of the app is public.
+        # the health check is GET /up. The moderator web UI lives under
+        # /admin, its weave login under /auth, and its assets under /assets.
+        # The app checks the weave role on every /admin request. Nothing else
+        # of the app is public.
         locations."/slack/" = {
           proxyPass = upstream;
           extraConfig = ''
@@ -75,6 +78,9 @@
           '';
         };
         locations."= /up".proxyPass = upstream;
+        locations."/admin".proxyPass = upstream;
+        locations."/auth/".proxyPass = upstream;
+        locations."/assets/".proxyPass = upstream;
         locations."/".return = "404";
       };
     };

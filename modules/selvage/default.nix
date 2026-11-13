@@ -387,7 +387,9 @@ in
         label = "Selvage staging";
         railsEnv = "staging";
         envSecret = "selvage-staging-env.age";
-        dockerArgs = "--memory ${cfg.staging.memory} --memory-swap ${cfg.staging.memory} \\\n  ";
+        # The limit stops staging from growing past its cap. The OOM score makes the
+        # kernel kill staging, not production, when the whole host runs out of memory.
+        dockerArgs = "--memory ${cfg.staging.memory} --memory-swap ${cfg.staging.memory} --oom-score-adj 500 \\\n  ";
         inherit (cfg.staging)
           port
           image

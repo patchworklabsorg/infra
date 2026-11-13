@@ -86,6 +86,9 @@
     in
     {
       enable = true;
+      # A change to the nginx config reloads nginx, not restarts it, so a
+      # change to the staging vhost does not drop production's Slack requests.
+      enableReload = true;
       # Only alastor reaches this, over the tailnet. alastor terminated TLS and
       # set X-Forwarded-For and X-Forwarded-Proto (https); pass them on as they
       # are. recommendedProxySettings would set X-Forwarded-Proto to http.

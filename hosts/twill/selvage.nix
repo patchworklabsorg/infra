@@ -124,7 +124,8 @@ in
       port = 3010;
       environmentFile = "${config.age.secretsDir}/selvage-staging-env";
       # twill has 3 GB. Production has no limit. Each staging container gets
-      # at most 512 MB, so staging cannot take production's memory.
+      # at most 512 MB, and the kernel kills staging first when the host runs out
+      # of memory (--oom-score-adj in modules/selvage).
       memory = "512m";
       # Not secret, and extraEnv overrides the env file, so nobody can point
       # staging at production Weave from the env file.

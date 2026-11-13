@@ -51,7 +51,7 @@ let
       backend = "hank";
       hosts = [ "stash-staging.patchworklabs.org" ];
     };
-    # Selvage on twill (../twill/selvage.nix): production only. nginx on
+    # Selvage production on twill (../twill/selvage.nix). nginx on
     # twill passes /slack/, /up, and the admin web UI (/admin, /auth/,
     # /assets/, /cable).
     selvage-twill = {

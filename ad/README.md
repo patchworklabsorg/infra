@@ -64,6 +64,14 @@ Run on a DC, or on a host with RSAT, as `adm_mayonej`. The GPO step needs the Gr
 .\converge.ps1                    # Build
 ```
 
+From the control node, Ansible can run Build on loom as `svc-ansible` (`../ansible/README.md`, tag `converge`):
+
+```sh
+cd ansible
+ansible-playbook ad.yml -t converge                              # -WhatIf
+ansible-playbook ad.yml -t converge -e ad_converge_apply=true    # Build
+```
+
 Logs go to `C:\ProgramData\Patchwork\ad-converge\`. Each run ends with a count of changes, reports and errors. A REPORT line needs a person to look at it. The script changes nothing for it.
 
 New accounts are disabled and must change the password at the next logon. The script never sets, reads or logs a password. To start an account, set a first password (or let Weave set it), then enable the account.

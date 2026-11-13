@@ -53,9 +53,7 @@
       # is GET /up. The moderator web UI lives under /admin, its weave login
       # under /auth, its assets under /assets, and its live updates on /cable.
       # The app checks the weave role on every /admin request. Nothing else of
-      # the app is public. The staging vhost uses this list. The production
-      # vhost below still has its own list: patchworklabsorg/infra#100 adds
-      # the admin paths to it. After #100, production can use this list too.
+      # the app is public. The production and staging vhosts both use it.
       selvageLocations = backend: {
         "/slack/" = {
           proxyPass = backend;
@@ -108,39 +106,7 @@
             port = 80;
           }
         ];
-        # Slack calls the three request URLs under /slack/ (POST only), and
-        # the health check is GET /up. The moderator web UI lives under
-        # /admin, its weave login under /auth, its assets under /assets, and its
-        # live updates on /cable.
-        # The app checks the weave role on every /admin request. Nothing else
-        # of the app is public.
-        locations."/slack/" = {
-          proxyPass = upstream;
-          extraConfig = ''
-            limit_except POST { deny all; }
-          '';
-        };
-        locations."= /up".proxyPass = upstream;
-        locations."= /admin".proxyPass = upstream;
-        locations."/admin/".proxyPass = upstream;
-        locations."/auth/".proxyPass = upstream;
-        locations."/assets/".proxyPass = upstream;
-        # Turbo Streams for live updates in the admin UI (Action Cable).
-        # proxyWebsockets sets proxy_set_header in this location, and nginx then
-        # drops the http-level ones here, so set them again. Action Cable checks
-        # the Origin against the Host.
-        locations."= /cable" = {
-          proxyPass = upstream;
-          proxyWebsockets = true;
-          extraConfig = ''
-            proxy_set_header Host $host;
-            proxy_set_header X-Real-IP $remote_addr;
-            proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-            proxy_set_header X-Forwarded-Proto $http_x_forwarded_proto;
-            proxy_set_header X-Forwarded-Host $host;
-          '';
-        };
-        locations."/".return = "404";
+        locations = selvageLocations upstream;
       };
       # Selvage staging, the same paths on its own port.
       virtualHosts.selvage-staging = {

@@ -51,6 +51,12 @@ let
       backend = "hank";
       hosts = [ "stash-staging.patchworklabs.org" ];
     };
+    # Selvage on twill (../twill/selvage.nix): production only. nginx on
+    # twill passes only /slack/ and /up.
+    selvage-twill = {
+      backend = "twill";
+      hosts = [ "selvage.patchworklabs.org" ];
+    };
     # Every host in ../warp/redirects.nix. A new path on an existing host
     # needs no change here.
     redirects = {

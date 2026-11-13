@@ -95,7 +95,7 @@ The rule: an account of tier N logs on only to assets of tier N. A higher tier c
 | Tier | Assets | Accounts |
 |---|---|---|
 | **0** | loom, spindle (DCs). bobbin (issuing CA). pattern (offline root CA). shuttle (NPS). The Proxmox hosts that run these VMs. The proposed Tier 0 jump host. remus, as long as it holds the `svc-ansible` password. | `adm_mayonej`, `svc-ansible`, `Administrator` (disabled), DSRM (LAPS-DSRM) |
-| **1** | warp, batting, weft, hank, skein, seam, hem (NixOS). thimble (VyOS edge). App servers. Weave and the host that runs it (alastor). | `lnx-<host>-admins` members. `svc-lnx-join`, `svc-pve-ldap`, `svc-dhcp-dns`, `svc-weave-ldap`. No dedicated Tier 1 person account yet. |
+| **1** | warp, batting, weft, hank, twill, skein, seam, hem (NixOS). thimble (VyOS edge). App servers. Weave and the host that runs it (alastor). | `lnx-<host>-admins` members. `svc-lnx-join`, `svc-pve-ldap`, `svc-dhcp-dns`, `svc-weave-ldap`. No dedicated Tier 1 person account yet. |
 | **2** | Staff workstations (`Computers` OU). VPN sessions. | Daily accounts: `mayonej`, staff, members |
 
 ```mermaid
@@ -113,7 +113,7 @@ flowchart TB
     bg["Administrator (disabled, break-glass)"]
   end
   subgraph T1["Tier 1: servers"]
-    nix["warp, batting, weft, hank, skein, seam, hem"]
+    nix["warp, batting, weft, hank, twill, skein, seam, hem"]
     thimble["thimble VPN edge"]
     weave["Weave on alastor, svc-weave-ldap"]
   end

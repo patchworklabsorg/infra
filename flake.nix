@@ -43,6 +43,7 @@
         "batting" # Quilt
         "weft" # Krater
         "hank" # Stash
+        "twill" # Selvage
         "skein" # patchwork_central, prod
         "seam" # patchwork_central_restricted, prod
         "hem" # both staging clusters
@@ -83,6 +84,9 @@
         # The Stash service module alone, with no instance settings. hank
         # imports it through hosts/hank/stash.nix.
         stash = ./modules/stash;
+        # The Selvage service module alone, with no instance settings. twill
+        # imports it through hosts/twill/selvage.nix.
+        selvage = ./modules/selvage;
       };
 
       nixosConfigurations = nixpkgs.lib.genAttrs hosts mkHost;

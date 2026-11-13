@@ -18,6 +18,11 @@ let
   batting = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIEN68vw2ir+q4fMQV8WBJvH7WDG4D2uFjChwkkA93LJC";
   weft = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIAbzni2Be82ORFcHSPVr7OPpfs80Py04JtwyCKc4L28X";
   hank = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAICKNDAtCadjdzqG+5t6BncycydzqfqV3z02uvIejmO8S";
+  # twill (Selvage) is not built yet. After its install, add
+  #   twill = "<its /etc/ssh/ssh_host_ed25519_key.pub>";
+  # here, add twill to selvage-env.age, selvage-ghcr-token.age and
+  # ad-join.age below, then re-encrypt ad-join.age alone (README.md,
+  # "Selvage on twill", step 10).
   #
   # Central DB passwords, one file per app and environment, password only:
   #   central-prod-<app>.age        recipients: jsp, skein
@@ -215,6 +220,9 @@ in
     jsp
     skein
   ];
+  # Selvage's role password in patchwork_central (skein). Password only.
+  # twill does not get this file: the same password is in selvage-env.age, so
+  # a rotation must change both files.
   "central-prod-selvage.age".publicKeys = [
     jsp
     skein
@@ -226,6 +234,41 @@ in
   "restricted-prod-quilt.age".publicKeys = [
     jsp
     seam
+  ];
+
+  # Selvage's role password in patchwork_central_restricted (seam). Password
+  # only. bin/new-selvage-secrets writes it. twill does not get this file: the
+  # same password is in selvage-env.age, so a rotation must change both files.
+  "restricted-prod-selvage.age".publicKeys = [
+    jsp
+    seam
+  ];
+
+  # Selvage (selvage.patchworklabs.org on twill) runtime env.
+  # bin/new-selvage-secrets writes it. Must contain:
+  #   CENTRAL_DATABASE_URL=postgres://selvage:<password>@skein.wildebeest-stargazer.ts.net:5432/patchwork_central?sslmode=disable
+  #     (<password> is the value in central-prod-selvage.age)
+  #   RESTRICTED_DATABASE_URL=postgres://selvage:<password>@seam.wildebeest-stargazer.ts.net:5432/patchwork_central_restricted?sslmode=disable
+  #     (<password> is the value in restricted-prod-selvage.age)
+  #   SECRET_KEY_BASE=...
+  #   SLACK_SIGNING_SECRET=...  SLACK_BOT_TOKEN=xoxb-...
+  #   SLACK_ADMIN_TOKEN=xoxp-...
+  #   SLACK_BROWSER_TOKEN=xoxc-...  SLACK_BROWSER_COOKIE=xoxd-...  (optional)
+  #   WEAVE_ISSUER=https://weave.patchworklabs.org
+  #   WEAVE_CLIENT_ID=...  WEAVE_CLIENT_SECRET=...  (the Selvage app in Weave)
+  #   SELVAGE_AUDIT_CHANNEL=...
+  # twill is not built yet: add its host key here after the install, before
+  # bin/new-selvage-secrets writes this file.
+  "selvage-env.age".publicKeys = [
+    jsp
+  ];
+
+  # GitHub classic PAT with read:packages only, for
+  # ghcr.io/patchworklabsorg/selvage while the package is private. The same
+  # pwlbot token as quilt-ghcr-token.age. Add twill after its install, as for
+  # selvage-env.age.
+  "selvage-ghcr-token.age".publicKeys = [
+    jsp
   ];
 
   # Quilt's role password in patchwork_central_restricted on hem:5433 (the

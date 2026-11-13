@@ -82,6 +82,9 @@ pkgs.runCommand "quilt-batting" { } ''
   grep -F '/run/agenix/quilt-env ' ${svc.quilt-web.serviceConfig.ExecStart}
   absent 'api-sandbox' ${svc.quilt-web.serviceConfig.ExecStart}
   absent 'api-sandbox' ${svc.quilt-worker.serviceConfig.ExecStart}
+  # The Slack approve button links to production Quilt.
+  grep -F -- "--env 'QUILT_URL=https://quilt.patchworklabs.org'" ${svc.quilt-web.serviceConfig.ExecStart}
+  grep -F -- "--env 'QUILT_URL=https://quilt.patchworklabs.org'" ${svc.quilt-worker.serviceConfig.ExecStart}
 
   # Staging: own route, port, env file, RAILS_ENV=staging and the sandbox.
   grep -F -- '--name quilt-staging-web' ${svc.quilt-staging-web.serviceConfig.ExecStart}
@@ -95,6 +98,7 @@ pkgs.runCommand "quilt-batting" { } ''
     grep -F '/run/agenix/quilt-staging-env ' $f
     grep -F "MERCURY_API_BASE=https://api-sandbox.mercury.com/api/v1/" $f
     grep -F "WEAVE_ISSUER=https://weave-staging.patchworklabs.org" $f
+    absent 'QUILT_URL' $f
   done
   touch $out
 ''

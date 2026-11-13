@@ -43,7 +43,8 @@
     port = 3005;
     environmentFile = config.age.secrets.quilt-env.path;
     registryCredentialsFile = config.age.secrets.quilt-ghcr-token.path;
-    # Not secret. The Review and approve button in the Slack message links here.
+    # Not secret. The Review and approve button in the Slack message links
+    # here. extraEnv overrides the env file, so change QUILT_URL here only.
     extraEnv = {
       QUILT_URL = "https://quilt.patchworklabs.org";
     };

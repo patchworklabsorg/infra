@@ -20,9 +20,9 @@ let
   hank = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAICKNDAtCadjdzqG+5t6BncycydzqfqV3z02uvIejmO8S";
   # twill (Selvage) is not built yet. After its install, add
   #   twill = "<its /etc/ssh/ssh_host_ed25519_key.pub>";
-  # here, add twill to selvage-env.age, selvage-ghcr-token.age and
-  # ad-join.age below, then re-encrypt ad-join.age alone (README.md,
-  # "Selvage on twill", step 10).
+  # here, add twill to selvage-env.age, selvage-staging-env.age,
+  # selvage-ghcr-token.age and ad-join.age below, then re-encrypt ad-join.age
+  # alone (README.md, "Selvage on twill", step 10).
   #
   # Central DB passwords, one file per app and environment, password only:
   #   central-prod-<app>.age        recipients: jsp, skein
@@ -271,12 +271,40 @@ in
     jsp
   ];
 
+  # Selvage staging (selvage-staging.patchworklabs.org on twill,
+  # RAILS_ENV=staging) runtime env. bin/new-selvage-staging-secrets writes it.
+  # Same keys as selvage-env.age, with staging values:
+  #   CENTRAL_DATABASE_URL=postgres://selvage:<password>@hem.wildebeest-stargazer.ts.net:5432/patchwork_central?sslmode=disable
+  #     (<password> is the value in central-staging-selvage.age)
+  #   RESTRICTED_DATABASE_URL=postgres://selvage:<password>@hem.wildebeest-stargazer.ts.net:5433/patchwork_central_restricted?sslmode=disable
+  #     (<password> is the value in restricted-staging-selvage.age)
+  #   SECRET_KEY_BASE=...  (its own, not production's)
+  #   SLACK_*=...  (the staging Slack app in the staging workspace)
+  #   WEAVE_CLIENT_ID=...  WEAVE_CLIENT_SECRET=...  (a Weave staging app)
+  #   SELVAGE_AUDIT_CHANNEL=...  (a channel in the staging workspace)
+  # WEAVE_ISSUER and SELVAGE_HOSTS are set in hosts/twill/selvage.nix and
+  # override this file. twill is not built yet: add its host key here after
+  # the install, as for selvage-env.age.
+  "selvage-staging-env.age".publicKeys = [
+    jsp
+  ];
+
   # Quilt's role password in patchwork_central_restricted on hem:5433 (the
   # restricted staging cluster). Password only. hem decrypts it into the
   # restricted-staging container (hosts/hem/configuration.nix). alastor does
   # not get this file: the same password is in quilt-staging-env.age, so a
   # rotation must change both files.
   "restricted-staging-quilt.age".publicKeys = [
+    jsp
+    hem
+  ];
+
+  # Selvage's role password in patchwork_central_restricted on hem:5433.
+  # Password only. bin/new-selvage-staging-secrets writes it. hem decrypts it
+  # into the restricted-staging container. twill does not get this file: the
+  # same password is in selvage-staging-env.age, so a rotation must change
+  # both files.
+  "restricted-staging-selvage.age".publicKeys = [
     jsp
     hem
   ];

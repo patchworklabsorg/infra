@@ -58,6 +58,12 @@ let
       backend = "twill";
       hosts = [ "selvage.patchworklabs.org" ];
     };
+    # Selvage staging on twill: its own vhost in nginx on twill, with the
+    # same public paths as production.
+    selvage-staging-twill = {
+      backend = "twill";
+      hosts = [ "selvage-staging.patchworklabs.org" ];
+    };
     # Every host in ../warp/redirects.nix. A new path on an existing host
     # needs no change here.
     redirects = {

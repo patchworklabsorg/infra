@@ -44,8 +44,8 @@ let
         # Quilt (funding and records). Its own schema only, no shared schemas.
         quilt = { };
         # Selvage (the Slack bot): moderation and reports. Its own schema only, no shared schemas.
-        # Production only for now: hem:5433 creates the role too, but with no
-        # restricted-staging-selvage.age it cannot log in there.
+        # Production on seam, staging on hem:5433. hem sets the staging
+        # password from restricted-staging-selvage.age once that file exists.
         selvage = { };
       };
       sharedSchemas = { };

@@ -96,6 +96,7 @@ in
   #   MERCURY_API_BASE=https://api.mercury.com/api/v1/
   #   MERCURY_WRITE_TOKEN=   (may be blank while QUILT_TOPUPS=off)
   #   QUILT_TOPUPS=off
+  #   SLACK_APPROVALS_WEBHOOK_URL=https://hooks.slack.com/services/...   (optional)
   "quilt-env.age".publicKeys = [
     jsp
     batting

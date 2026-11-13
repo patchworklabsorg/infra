@@ -80,6 +80,10 @@
     # -t administrator-random: -e ad_admin_random_force=true sets a new
     # password even when the last one is younger than the minimum age.
     ad_admin_random_force: false
+    # -t converge: -e ad_converge_apply=true makes the changes. Without it,
+    # the run is -WhatIf.
+    ad_converge_apply: false
+    ad_converge_dir: 'C:\ProgramData\Patchwork\ad-converge\src'
   tasks:
 
     # ------------------------------------------------------------------ dhcp
@@ -401,6 +405,49 @@
           changes: "{{ ad_host_dns.result }}"
       when: ad_is_primary_dc
       tags: [host-groups, host-dns, never]
+
+    # --------------------------------------------------------------- converge
+    # Runs ../ad/converge.ps1 (phase Build) on loom, the PDC emulator, as
+    # svc-ansible. A run is -WhatIf unless -e ad_converge_apply=true. Read the
+    # WOULD lines of a -WhatIf run before you apply. Migrate and Prune stay
+    # manual (ad/README.md). The script writes its log to
+    # C:\ProgramData\Patchwork\ad-converge on loom, as a manual run does.
+    - name: Converge | Script directory exists
+      ansible.windows.win_file:
+        path: "{{ ad_converge_dir }}"
+        state: directory
+      when: ad_is_primary_dc
+      tags: [converge, never]
+
+    - name: Converge | converge.ps1 and org.json match the repo
+      ansible.windows.win_copy:
+        src: "{{ ad_flake_dir }}/ad/{{ item }}"
+        dest: "{{ ad_converge_dir }}\\{{ item }}"
+      loop: [converge.ps1, org.json]
+      when: ad_is_primary_dc
+      tags: [converge, never]
+
+    - name: Converge | Run Build (-WhatIf unless ad_converge_apply)
+      ansible.windows.win_command:
+        argv: >-
+          {{ ['powershell.exe', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass',
+              '-File', ad_converge_dir ~ '\converge.ps1', '-Phase', 'Build',
+              '-DataFile', ad_converge_dir ~ '\org.json']
+             + ([] if ad_converge_apply | bool else ['-WhatIf']) }}
+      register: ad_converge
+      changed_when: ad_converge.stdout_lines | select('search', ' CHANGE ') | list | length > 0
+      failed_when: ad_converge.rc != 0
+      when: ad_is_primary_dc
+      tags: [converge, never]
+
+    - name: Converge | Report
+      ansible.builtin.debug:
+        msg: >-
+          {{ ad_converge.stdout_lines
+             | select('search', ' (WOULD|CHANGE|REPORT|ERROR|END) ')
+             | list }}
+      when: ad_is_primary_dc
+      tags: [converge, never]
 
     # ------------------------------------------------------------ svc-posture
     # Enforce what -t audit checks on the service accounts: AES-only Kerberos

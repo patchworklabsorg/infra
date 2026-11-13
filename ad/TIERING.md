@@ -289,7 +289,7 @@ Compensating controls for step 5a:
 - The WinRM firewall rule allows only Jasper's VPN address (`Enable-AnsibleWinRM.ps1 -RemoteAddress`). Today the scope is the control node subnet. Make it one address. This needs the thimble NAT removed first: with NAT, every VPN client arrives as 10.100.92.20.
 - A GPO denies `svc-ansible` local logon, RDP logon, batch and service logon on every host.
 - Keep AES only and "not delegatable" (`-t svc-posture`, already live).
-- Alert on any logon of `svc-ansible` (4624, 4776) from an address other than the VPN address (one address per person only after the NAT is removed). Alert on any group change that it makes outside an Ansible run.
+- Alert on any logon of `svc-ansible` (4624, 4776) from an address other than the VPN address (one address per person only after the NAT is removed). Alert on any group change that it makes outside an Ansible run. `ad.yml -t converge` runs `converge.ps1` Build as `svc-ansible`, so a Build run is an Ansible run too. After the switch to Kerberos (5b), run `ad.yml -t converge` (`-WhatIf`) again and check that it still works.
 - Rotate the password on a schedule and after any remus incident.
 
 ## 3. PAM and just-in-time admin

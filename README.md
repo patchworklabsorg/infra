@@ -25,9 +25,10 @@ Declarative infrastructure for Patchwork Labs: every Patchwork host, the NixOS m
 | `modules/stash/` | The Stash service module (web, worker, archived files on a host directory). |
 | `hosts/hank/stash.nix` | Stash production and staging on hank: instance settings and secrets. |
 | `bin/new-stash-secrets` | Writes the two secrets of Stash staging or production with a new random database password and `SECRET_KEY_BASE`. Prints no value. |
-| `modules/selvage/` | The Selvage service module (web and worker, production only). |
-| `hosts/twill/selvage.nix` | Selvage production on twill: instance settings and secrets. |
+| `modules/selvage/` | The Selvage service module (web and worker, production and an optional staging instance). |
+| `hosts/twill/selvage.nix` | Selvage production and staging on twill: instance settings and secrets. |
 | `bin/new-selvage-secrets` | Writes Selvage's restricted database password and env file. Reads the existing central password with your age identity. Prints no value. |
+| `bin/new-selvage-staging-secrets` | The same for Selvage staging: the restricted staging password (hem:5433) and the staging env file. Reads the existing central staging password with your age identity. Prints no value. |
 | `bin/set-env-secret` | Sets keys in an agenix env file, for example a Weave client id and secret. Asks for each value with the echo off. Prints no value. |
 | `hosts/weft/krater.nix` | Krater staging and production on weft: instance settings and secrets. Production is off until `hosts/weft/krater-production.nix` turns it on. |
 | `tests/` | NixOS VM tests. |
@@ -50,11 +51,11 @@ The lab hosts below are NixOS VMs on pve01, VLAN 90 (`patchwork.internal`). alas
 | `warp` | 356 | 10.100.90.56 | 6 GB | Misc: redirects and other low-risk shared things. No Docker. nginx on `tailscale0:80` for alastor. |
 | `skein` | 355 | 10.100.90.55 | 4 GB | `patchwork_central`, prod. Tailnet only. |
 | `seam` | 357 | 10.100.90.57 | 2 GB | `patchwork_central_restricted`, prod. Tailnet only. |
-| `hem` | 358 | 10.100.90.58 | 2 GB | Both staging clusters: central on 5432, restricted on 5433. Quilt staging uses the restricted one. |
+| `hem` | 358 | 10.100.90.58 | 2 GB | Both staging clusters: central on 5432, restricted on 5433. Quilt staging uses the restricted one. Selvage staging uses both. |
 | `batting` | 360 | 10.100.90.60 | 4 GB | Quilt prod + staging. nginx on `tailscale0:80` for alastor. |
 | `weft` | 361 | 10.100.90.61 | 4 GB | Krater staging, and Krater production (off until its switch). nginx on `tailscale0:80` for alastor. |
 | `hank` | 362 | 10.100.90.62 | 6 GB | Stash prod + staging (declared, not built yet). 80 GB disk for the archived files. nginx on `tailscale0:80` for alastor. |
-| `twill` | 363 | 10.100.90.63 | 3 GB | Selvage prod (declared, not built yet). No staging yet. nginx on `tailscale0:80` for alastor, `/slack/` and `/up` only. |
+| `twill` | 363 | 10.100.90.63 | 3 GB | Selvage prod + staging (declared, not built yet). nginx on `tailscale0:80` for alastor, Selvage's public paths only. |
 
 The Windows hosts are managed by Ansible (`ansible/`):
 
@@ -313,11 +314,11 @@ To test top-ups on staging, add a sandbox `MERCURY_WRITE_TOKEN` with batting's p
 
 ## Selvage on twill
 
-[Selvage](https://github.com/patchworklabsorg/selvage), the Patchwork Slack bot, runs on twill as two Docker containers, like Stash on hank. `hosts/twill/selvage.nix` is the instance. `modules/selvage` is the service module. Production only: there is no Selvage staging instance yet.
+[Selvage](https://github.com/patchworklabsorg/selvage), the Patchwork Slack bot, runs on twill as two Docker containers, like Stash on hank. `hosts/twill/selvage.nix` is the instance. `modules/selvage` is the service module. The staging instance is in "Selvage staging" below.
 
 | Item | Value |
 |---|---|
-| URL | `https://selvage.patchworklabs.org` (router `selvage-twill` in `edge-alastor`). nginx on twill passes only `POST /slack/*` and `GET /up`. Every other path is 404. |
+| URL | `https://selvage.patchworklabs.org` (router `selvage-twill` in `edge-alastor`). nginx on twill passes `POST /slack/*`, `GET /up`, and the moderator web UI under `/admin`, `/auth/`, `/assets/` and `/cable`. The app checks the weave role on every `/admin` request. Every other path is 404. |
 | Units | `selvage-web` (`./bin/rails db:migrate` in a one-off container, then `./bin/rails server` on `127.0.0.1:3009`) and `selvage-worker` (`bundle exec good_job start`, on the web container's image) |
 | Image | `ghcr.io/patchworklabsorg/selvage:main` (option `image`). Pin it to `:<sha>` for a known build. |
 | Databases | `patchwork_central` on skein and `patchwork_central_restricted` on seam. Role and schema `selvage` in each. |
@@ -368,6 +369,66 @@ Do the steps in this order. Steps 5 to 11 are on this repo's branch, before the 
 13. On seam, make sure that `central-db-setup` succeeded: `journalctl -u central-db-setup`. On twill, check `systemctl status selvage-web selvage-worker` and `curl -i http://127.0.0.1:3009/up`.
 14. Route the public name: in `jaspermayone/infra`, run `nix flake update patchwork-infra`, then `deploy .#alastor`.
 15. Point the Slack app's request URLs at `https://selvage.patchworklabs.org/slack/events`, `/slack/commands` and `/slack/interactions`.
+
+## Selvage staging
+
+Selvage staging is a second instance on twill, next to production. It serves the staging Slack workspace (the Slack developer sandbox) through its own Slack app. It uses Weave staging and both staging clusters on hem. The option is `staging` in `modules/selvage`. `hosts/twill/selvage.nix` turns it on.
+
+| Item | Production | Staging |
+|---|---|---|
+| URL | `https://selvage.patchworklabs.org` (router `selvage-twill`) | `https://selvage-staging.patchworklabs.org` (router `selvage-staging-twill`) |
+| nginx vhost on twill | `selvage` | `selvage-staging`, from the shared list `selvageLocations` |
+| Units | `selvage-web`, `selvage-worker` | `selvage-staging-web`, `selvage-staging-worker` |
+| Port | `127.0.0.1:3009` | `127.0.0.1:3010` |
+| `RAILS_ENV` | `production` | `staging` |
+| Image | `ghcr.io/patchworklabsorg/selvage:main` (option `image`) | The same image (option `staging.image`) |
+| Memory | No limit | 512 MB for each container, no swap (option `staging.memory`) |
+| Slack | The Patchwork workspace, the production Slack app | The staging workspace, a separate staging Slack app |
+| Weave | `https://weave.patchworklabs.org` | `https://weave-staging.patchworklabs.org` (set in Nix), a Weave staging app |
+| Central database | skein:5432, `patchwork_central` | hem:5432, `patchwork_central` |
+| Restricted database | seam:5432, `patchwork_central_restricted` | hem:5433, `patchwork_central_restricted` |
+| Env file | `selvage-env.age` | `selvage-staging-env.age` |
+| Role passwords | `central-prod-selvage.age` (skein), `restricted-prod-selvage.age` (seam) | `central-staging-selvage.age`, `restricted-staging-selvage.age` (hem) |
+| Registry token | `selvage-ghcr-token.age` | The same file |
+
+```mermaid
+flowchart LR
+  slack((Staging Slack workspace)) --> traefik["alastor: Traefik"]
+  traefik -- "tailnet :80, Host selvage-staging" --> nginx["twill: nginx, vhost selvage-staging"]
+  nginx -- "127.0.0.1:3010" --> web[selvage-staging-web]
+  worker[selvage-staging-worker] -- "waits for /up" --> web
+  web -- "tailnet :5432" --> central["hem: central-staging container, schema selvage"]
+  web -- "tailnet :5433" --> restricted["hem: restricted-staging container, schema selvage"]
+  worker --> central
+  worker --> restricted
+  web -- OIDC --> weave["weave-staging.patchworklabs.org"]
+```
+
+`WEAVE_ISSUER` and `SELVAGE_HOSTS` are in `staging.extraEnv`, not only in the env file. `extraEnv` overrides the env file, so a value in the env file cannot point staging at production Weave.
+
+The staging units have the same checks as production: they do not start while a key in `requiredEnv` is missing or empty in the staging env file.
+
+Memory: twill has 3 GB and zram swap. Production has no limit, so it keeps the room it has today. Each staging container (web, worker and the one-off migration) runs with `--memory 512m --memory-swap 512m`. Staging can then use at most about 1 GB at a time. If staging needs more, raise `staging.memory` in `hosts/twill/selvage.nix`, and check `free -m` on twill first.
+
+To deploy a new `main` image to staging, run `sudo systemctl restart selvage-staging-web` on twill. That restarts the staging worker too.
+
+### Staging go live
+
+Do "Selvage on twill" first: twill must exist, with its host key in `secrets/secrets.nix`. Then do these steps in this order.
+
+1. In `patchworklabsorg/selvage`, merge the `staging` Rails environment (`config/environments/staging.rb`). Wait until `image.yml` pushes `ghcr.io/patchworklabsorg/selvage:main`. An older image has no `staging` environment and does not boot.
+2. In `jaspermayone/infra` `tailscale/policy.hujson`, let `tag:patchwork-selvage` reach `hem:5432` and `hem:5433`. Merge it.
+3. Merge the DNS record `selvage-staging` (proxied to alastor) in `patchworklabsorg/dns`.
+4. In the staging Slack workspace, create the staging Slack app. Use `config/slack_manifest.yml` of the selvage repo, with each `selvage.patchworklabs.org` changed to `selvage-staging.patchworklabs.org`. Install it in the staging workspace. The workspace is Enterprise Grid, so `admin.*` scopes exist there. Do not add them: production does not have them. See `docs/deploy.md` in the selvage repo.
+5. In Weave staging (`https://weave-staging.patchworklabs.org`), register Selvage as a confidential app with the redirect URI `https://selvage-staging.patchworklabs.org/auth/callback` and the same scopes as the production Selvage app.
+6. Add `twill` to `selvage-staging-env.age` in `secrets/secrets.nix`, if it is not there yet.
+7. Write the secrets: `nix develop -c bin/new-selvage-staging-secrets`. It writes `restricted-staging-selvage.age` and `selvage-staging-env.age`. It decrypts `central-staging-selvage.age` with your age identity (`~/.ssh/id_ed25519`, or `AGE_IDENTITY`). To put the staging Slack and Weave values in at once, export them first with a `STAGING_` prefix (`STAGING_SLACK_BOT_TOKEN`, `STAGING_WEAVE_CLIENT_ID`, ...). The script reads only the prefixed names, so production values left in the shell do not leak into staging.
+8. Fill in the values that are still missing: `bin/set-env-secret selvage-staging-env.age SLACK_SIGNING_SECRET SLACK_BOT_TOKEN SLACK_ADMIN_TOKEN WEAVE_CLIENT_ID WEAVE_CLIENT_SECRET SELVAGE_AUDIT_CHANNEL`.
+9. Commit the `.age` files, and merge after CI passes. hem sets the password of the role `selvage` on 5433, and twill starts Selvage staging. Do not run `agenix -r`: the new files already have their recipients.
+10. On hem, make sure that `central-db-setup` does not log "no password file for selvage": `sudo nixos-container run restricted-staging -- journalctl -u central-db-setup -b -n 30`. Read only the lines after the deploy: earlier runs logged that line before the file existed.
+11. On twill, check `systemctl status selvage-staging-web selvage-staging-worker` and `curl -i http://127.0.0.1:3010/up`.
+12. Route the public name: in `jaspermayone/infra`, run `nix flake update patchwork-infra`, then `deploy .#alastor`.
+13. In the staging Slack app, verify the request URL `https://selvage-staging.patchworklabs.org/slack/events`.
 
 ## Commands
 

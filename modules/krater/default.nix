@@ -20,14 +20,22 @@
 # worker ever sees; rented machines reach the portal at `compute.runnerUrl` (the public portal hostname) and
 # the storage hostname. See Krater's docs/compute/.
 #
-# No registry: the image is built on this host from source. krater-build fetches one commit of
-# `repo` (a full SHA, read from /var/lib/krater/source-rev, falling back to `rev`), builds it with the
-# repo's own Dockerfile and tags it krater:<sha>. It skips the build when that tag already exists.
+# The image: Krater's CI pushes ghcr.io/patchworklabsorg/krater:<sha> for each commit on main (`registry`).
+# krater-build pulls it for the commit in /var/lib/krater/source-rev (a full SHA, falling back to `rev`) and
+# tags it krater:<sha>. When the pull fails, it fetches that commit of `repo` and builds it here with the
+# repo's own Dockerfile. It skips both when the tag already exists.
 # A deploy is:
 #   echo <sha> > /var/lib/krater/source-rev
 #   sudo systemctl start krater-build     # old containers keep serving while this runs
 #   sudo systemctl restart krater-web     # migrates, then starts; krater-worker follows (partOf)
 # krater-web requires krater-build, so a restart alone also builds, but with the site down meanwhile.
+#
+# Blue/green (`blueGreen.enable`, on for staging): krater-web is then a oneshot that starts each release in
+# the idle slot (containers krater-web-blue on `port`, krater-web-green on `blueGreen.standbyPort`), waits for
+# its /healthz, points nginx at it (`blueGreen.upstreamFile`) and only then stops the old one, so a deploy has
+# no gap and a release that fails to start never serves. The same three commands deploy. The slots are
+# Docker containers (--restart unless-stopped), so `systemctl stop krater-web` leaves the portal up: stop it
+# with `docker stop krater-web-blue krater-web-green`. Logs: `journalctl -t krater-web`.
 #
 # Secrets: one env file (`environmentFile`, an agenix secret), split per container at start into
 # /run/krater/*.env so each container gets only its own keys. The file must contain:

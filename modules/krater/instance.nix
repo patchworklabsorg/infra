@@ -219,6 +219,7 @@ let
       preStart ? [ ],
       start,
       timeoutStart ? null,
+      stopTimeout ? null,
     }:
     {
       inherit description partOf wants;
@@ -241,14 +242,19 @@ let
         ]
         ++ preStart;
         ExecStart = pkgs.writeShellScript "${prefix}-${name}-start" start;
-        ExecStop = "${dockerBin} stop ${prefix}-${name}";
+        ExecStop =
+          if stopTimeout == null then
+            "${dockerBin} stop ${prefix}-${name}"
+          else
+            "${dockerBin} stop --time ${toString stopTimeout} ${prefix}-${name}";
         Restart = "on-failure";
         RestartSec = "10s";
         StandardOutput = "journal";
         StandardError = "journal";
         SyslogIdentifier = "${prefix}-${name}";
       }
-      // lib.optionalAttrs (timeoutStart != null) { TimeoutStartSec = timeoutStart; };
+      // lib.optionalAttrs (timeoutStart != null) { TimeoutStartSec = timeoutStart; }
+      // lib.optionalAttrs (stopTimeout != null) { TimeoutStopSec = stopTimeout + 30; };
     };
 
   # Pull the image, but start with the local copy when the pull fails and one is
@@ -266,6 +272,191 @@ let
         fi
       fi
     '';
+
+  # ── Blue/green portal (blueGreen.enable) ───────────────────────────────────
+  # ${prefix}-web is then a oneshot that makes the release in source-rev the one serving, with no
+  # gap: it migrates while the running container keeps serving (Krater's migrations only add, so the
+  # running release works on the newer schema), starts the new release in the idle slot (blue on
+  # `port`, green on `blueGreen.standbyPort`), waits for its /healthz to answer 200, points nginx at it
+  # (`blueGreen.upstreamFile`, then a reload, which lets requests in flight finish), and only then
+  # stops the old container, giving uvicorn 30 s to finish its requests. A release that never gets
+  # healthy is removed and the old one keeps serving. Run again with the same release (a reboot,
+  # a second restart), it changes nothing. The containers are Docker's (--restart unless-stopped),
+  # not systemd units, so a restart of this unit never stops the one serving.
+  activeFile = "${stateDir}/active-slot";
+  # The follow timer's health check: the serving slot's port, read at run time under blue/green.
+  healthPort = if cfg.blueGreen.enable then "$port" else toString cfg.port;
+  slotPort = slot: if slot == "blue" then cfg.port else cfg.blueGreen.standbyPort;
+  converge = pkgs.writeShellApplication {
+    name = "${prefix}-web-converge";
+    runtimeInputs = [
+      config.virtualisation.docker.package
+      config.systemd.package
+      pkgs.coreutils
+      pkgs.curl
+      pkgs.util-linux
+    ];
+    text = ''
+      exec 9> /run/${prefix}-web-converge.lock
+      flock 9
+      ${resolveImage}
+      if ! docker image inspect "$image" >/dev/null 2>&1; then
+        echo "${prefix}: $image isn't built; run: systemctl start ${prefix}-build" >&2
+        exit 1
+      fi
+      ${writeAppEnv}
+      ${writeWebEnv}
+
+      port_of() {
+        if [ "$1" = blue ]; then echo ${toString (slotPort "blue")}; else echo ${toString (slotPort "green")}; fi
+      }
+      running() {
+        [ "$(docker inspect --format '{{.State.Running}}' "${prefix}-web-$1" 2>/dev/null)" = true ]
+      }
+      healthy() {
+        curl -fsS -o /dev/null --max-time 5 "http://127.0.0.1:$(port_of "$1")/healthz"
+      }
+      # Points nginx at a slot. The file survives a reboot; nginx reads it at start and on reload.
+      serve() {
+        want="server 127.0.0.1:$(port_of "$1");"
+        if [ "$(cat ${cfg.blueGreen.upstreamFile} 2>/dev/null)" != "$want" ]; then
+          echo "$want" > ${cfg.blueGreen.upstreamFile}.new
+          chmod 0644 ${cfg.blueGreen.upstreamFile}.new
+          mv ${cfg.blueGreen.upstreamFile}.new ${cfg.blueGreen.upstreamFile}
+          systemctl try-reload-or-restart ${cfg.blueGreen.proxyUnit}
+        fi
+        echo "$1" > ${activeFile}
+      }
+
+      # The one container from before blue/green (stopped by its old unit) holds no port, but its name
+      # would confuse `docker ps`.
+      docker rm -f ${prefix}-web >/dev/null 2>&1 || true
+
+      active=$(cat ${activeFile} 2>/dev/null || true)
+      if [ "$active" != blue ] && [ "$active" != green ]; then
+        active=""
+      fi
+      if [ -n "$active" ] && running "$active" \
+        && [ "$(docker inspect --format '{{.Config.Image}}' "${prefix}-web-$active")" = "$image" ] \
+        && healthy "$active"; then
+        serve "$active"
+        echo "$image" > ${envDir}/image
+        echo "${prefix}: $image already serves from the $active slot"
+        exit 0
+      fi
+      if [ "$active" = blue ]; then new=green; else new=blue; fi
+
+      # Settings first, so a wrong value fails at once with Krater's message.
+      if ! docker run --rm \
+        --network ${prefix} \
+        ${hostArgs} \
+        --env-file ${envDir}/app.env \
+        ${envArgs appEnv} \
+        "$image" \
+        python -c 'from krater.config import get_settings; get_settings()'; then
+        echo "${prefix}: the settings are not valid (see the error above). Fix ${cfg.environmentFile} or the module options." >&2
+        exit 1
+      fi
+      echo "Waiting for the database..."
+      until docker run --rm \
+        --network ${prefix} \
+        ${hostArgs} \
+        --env-file ${envDir}/app.env \
+        ${envArgs appEnv} \
+        "$image" \
+        python -c 'from krater.db import get_engine; get_engine().connect().close()'; do
+        sleep 5
+      done
+      # Migrations (they only add, so the release serving now keeps working), then the bucket and its
+      # CORS rule. An older release on a database a newer one migrated starts without migrating.
+      # shellcheck disable=SC2016
+      docker run --rm \
+        --network ${prefix} \
+        ${hostArgs} \
+        --env-file ${envDir}/app.env \
+        ${envArgs appEnv} \
+        "$image" \
+        sh -c 'python -c "$1"; s=$?
+          if [ "$s" = 3 ]; then echo "The database is at a newer migration than this release; starting without migrating."
+          elif [ "$s" = 0 ]; then alembic upgrade head || exit 1
+          else exit "$s"; fi
+          python -m krater.storage.ensure_bucket' sh ${dbIsNewer}
+
+      echo "${prefix}: starting $image in the $new slot (port $(port_of "$new"))"
+      docker rm -f "${prefix}-web-$new" >/dev/null 2>&1 || true
+      docker run --detach \
+        --name "${prefix}-web-$new" \
+        --network ${prefix} \
+        ${hostArgs} \
+        --publish "127.0.0.1:$(port_of "$new"):8000" \
+        --env-file ${envDir}/web.env \
+        ${envArgs appEnv} \
+        --restart unless-stopped \
+        --log-driver journald \
+        --log-opt tag=${prefix}-web \
+        "$image" >/dev/null
+      # An HTTP 200, not an open port: Docker's proxy takes connections before uvicorn listens.
+      ok=""
+      for _ in $(seq 1 90); do
+        if healthy "$new"; then
+          ok=1
+          break
+        fi
+        if ! running "$new"; then
+          break
+        fi
+        sleep 2
+      done
+      if [ -z "$ok" ]; then
+        docker logs --tail 60 "${prefix}-web-$new" >&2 || true
+        docker rm -f "${prefix}-web-$new" >/dev/null 2>&1 || true
+        echo "${prefix}: $image did not answer /healthz; ''${active:-nothing} keeps serving" >&2
+        exit 1
+      fi
+
+      serve "$new"
+      echo "$image" > ${envDir}/image
+      echo "${prefix}: $image serves from the $new slot"
+      # The reload keeps nginx's old workers until the requests they hold are done; give those a moment,
+      # then let uvicorn finish what it has (SIGTERM, 30 s) before the old release goes.
+      if [ "$new" = blue ]; then old=green; else old=blue; fi
+      if docker inspect "${prefix}-web-$old" >/dev/null 2>&1; then
+        sleep 5
+        docker stop --time 30 "${prefix}-web-$old" >/dev/null || true
+        docker rm -f "${prefix}-web-$old" >/dev/null 2>&1 || true
+        echo "${prefix}: stopped the $old slot"
+      fi
+    '';
+  };
+
+  blueGreenWeb = {
+    description = "Krater web: serve the release in source-rev (blue/green)";
+    after = [
+      "docker.service"
+      "${prefix}-network.service"
+      "${prefix}-build.service"
+      "${prefix}-storage.service"
+      "network-online.target"
+    ];
+    wants = [ "network-online.target" ];
+    requires = [
+      "docker.service"
+      "${prefix}-network.service"
+      "${prefix}-build.service"
+      "${prefix}-storage.service"
+    ];
+    wantedBy = [ "multi-user.target" ];
+    serviceConfig = {
+      Type = "oneshot";
+      RemainAfterExit = true;
+      # Waiting for the database, migrations and the new release's start.
+      TimeoutStartSec = "15min";
+      ExecStart = lib.getExe converge;
+      StandardOutput = "journal";
+      StandardError = "journal";
+      SyslogIdentifier = "${prefix}-web";
+    };
+  };
 in
 {
   options.patchwork.services.${optName} = {
@@ -275,6 +466,17 @@ in
       type = lib.types.str;
       default = "https://github.com/patchworklabsorg/krater.git";
       description = "Git repository krater-build fetches the source from. Must be readable without credentials.";
+    };
+
+    registry = lib.mkOption {
+      type = lib.types.nullOr lib.types.str;
+      default = "ghcr.io/patchworklabsorg/krater";
+      description = ''
+        Where Krater's CI pushes the image of each commit on main, as <registry>:<full sha>. ${prefix}-build
+        pulls it from here, and builds from `repo` only when the pull fails (an older commit, the registry
+        down). The image must carry the label org.patchworklabs.krater.rev=<sha>. Pulled without
+        credentials, so the package must be public. null always builds from source.
+      '';
     };
 
     rev = lib.mkOption {
@@ -493,6 +695,30 @@ in
       };
     };
 
+    blueGreen = {
+      enable = lib.mkEnableOption ''
+        deploys with no gap: ${prefix}-web starts each release beside the running one and switches the
+        reverse proxy to it once it answers /healthz (see "Blue/green portal" in this module). The proxy
+        must send the portal's traffic to `upstream ${prefix}-web { include <upstreamFile>; }`
+      '';
+      standbyPort = lib.mkOption {
+        type = lib.types.port;
+        default = defaultPort + 10;
+        description = "Loopback host port of the second (green) slot; the first (blue) is `port`.";
+      };
+      upstreamFile = lib.mkOption {
+        type = lib.types.str;
+        default = "${stateDir}/nginx-upstream.conf";
+        readOnly = true;
+        description = "The `server` line of the slot serving now, for an nginx upstream block to include.";
+      };
+      proxyUnit = lib.mkOption {
+        type = lib.types.str;
+        default = "nginx.service";
+        description = "The reverse proxy, reloaded after each switch.";
+      };
+    };
+
     traefik = {
       enable = lib.mkEnableOption ''
         a Traefik file-provider fragment (/etc/traefik/conf.d/${prefix}.toml) routing the portal and
@@ -536,6 +762,11 @@ in
               message = "patchwork.services.${optName}.follow.requireChecks needs `repo` on https://github.com";
             }
             {
+              # The Traefik fragment routes to `port`, which serves only while the blue slot does.
+              assertion = cfg.blueGreen.enable -> !cfg.traefik.enable;
+              message = "patchwork.services.${optName}.blueGreen needs nginx (upstreamFile), not the traefik fragment";
+            }
+            {
               assertion = cfg.compute.enable -> cfg.compute.labelPrefix != null;
               message = "patchwork.services.${optName}.compute.labelPrefix must be set when compute.enable is true";
             }
@@ -546,6 +777,10 @@ in
         # source-rev. Secrets hold tokens: root only.
         systemd.tmpfiles.rules = [
           "d ${secretsDir} 0700 root root -"
+        ]
+        ++ lib.optionals cfg.blueGreen.enable [
+          # nginx needs it to start; the first deploy writes the slot it starts.
+          "f ${cfg.blueGreen.upstreamFile} 0644 root root - server 127.0.0.1:${toString cfg.port};"
         ]
         ++ lib.optionals (cfg.deployAuthorizedKeys != [ ]) [
           "f ${revFile} 0644 ${deployUser} users -"
@@ -575,9 +810,11 @@ in
         # ── Image build ─────────────────────────────────────────────────────────
         # A oneshot of its own, not part of krater-web's start: the first build of the Python
         # dependencies takes minutes, far past a service's start timeout, and a deploy can run it
-        # while the old containers keep serving.
+        # while the old containers keep serving. It pulls CI's image first (`registry`): builds
+        # here starved weft, and both sites stopped answering for minutes (2026-11-12). A build from
+        # source is the fallback, for commits CI never pushed.
         systemd.services."${prefix}-build" = {
-          description = "Build the ${prefix} image from source";
+          description = "Pull or build the ${prefix} image";
           after = [
             "docker.service"
             "network-online.target"
@@ -600,13 +837,31 @@ in
             StandardOutput = "journal";
             StandardError = "journal";
             SyslogIdentifier = "${prefix}-build";
+            # This unit's own processes (git, the pull) only: the build itself runs in the Docker
+            # daemon.
+            Nice = 19;
+            IOSchedulingClass = "idle";
           };
           script = ''
             set -euo pipefail
             ${resolveImage}
             if docker image inspect "$image" >/dev/null 2>&1; then
               echo "${prefix}: $image is already built"
-            else
+            ${lib.optionalString (cfg.registry != null) ''
+              elif ${pkgs.coreutils}/bin/timeout 10m docker pull ${lib.escapeShellArg cfg.registry}:"$rev"; then
+                # CI's image of this commit, if it says so: then it is $image.
+                label=$(docker image inspect --format '{{ index .Config.Labels "org.patchworklabs.krater.rev" }}' ${lib.escapeShellArg cfg.registry}:"$rev")
+                if [ "$label" = "$rev" ]; then
+                  docker tag ${lib.escapeShellArg cfg.registry}:"$rev" "$image"
+                  echo "${prefix}: pulled $image from ${cfg.registry}"
+                else
+                  echo "${prefix}: ${cfg.registry}:$rev is labelled '$label', not $rev; building from source" >&2
+                fi
+                # Only the tag: the layers stay under $image, and the cleanup below sees one tag.
+                docker rmi ${lib.escapeShellArg cfg.registry}:"$rev" >/dev/null
+            ''}
+            fi
+            if ! docker image inspect "$image" >/dev/null 2>&1; then
               # Fetched here rather than handed to `docker build` as a git URL, which would need
               # git inside the Docker daemon's own PATH.
               src=$(mktemp -d)
@@ -660,85 +915,89 @@ in
         };
 
         # ── Portal ──────────────────────────────────────────────────────────────
-        systemd.services."${prefix}-web" = mkContainer {
-          name = "web";
-          description = "Krater web";
-          after = [
-            "${prefix}-build.service"
-            "${prefix}-storage.service"
-            "network-online.target"
-          ];
-          wants = [ "network-online.target" ];
-          requires = [
-            "${prefix}-build.service"
-            "${prefix}-storage.service"
-          ];
-          # Waiting for the database and running migrations can outlast the default 90s.
-          timeoutStart = "10min";
-          preStart = [
-            (pkgs.writeShellScript "${prefix}-web-prepare" ''
-              set -euo pipefail
-              ${resolveImage}
-              if ! ${dockerBin} image inspect "$image" >/dev/null 2>&1; then
-                echo "${prefix}: $image isn't built; run: systemctl start ${prefix}-build" >&2
-                exit 1
-              fi
-              ${writeAppEnv}
-              ${writeWebEnv}
-              echo "$image" > ${envDir}/image
+        systemd.services."${prefix}-web" =
+          if cfg.blueGreen.enable then
+            blueGreenWeb
+          else
+            mkContainer {
+              name = "web";
+              description = "Krater web";
+              after = [
+                "${prefix}-build.service"
+                "${prefix}-storage.service"
+                "network-online.target"
+              ];
+              wants = [ "network-online.target" ];
+              requires = [
+                "${prefix}-build.service"
+                "${prefix}-storage.service"
+              ];
+              # Waiting for the database and running migrations can outlast the default 90s.
+              timeoutStart = "10min";
+              preStart = [
+                (pkgs.writeShellScript "${prefix}-web-prepare" ''
+                  set -euo pipefail
+                  ${resolveImage}
+                  if ! ${dockerBin} image inspect "$image" >/dev/null 2>&1; then
+                    echo "${prefix}: $image isn't built; run: systemctl start ${prefix}-build" >&2
+                    exit 1
+                  fi
+                  ${writeAppEnv}
+                  ${writeWebEnv}
+                  echo "$image" > ${envDir}/image
 
-              # Check the settings first, so a wrong or missing value in the env file fails the
-              # unit at once with Krater's message, not after a long wait for the database.
-              if ! ${dockerBin} run --rm \
-                --network ${prefix} \
-                ${hostArgs} \
-                --env-file ${envDir}/app.env \
-                ${envArgs appEnv} \
-                "$image" \
-                python -c 'from krater.config import get_settings; get_settings()'; then
-                echo "${prefix}: the settings are not valid (see the error above). Fix ${cfg.environmentFile} or the module options." >&2
-                exit 1
-              fi
+                  # Check the settings first, so a wrong or missing value in the env file fails the
+                  # unit at once with Krater's message, not after a long wait for the database.
+                  if ! ${dockerBin} run --rm \
+                    --network ${prefix} \
+                    ${hostArgs} \
+                    --env-file ${envDir}/app.env \
+                    ${envArgs appEnv} \
+                    "$image" \
+                    python -c 'from krater.config import get_settings; get_settings()'; then
+                    echo "${prefix}: the settings are not valid (see the error above). Fix ${cfg.environmentFile} or the module options." >&2
+                    exit 1
+                  fi
 
-              # The database is on another host (patchwork_central): wait until a connection works,
-              # from a container like the portal's, so DNS and routing are tested the same way.
-              echo "Waiting for the database..."
-              until ${dockerBin} run --rm \
-                --network ${prefix} \
-                ${hostArgs} \
-                --env-file ${envDir}/app.env \
-                ${envArgs appEnv} \
-                "$image" \
-                python -c 'from krater.db import get_engine; get_engine().connect().close()'; do
-                sleep 5
-              done
-              # Migrations, then the screenshot bucket and its CORS rule. Both are idempotent. An
-              # older release on a database a newer one migrated starts without migrating.
-              ${dockerBin} run --rm \
-                --network ${prefix} \
-                ${hostArgs} \
-                --env-file ${envDir}/app.env \
-                ${envArgs appEnv} \
-                "$image" \
-                sh -c 'python -c "$1"; s=$?
-                  if [ "$s" = 3 ]; then echo "The database is at a newer migration than this release; starting without migrating."
-                  elif [ "$s" = 0 ]; then alembic upgrade head || exit 1
-                  else exit "$s"; fi
-                  python -m krater.storage.ensure_bucket' sh ${dbIsNewer}
-            '')
-          ];
-          start = ''
-            exec ${dockerBin} run \
-              --name ${prefix}-web \
-              --network ${prefix} \
-              ${hostArgs} \
-              --publish 127.0.0.1:${toString cfg.port}:8000 \
-              --env-file ${envDir}/web.env \
-              ${envArgs appEnv} \
-              --restart no \
-              "$(cat ${envDir}/image)"
-          '';
-        };
+                  # The database is on another host (patchwork_central): wait until a connection works,
+                  # from a container like the portal's, so DNS and routing are tested the same way.
+                  echo "Waiting for the database..."
+                  until ${dockerBin} run --rm \
+                    --network ${prefix} \
+                    ${hostArgs} \
+                    --env-file ${envDir}/app.env \
+                    ${envArgs appEnv} \
+                    "$image" \
+                    python -c 'from krater.db import get_engine; get_engine().connect().close()'; do
+                    sleep 5
+                  done
+                  # Migrations, then the screenshot bucket and its CORS rule. Both are idempotent. An
+                  # older release on a database a newer one migrated starts without migrating.
+                  ${dockerBin} run --rm \
+                    --network ${prefix} \
+                    ${hostArgs} \
+                    --env-file ${envDir}/app.env \
+                    ${envArgs appEnv} \
+                    "$image" \
+                    sh -c 'python -c "$1"; s=$?
+                      if [ "$s" = 3 ]; then echo "The database is at a newer migration than this release; starting without migrating."
+                      elif [ "$s" = 0 ]; then alembic upgrade head || exit 1
+                      else exit "$s"; fi
+                      python -m krater.storage.ensure_bucket' sh ${dbIsNewer}
+                '')
+              ];
+              start = ''
+                exec ${dockerBin} run \
+                  --name ${prefix}-web \
+                  --network ${prefix} \
+                  ${hostArgs} \
+                  --publish 127.0.0.1:${toString cfg.port}:8000 \
+                  --env-file ${envDir}/web.env \
+                  ${envArgs appEnv} \
+                  --restart no \
+                  "$(cat ${envDir}/image)"
+              '';
+            };
 
         # ── Worker ──────────────────────────────────────────────────────────────
         systemd.services."${prefix}-worker" = mkContainer {
@@ -748,9 +1007,14 @@ in
           # deploy's `restart krater-web` over to the worker, as in the Weave module. Two tasks at a time, so
           # the minute's compute scheduler pass never waits behind the slow price-history run.
           after = [ "${prefix}-web.service" ];
-          requires = [ "${prefix}-web.service" ];
+          # Blue/green: a release that fails to start leaves the old one serving, and the worker must
+          # come back (on the old image) rather than wait for a web unit that failed.
+          requires = lib.optional (!cfg.blueGreen.enable) "${prefix}-web.service";
+          wants = lib.optional cfg.blueGreen.enable "${prefix}-web.service";
           partOf = [ "${prefix}-web.service" ];
           preStart = [ writeWorkerEnv ];
+          # Blue/green: time for a scheduler pass or a price check to finish before the worker stops.
+          stopTimeout = if cfg.blueGreen.enable then 120 else null;
           start = ''
             exec ${dockerBin} run \
               --name ${prefix}-worker \
@@ -950,10 +1214,14 @@ in
             fi
             # The worker restarts with web (partOf). /healthz/worker answers 200 only while the
             # worker beats, so both answering 200 means the new version runs.
+            ${lib.optionalString cfg.blueGreen.enable ''
+              # Blue/green: the slot ${prefix}-web just made the one serving.
+              if [ "$(cat ${activeFile} 2>/dev/null)" = green ]; then port=${toString cfg.blueGreen.standbyPort}; else port=${toString cfg.port}; fi
+            ''}
             for _ in $(seq 1 60); do
               sleep 2
-              if curl -fsS -o /dev/null http://127.0.0.1:${toString cfg.port}/healthz \
-                && curl -fsS -o /dev/null http://127.0.0.1:${toString cfg.port}/healthz/worker; then
+              if curl -fsS -o /dev/null http://127.0.0.1:${healthPort}/healthz \
+                && curl -fsS -o /dev/null http://127.0.0.1:${healthPort}/healthz/worker; then
                 echo "$remote is live"
                 exit 0
               fi

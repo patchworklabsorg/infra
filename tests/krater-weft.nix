@@ -85,7 +85,26 @@ let
     "no traefik fragment on weft" = !(on.environment.etc ? "traefik/conf.d/krater.toml");
     "portal vhost" =
       vhosts.krater.serverName == "krater-staging.patchworklabs.org"
-      && vhosts.krater.locations."/".proxyPass == "http://127.0.0.1:3010";
+      && vhosts.krater.locations."/".proxyPass == "http://krater-web";
+    # Staging deploys blue/green: nginx reads the serving slot from a file each deploy switches.
+    "staging is blue/green" =
+      on.patchwork.services.krater.blueGreen.enable
+      && lib.hasInfix "upstream krater-web {" on.services.nginx.appendHttpConfig
+      && lib.hasInfix "include /var/lib/krater/nginx-upstream.conf;" on.services.nginx.appendHttpConfig
+      && on.services.nginx.enableReload
+      && svc.krater-web.serviceConfig.Type == "oneshot"
+      && svc.krater-web.serviceConfig.RemainAfterExit
+      && lib.elem "f /var/lib/krater/nginx-upstream.conf 0644 root root - server 127.0.0.1:3010;" on.systemd.tmpfiles.rules
+      # A release that fails leaves the old one serving; the worker comes back without it.
+      && !(lib.elem "krater-web.service" svc.krater-worker.requires)
+      && lib.elem "krater-web.service" svc.krater-worker.wants
+      && svc.krater-worker.serviceConfig.TimeoutStopSec == 150;
+    # Production stays as it was until it is turned on there.
+    "production is not blue/green yet" =
+      !prod.patchwork.services.krater-production.blueGreen.enable
+      && !(lib.hasInfix "krater-prod-web {" prod.services.nginx.appendHttpConfig)
+      && pvc.krater-prod-web.serviceConfig.Type == "simple"
+      && lib.elem "krater-prod-web.service" pvc.krater-prod-worker.requires;
     "storage vhost" =
       vhosts.krater-storage.serverName == "krater-staging-storage.patchworklabs.org"
       && vhosts.krater-storage.locations."/".proxyPass == "http://127.0.0.1:3011";
@@ -173,7 +192,8 @@ let
       on.patchwork.services.krater.follow.branch == "main"
       && units ? "krater-follow.timer"
       && !svc.krater-follow.restartIfChanged
-      && !svc.krater-build.restartIfChanged;
+      && !svc.krater-build.restartIfChanged
+      && svc.krater-build.serviceConfig.IOSchedulingClass == "idle";
     "production follows its own branch" =
       prod.patchwork.services.krater-production.follow.branch == "production"
       && prod.patchwork.services.krater-production.follow.ancestorOf == "main"
@@ -233,15 +253,31 @@ pkgs.runCommand "krater-weft" { } ''
   # lib.escapeShellArg leaves a name:address with no special characters
   # unquoted.
   hem="--add-host hem.wildebeest-stargazer.ts.net:100.67.124.123"
+  skein="--add-host skein.wildebeest-stargazer.ts.net:100.109.223.51"
 
   # The portal, the worker, the database wait and the migrations get hem's
-  # tailnet address. SeaweedFS does not talk to the database.
-  grep -F -- "$hem" ${svc.krater-web.serviceConfig.ExecStart}
+  # tailnet address. SeaweedFS does not talk to the database. On staging
+  # (blue/green) one script does all four: settings, database wait,
+  # migrations and the new slot.
+  converge=${svc.krater-web.serviceConfig.ExecStart}
+  test "$(grep -cF -- "$hem" "$converge")" = 4
   grep -F -- "$hem" ${svc.krater-worker.serviceConfig.ExecStart}
-  for f in ${lib.concatStringsSep " " (lib.filter (lib.hasPrefix "/nix/store/") (lib.toList svc.krater-web.serviceConfig.ExecStartPre))}; do
+  grep -F 'from krater.config import get_settings; get_settings()' "$converge"
+  grep -F 'alembic upgrade head' "$converge"
+  grep -F 'The database is at a newer migration than this release' "$converge"
+  # Both slots on loopback; nginx switches only after an HTTP 200, and the
+  # old slot gets 30 s to finish its requests.
+  grep -F 'echo 3010; else echo 3020;' "$converge"
+  grep -F -- '--publish "127.0.0.1:$(port_of "$new"):8000"' "$converge"
+  grep -F -- '--restart unless-stopped' "$converge"
+  grep -F 'http://127.0.0.1:$(port_of "$1")/healthz' "$converge"
+  grep -F 'systemctl try-reload-or-restart nginx.service' "$converge"
+  grep -F 'docker stop --time 30 "krater-web-$old"' "$converge"
+  grep -F -- '--time 120 krater-worker' ${pkgs.writeText "worker-stop" svc.krater-worker.serviceConfig.ExecStop}
+  # Production keeps its one container and its prepare script.
+  for f in ${lib.concatStringsSep " " (lib.filter (lib.hasPrefix "/nix/store/") (lib.toList pvc.krater-prod-web.serviceConfig.ExecStartPre))}; do
     if grep -qF 'alembic upgrade head' "$f"; then
-      test "$(grep -cF -- "$hem" "$f")" = 3
-      # The settings check runs before the database wait.
+      test "$(grep -cF -- "$skein" "$f")" = 3
       grep -F 'from krater.config import get_settings; get_settings()' "$f"
       prepare=1
     fi
@@ -254,7 +290,6 @@ pkgs.runCommand "krater-weft" { } ''
   grep -F 'docker builder prune -f --filter until=168h' ${svc.krater-build.serviceConfig.ExecStart}
 
   # Loopback only: nginx is the way in.
-  grep -F -- '--publish 127.0.0.1:3010:8000' ${svc.krater-web.serviceConfig.ExecStart}
   grep -F -- '--publish 127.0.0.1:3011:8333' ${svc.krater-storage.serviceConfig.ExecStart}
 
   # alastor routes both names to weft over the tailnet.
@@ -298,6 +333,9 @@ pkgs.runCommand "krater-weft" { } ''
   # Only a commit on main deploys to production, and only once it answers.
   grep -F 'compare/main...$remote' ${pvc.krater-prod-follow.serviceConfig.ExecStart}
   grep -F 'http://127.0.0.1:3012/healthz/worker' ${pvc.krater-prod-follow.serviceConfig.ExecStart}
+  # Staging's follow asks the slot that serves.
+  grep -F 'port=3020; else port=3010;' ${svc.krater-follow.serviceConfig.ExecStart}
+  grep -F 'http://127.0.0.1:$port/healthz/worker' ${svc.krater-follow.serviceConfig.ExecStart}
   absent 'compare/' ${svc.krater-follow.serviceConfig.ExecStart}
   # Production dumps its schema before a deploy, from skein by address.
   grep -F 'systemctl start krater-prod-backup' ${pvc.krater-prod-follow.serviceConfig.ExecStart}
@@ -311,6 +349,10 @@ pkgs.runCommand "krater-weft" { } ''
   grep -F 'PGHOSTADDR=100.109.223.51' ${pvc.krater-prod-backup.serviceConfig.ExecStart}
   grep -F '/var/lib/krater-prod/backups' ${pvc.krater-prod-backup.serviceConfig.ExecStart}
   absent 'krater-backup' ${svc.krater-follow.serviceConfig.ExecStart}
+  # Both pull CI's image of the commit first, check its label, and build from source only without it.
+  grep -F 'docker pull ghcr.io/patchworklabsorg/krater:"$rev"' ${svc.krater-build.serviceConfig.ExecStart}
+  grep -F 'docker pull ghcr.io/patchworklabsorg/krater:"$rev"' ${pvc.krater-prod-build.serviceConfig.ExecStart}
+  grep -F 'org.patchworklabs.krater.rev' ${pvc.krater-prod-build.serviceConfig.ExecStart}
   # Staging and production build one image at a time.
   grep -F 'flock /run/krater-docker-build.lock docker build' ${svc.krater-build.serviceConfig.ExecStart}
   grep -F 'flock /run/krater-docker-build.lock docker build' ${pvc.krater-prod-build.serviceConfig.ExecStart}

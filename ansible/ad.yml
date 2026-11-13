@@ -25,6 +25,8 @@
 #                       ad_ca_subject_match against them. REPORT ONLY
 #   -t ca-chain         export the forest CA chain to files/pki/
 #   -t dns-log          Microsoft-Windows-DNSServer/Analytical enabled
+#   -t converge         ../ad/converge.ps1 phase Build on loom. -WhatIf
+#                       unless -e ad_converge_apply=true
 #
 # Tier 0 (ad/TIERING.md). Run them in the order in ansible/README.md.
 #   -t authn-log            Microsoft-Windows-Authentication/* logs and
@@ -407,15 +409,59 @@
       tags: [host-groups, host-dns, never]
 
     # --------------------------------------------------------------- converge
-    # Runs ../ad/converge.ps1 (phase Build) on loom, the PDC emulator, as
-    # svc-ansible. A run is -WhatIf unless -e ad_converge_apply=true. Read the
-    # WOULD lines of a -WhatIf run before you apply. Migrate and Prune stay
-    # manual (ad/README.md). The script writes its log to
+    # Runs ../ad/converge.ps1 (phase Build) on loom (ad_dcs[0]) as
+    # svc-ansible, against loom itself (-Server). A run is -WhatIf unless
+    # -e ad_converge_apply=true. Read the WOULD lines of a -WhatIf run before
+    # you apply. An apply refuses uncommitted changes under ../ad. Migrate and
+    # Prune stay manual (ad/README.md). The script writes its log to
     # C:\ProgramData\Patchwork\ad-converge on loom, as a manual run does.
-    - name: Converge | Script directory exists
-      ansible.windows.win_file:
-        path: "{{ ad_converge_dir }}"
-        state: directory
+    # --check is not supported: win_command cannot run in check mode.
+    - name: Converge | An apply uses only committed files under ../ad
+      ansible.builtin.command:
+        argv: [git, -C, "{{ ad_flake_dir }}", status, --porcelain, --, ad]
+      delegate_to: localhost
+      register: ad_converge_git
+      changed_when: false
+      failed_when: >-
+        ad_converge_git.rc != 0
+        or (ad_converge_apply | bool and ad_converge_git.stdout | length > 0)
+      when: ad_is_primary_dc
+      tags: [converge, never]
+
+    - name: Converge | The commit that this run uses
+      ansible.builtin.command:
+        argv: [git, -C, "{{ ad_flake_dir }}", rev-parse, HEAD]
+      delegate_to: localhost
+      register: ad_converge_rev
+      changed_when: false
+      when: ad_is_primary_dc
+      tags: [converge, never]
+
+    # Only SYSTEM and Administrators can write to the script directory. The
+    # inherited ProgramData ACL lets Users create files there, and the
+    # script runs as a Domain Admin. The task reports a change on every run,
+    # because it deletes the copies of the last run.
+    - name: Converge | Script directory exists, writable by admins only
+      ansible.windows.win_powershell:
+        parameters:
+          path: "{{ ad_converge_dir }}"
+        script: |
+          param([string]$path)
+          $Ansible.Changed = $false
+          New-Item -ItemType Directory -Force -Path $path | Out-Null
+          $want = 'O:BAG:SYD:PAI(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)'
+          $acl = Get-Acl -Path $path
+          if ($acl.Sddl -ne $want) {
+              $acl.SetSecurityDescriptorSddlForm($want)
+              Set-Acl -Path $path -AclObject $acl
+              $Ansible.Changed = $true
+          }
+          # A file can keep its own owner and ACEs. Delete the old copies, so
+          # the copy task writes new files that inherit only the ACL above.
+          Get-ChildItem -Path $path -Force | ForEach-Object {
+              Remove-Item -LiteralPath $_.FullName -Recurse -Force
+              $Ansible.Changed = $true
+          }
       when: ad_is_primary_dc
       tags: [converge, never]
 
@@ -432,21 +478,36 @@
         argv: >-
           {{ ['powershell.exe', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass',
               '-File', ad_converge_dir ~ '\converge.ps1', '-Phase', 'Build',
-              '-DataFile', ad_converge_dir ~ '\org.json']
+              '-DataFile', ad_converge_dir ~ '\org.json',
+              '-Server', ad_dcs[0].name]
              + ([] if ad_converge_apply | bool else ['-WhatIf']) }}
       register: ad_converge
       changed_when: ad_converge.stdout_lines | select('search', ' CHANGE ') | list | length > 0
-      failed_when: ad_converge.rc != 0
+      # The Report task shows the lines first. The last task fails the play.
+      failed_when: false
       when: ad_is_primary_dc
       tags: [converge, never]
 
     - name: Converge | Report
       ansible.builtin.debug:
-        msg: >-
-          {{ ad_converge.stdout_lines
-             | select('search', ' (WOULD|CHANGE|REPORT|ERROR|END) ')
-             | list }}
-      when: ad_is_primary_dc
+        msg:
+          commit: "{{ ad_converge_rev.stdout }}"
+          uncommitted_under_ad: "{{ ad_converge_git.stdout_lines }}"
+          apply: "{{ ad_converge_apply | bool }}"
+          lines: >-
+            {{ ad_converge.stdout_lines
+               | select('search', ' (WOULD|CHANGE|REPORT|ERROR|END) ')
+               | list }}
+          stderr: "{{ ad_converge.stderr_lines }}"
+      when: ad_is_primary_dc and ad_converge.rc is defined
+      tags: [converge, never]
+
+    - name: Converge | The script finished with no error
+      ansible.builtin.assert:
+        that: ad_converge.rc == 0
+        fail_msg: "converge.ps1 exited {{ ad_converge.rc }}. Read the ERROR lines and stderr above."
+        quiet: true
+      when: ad_is_primary_dc and ad_converge.rc is defined
       tags: [converge, never]
 
     # ------------------------------------------------------------ svc-posture

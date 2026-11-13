@@ -20,9 +20,10 @@
 # worker ever sees; rented machines reach the portal at `compute.runnerUrl` (the public portal hostname) and
 # the storage hostname. See Krater's docs/compute/.
 #
-# No registry: the image is built on this host from source. krater-build fetches one commit of
-# `repo` (a full SHA, read from /var/lib/krater/source-rev, falling back to `rev`), builds it with the
-# repo's own Dockerfile and tags it krater:<sha>. It skips the build when that tag already exists.
+# The image: Krater's CI pushes ghcr.io/patchworklabsorg/krater:<sha> for each commit on main (`registry`).
+# krater-build pulls it for the commit in /var/lib/krater/source-rev (a full SHA, falling back to `rev`) and
+# tags it krater:<sha>. When the pull fails, it fetches that commit of `repo` and builds it here with the
+# repo's own Dockerfile. It skips both when the tag already exists.
 # A deploy is:
 #   echo <sha> > /var/lib/krater/source-rev
 #   sudo systemctl start krater-build     # old containers keep serving while this runs

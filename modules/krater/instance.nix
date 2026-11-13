@@ -277,6 +277,17 @@ in
       description = "Git repository krater-build fetches the source from. Must be readable without credentials.";
     };
 
+    registry = lib.mkOption {
+      type = lib.types.nullOr lib.types.str;
+      default = "ghcr.io/patchworklabsorg/krater";
+      description = ''
+        Where Krater's CI pushes the image of each commit on main, as <registry>:<full sha>. ${prefix}-build
+        pulls it from here, and builds from `repo` only when the pull fails (an older commit, the registry
+        down). The image must carry the label org.patchworklabs.krater.rev=<sha>. Pulled without
+        credentials, so the package must be public. null always builds from source.
+      '';
+    };
+
     rev = lib.mkOption {
       type = lib.types.strMatching "[0-9a-f]{40}";
       description = ''
@@ -575,9 +586,11 @@ in
         # ── Image build ─────────────────────────────────────────────────────────
         # A oneshot of its own, not part of krater-web's start: the first build of the Python
         # dependencies takes minutes, far past a service's start timeout, and a deploy can run it
-        # while the old containers keep serving.
+        # while the old containers keep serving. It pulls CI's image first (`registry`): builds
+        # here starved weft, and both sites stopped answering for minutes (2026-11-12). A build from
+        # source is the fallback, for commits CI never pushed.
         systemd.services."${prefix}-build" = {
-          description = "Build the ${prefix} image from source";
+          description = "Pull or build the ${prefix} image";
           after = [
             "docker.service"
             "network-online.target"
@@ -600,13 +613,31 @@ in
             StandardOutput = "journal";
             StandardError = "journal";
             SyslogIdentifier = "${prefix}-build";
+            # This unit's own processes (git, the pull) only: the build itself runs in the Docker
+            # daemon.
+            Nice = 19;
+            IOSchedulingClass = "idle";
           };
           script = ''
             set -euo pipefail
             ${resolveImage}
             if docker image inspect "$image" >/dev/null 2>&1; then
               echo "${prefix}: $image is already built"
-            else
+            ${lib.optionalString (cfg.registry != null) ''
+              elif ${pkgs.coreutils}/bin/timeout 10m docker pull ${lib.escapeShellArg cfg.registry}:"$rev"; then
+                # CI's image of this commit, if it says so: then it is $image.
+                label=$(docker image inspect --format '{{ index .Config.Labels "org.patchworklabs.krater.rev" }}' ${lib.escapeShellArg cfg.registry}:"$rev")
+                if [ "$label" = "$rev" ]; then
+                  docker tag ${lib.escapeShellArg cfg.registry}:"$rev" "$image"
+                  echo "${prefix}: pulled $image from ${cfg.registry}"
+                else
+                  echo "${prefix}: ${cfg.registry}:$rev is labelled '$label', not $rev; building from source" >&2
+                fi
+                # Only the tag: the layers stay under $image, and the cleanup below sees one tag.
+                docker rmi ${lib.escapeShellArg cfg.registry}:"$rev" >/dev/null
+            ''}
+            fi
+            if ! docker image inspect "$image" >/dev/null 2>&1; then
               # Fetched here rather than handed to `docker build` as a git URL, which would need
               # git inside the Docker daemon's own PATH.
               src=$(mktemp -d)

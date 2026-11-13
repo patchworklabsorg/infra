@@ -173,7 +173,8 @@ let
       on.patchwork.services.krater.follow.branch == "main"
       && units ? "krater-follow.timer"
       && !svc.krater-follow.restartIfChanged
-      && !svc.krater-build.restartIfChanged;
+      && !svc.krater-build.restartIfChanged
+      && svc.krater-build.serviceConfig.IOSchedulingClass == "idle";
     "production follows its own branch" =
       prod.patchwork.services.krater-production.follow.branch == "production"
       && prod.patchwork.services.krater-production.follow.ancestorOf == "main"
@@ -311,6 +312,10 @@ pkgs.runCommand "krater-weft" { } ''
   grep -F 'PGHOSTADDR=100.109.223.51' ${pvc.krater-prod-backup.serviceConfig.ExecStart}
   grep -F '/var/lib/krater-prod/backups' ${pvc.krater-prod-backup.serviceConfig.ExecStart}
   absent 'krater-backup' ${svc.krater-follow.serviceConfig.ExecStart}
+  # Both pull CI's image of the commit first, check its label, and build from source only without it.
+  grep -F 'docker pull ghcr.io/patchworklabsorg/krater:"$rev"' ${svc.krater-build.serviceConfig.ExecStart}
+  grep -F 'docker pull ghcr.io/patchworklabsorg/krater:"$rev"' ${pvc.krater-prod-build.serviceConfig.ExecStart}
+  grep -F 'org.patchworklabs.krater.rev' ${pvc.krater-prod-build.serviceConfig.ExecStart}
   # Staging and production build one image at a time.
   grep -F 'flock /run/krater-docker-build.lock docker build' ${svc.krater-build.serviceConfig.ExecStart}
   grep -F 'flock /run/krater-docker-build.lock docker build' ${pvc.krater-prod-build.serviceConfig.ExecStart}

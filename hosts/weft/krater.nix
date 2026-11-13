@@ -263,6 +263,12 @@ in
     # alastor's Traefik routes here (nixosModules.edge-alastor), so no Traefik
     # on weft.
     traefik.enable = false;
+
+    # Deploys with no gap: each release starts beside the running one (blue on
+    # 3010, green on 3020) and nginx switches once it answers /healthz
+    # (modules/krater, "Blue/green portal"). On staging first; production
+    # follows once staging has deployed this way.
+    blueGreen.enable = true;
   };
 
   patchwork.services.krater-production = {

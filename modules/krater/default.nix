@@ -30,6 +30,13 @@
 #   sudo systemctl restart krater-web     # migrates, then starts; krater-worker follows (partOf)
 # krater-web requires krater-build, so a restart alone also builds, but with the site down meanwhile.
 #
+# Blue/green (`blueGreen.enable`, on for staging): krater-web is then a oneshot that starts each release in
+# the idle slot (containers krater-web-blue on `port`, krater-web-green on `blueGreen.standbyPort`), waits for
+# its /healthz, points nginx at it (`blueGreen.upstreamFile`) and only then stops the old one, so a deploy has
+# no gap and a release that fails to start never serves. The same three commands deploy. The slots are
+# Docker containers (--restart unless-stopped), so `systemctl stop krater-web` leaves the portal up: stop it
+# with `docker stop krater-web-blue krater-web-green`. Logs: `journalctl -t krater-web`.
+#
 # Secrets: one env file (`environmentFile`, an agenix secret), split per container at start into
 # /run/krater/*.env so each container gets only its own keys. The file must contain:
 #   KRATER_DATABASE_URL=postgresql+psycopg://krater:<password>@<central db host>:5432/patchwork_central?sslmode=disable

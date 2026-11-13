@@ -33,7 +33,10 @@ let
       serverName = k.domain;
       inherit listen;
       locations."/" = {
-        proxyPass = "http://127.0.0.1:${toString k.port}";
+        # Blue/green (modules/krater, "Blue/green portal"): the slot serving now, from the upstream
+        # below, which each deploy switches.
+        proxyPass =
+          if k.blueGreen.enable then "http://${name}-web" else "http://127.0.0.1:${toString k.port}";
         # More than the 1 MB nginx default, for form posts to the portal.
         extraConfig = "client_max_body_size 50m;";
       };
@@ -51,6 +54,14 @@ let
       };
     };
   };
+  # The upstream a blue/green instance's deploys switch (modules/krater).
+  kraterUpstream =
+    name: k:
+    lib.optionalString (k.enable && k.blueGreen.enable) ''
+      upstream ${name}-web {
+        include ${k.blueGreen.upstreamFile};
+      }
+    '';
 in
 {
   imports = [
@@ -79,6 +90,10 @@ in
 
   services.nginx = {
     enable = true;
+    # Config changes reload nginx rather than restart it: no dropped connections when a host deploy
+    # changes a vhost.
+    enableReload = true;
+    appendHttpConfig = kraterUpstream "krater" krater + kraterUpstream "krater-prod" kraterProd;
     # Only alastor reaches this, over the tailnet. alastor terminated TLS and
     # set X-Forwarded-For and X-Forwarded-Proto (https). Pass the proto on as
     # it is (recommendedProxySettings would set http), and append alastor's

@@ -12,9 +12,6 @@
 # tag:patchwork-selvage. The policy in jaspermayone/infra must let
 # tag:patchwork-selvage reach skein:5432, seam:5432 (production) and
 # hem:5432, hem:5433 (staging) only.
-#
-# Not built yet. After the install, add its host key to secrets/secrets.nix
-# and re-key its secrets (README.md, "Selvage on twill").
 { config, ... }:
 {
   imports = [

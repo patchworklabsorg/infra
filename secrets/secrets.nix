@@ -18,11 +18,7 @@ let
   batting = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIEN68vw2ir+q4fMQV8WBJvH7WDG4D2uFjChwkkA93LJC";
   weft = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIAbzni2Be82ORFcHSPVr7OPpfs80Py04JtwyCKc4L28X";
   hank = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAICKNDAtCadjdzqG+5t6BncycydzqfqV3z02uvIejmO8S";
-  # twill (Selvage) is not built yet. After its install, add
-  #   twill = "<its /etc/ssh/ssh_host_ed25519_key.pub>";
-  # here, add twill to selvage-env.age, selvage-staging-env.age,
-  # selvage-ghcr-token.age and ad-join.age below, then re-encrypt ad-join.age
-  # alone (README.md, "Selvage on twill", step 10).
+  twill = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIC36MDIDxfWE/HBZnWJfTQzTS2/9p1XtzoEQtHtF6aNl";
   #
   # Central DB passwords, one file per app and environment, password only:
   #   central-prod-<app>.age        recipients: jsp, skein
@@ -257,18 +253,17 @@ in
   #   WEAVE_ISSUER=https://weave.patchworklabs.org
   #   WEAVE_CLIENT_ID=...  WEAVE_CLIENT_SECRET=...  (the Selvage app in Weave)
   #   SELVAGE_AUDIT_CHANNEL=...
-  # twill is not built yet: add its host key here after the install, before
-  # bin/new-selvage-secrets writes this file.
   "selvage-env.age".publicKeys = [
     jsp
+    twill
   ];
 
   # GitHub classic PAT with read:packages only, for
   # ghcr.io/patchworklabsorg/selvage while the package is private. The same
-  # pwlbot token as quilt-ghcr-token.age. Add twill after its install, as for
-  # selvage-env.age.
+  # pwlbot token as quilt-ghcr-token.age.
   "selvage-ghcr-token.age".publicKeys = [
     jsp
+    twill
   ];
 
   # Selvage staging (selvage-staging.patchworklabs.org on twill,
@@ -283,10 +278,10 @@ in
   #   WEAVE_CLIENT_ID=...  WEAVE_CLIENT_SECRET=...  (a Weave staging app)
   #   SELVAGE_AUDIT_CHANNEL=...  (a channel in the staging workspace)
   # WEAVE_ISSUER and SELVAGE_HOSTS are set in hosts/twill/selvage.nix and
-  # override this file. twill is not built yet: add its host key here after
-  # the install, as for selvage-env.age.
+  # override this file.
   "selvage-staging-env.age".publicKeys = [
     jsp
+    twill
   ];
 
   # Quilt's role password in patchwork_central_restricted on hem:5433 (the
@@ -332,5 +327,6 @@ in
     batting
     weft
     hank
+    twill
   ];
 }

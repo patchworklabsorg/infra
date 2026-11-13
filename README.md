@@ -54,8 +54,8 @@ The lab hosts below are NixOS VMs on pve01, VLAN 90 (`patchwork.internal`). alas
 | `hem` | 358 | 10.100.90.58 | 2 GB | Both staging clusters: central on 5432, restricted on 5433. Quilt staging uses the restricted one. Selvage staging uses both. |
 | `batting` | 360 | 10.100.90.60 | 4 GB | Quilt prod + staging. nginx on `tailscale0:80` for alastor. |
 | `weft` | 361 | 10.100.90.61 | 4 GB | Krater staging, and Krater production (off until its switch). nginx on `tailscale0:80` for alastor. |
-| `hank` | 362 | 10.100.90.62 | 6 GB | Stash prod + staging (declared, not built yet). 80 GB disk for the archived files. nginx on `tailscale0:80` for alastor. |
-| `twill` | 363 | 10.100.90.63 | 3 GB | Selvage prod + staging (declared, not built yet). nginx on `tailscale0:80` for alastor, Selvage's public paths only. |
+| `hank` | 362 | 10.100.90.62 | 6 GB | Stash prod + staging. 80 GB disk for the archived files. nginx on `tailscale0:80` for alastor. |
+| `twill` | 363 | 10.100.90.63 | 3 GB | Selvage prod + staging. nginx on `tailscale0:80` for alastor, Selvage's public paths only. |
 
 The Windows hosts are managed by Ansible (`ansible/`):
 
@@ -74,13 +74,13 @@ flowchart LR
   alastor -- "tailnet, HTTP :80" --> warp["warp: misc"]
   alastor -- "tailnet, HTTP :80" --> batting["batting: Quilt"]
   alastor -- "tailnet, HTTP :80" --> weft["weft: Krater staging"]
-  alastor -- "tailnet, HTTP :80" --> hank["hank: Stash (not built yet)"]
+  alastor -- "tailnet, HTTP :80" --> hank["hank: Stash"]
   batting -- "tailnet :5432" --> seam["seam: patchwork_central_restricted"]
   batting -. "staging :5433" .-> hem["hem: :5432 / :5433"]
   weft -. "staging :5432" .-> hem
   hank -- "tailnet :5432" --> skein["skein: patchwork_central"]
   hank -. "staging :5432" .-> hem
-  alastor -- "tailnet, HTTP :80" --> twill["twill: Selvage (not built yet)"]
+  alastor -- "tailnet, HTTP :80" --> twill["twill: Selvage"]
   twill -- "tailnet :5432" --> skein
   twill -- "tailnet :5432" --> seam
 ```

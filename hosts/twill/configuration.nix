@@ -67,7 +67,11 @@
           }
         ];
         # Slack calls the three request URLs under /slack/ (POST only), and
-        # the health check is GET /up. Nothing else of the app is public.
+        # the health check is GET /up. The moderator web UI lives under
+        # /admin, its weave login under /auth, its assets under /assets, and its
+        # live updates on /cable.
+        # The app checks the weave role on every /admin request. Nothing else
+        # of the app is public.
         locations."/slack/" = {
           proxyPass = upstream;
           extraConfig = ''
@@ -75,6 +79,25 @@
           '';
         };
         locations."= /up".proxyPass = upstream;
+        locations."= /admin".proxyPass = upstream;
+        locations."/admin/".proxyPass = upstream;
+        locations."/auth/".proxyPass = upstream;
+        locations."/assets/".proxyPass = upstream;
+        # Turbo Streams for live updates in the admin UI (Action Cable).
+        # proxyWebsockets sets proxy_set_header in this location, and nginx then
+        # drops the http-level ones here, so set them again. Action Cable checks
+        # the Origin against the Host.
+        locations."= /cable" = {
+          proxyPass = upstream;
+          proxyWebsockets = true;
+          extraConfig = ''
+            proxy_set_header Host $host;
+            proxy_set_header X-Real-IP $remote_addr;
+            proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+            proxy_set_header X-Forwarded-Proto $http_x_forwarded_proto;
+            proxy_set_header X-Forwarded-Host $host;
+          '';
+        };
         locations."/".return = "404";
       };
     };

@@ -338,6 +338,11 @@ in
       # archive. Stash takes them only while Krater's Weave app allows the
       # `stash` scope. Until then they wait in stash_archives and retry.
       KRATER_STASH_URL = "https://stash.patchworklabs.org";
+      # alastor requests /healthz/edge every minute while production's routes
+      # are on (krater-edge-ping in ../alastor/edge.nix). With this on, a
+      # missing or stale ping holds what Krater would do about silent runners
+      # and alerts admins (patchworklabsorg/krater#84).
+      KRATER_EDGE_PING_EXPECTED = "true";
       # Private channel for the worker's admin alerts.
       KRATER_SLACK_ALERTS_CHANNEL_ID = "C0CF352PB17";
     };

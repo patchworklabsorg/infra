@@ -141,8 +141,8 @@ let
       !(prod.patchwork.services.krater-production.extraEnv ? KRATER_STAGING);
     "staging expects alastor's edge ping" =
       on.patchwork.services.krater.extraEnv.KRATER_EDGE_PING_EXPECTED == "true";
-    "production does not expect the edge ping yet" =
-      !(prod.patchwork.services.krater-production.extraEnv ? KRATER_EDGE_PING_EXPECTED);
+    "production expects alastor's edge ping" =
+      prod.patchwork.services.krater-production.extraEnv.KRATER_EDGE_PING_EXPECTED == "true";
     "staging label prefix" = on.patchwork.services.krater.compute.labelPrefix == "krater-staging-";
     # Each deployment rents with its own Vast key, never the other's.
     "staging compute uses its own key" =
@@ -285,13 +285,10 @@ pkgs.runCommand "krater-weft" { } ''
   grep -F 'systemctl try-reload-or-restart nginx.service' "$converge"
   grep -F 'docker stop --time 30 "krater-web-$old"' "$converge"
   grep -F -- '--time 120 krater-worker' ${pkgs.writeText "worker-stop" svc.krater-worker.serviceConfig.ExecStop}
-  # The worker reads KRATER_EDGE_PING_EXPECTED. Staging's worker gets it;
-  # production's does not yet.
+  # The worker reads KRATER_EDGE_PING_EXPECTED. Both workers get it.
   # lib.escapeShellArg quotes the pair, because of the "=".
   grep -F -- "--env 'KRATER_EDGE_PING_EXPECTED=true'" ${svc.krater-worker.serviceConfig.ExecStart}
-  if grep -F 'KRATER_EDGE_PING_EXPECTED' ${pvc.krater-prod-worker.serviceConfig.ExecStart}; then
-    exit 1
-  fi
+  grep -F -- "--env 'KRATER_EDGE_PING_EXPECTED=true'" ${pvc.krater-prod-worker.serviceConfig.ExecStart}
   # Production keeps its one container and its prepare script.
   for f in ${lib.concatStringsSep " " (lib.filter (lib.hasPrefix "/nix/store/") (lib.toList pvc.krater-prod-web.serviceConfig.ExecStartPre))}; do
     if grep -qF 'alembic upgrade head' "$f"; then

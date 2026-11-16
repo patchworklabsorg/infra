@@ -162,6 +162,14 @@ let
     "production vhost follows the switch file" = (vhosts ? krater-prod) == switchFile;
     "production secret follows the switch file" = (on.age.secrets ? krater-env) == switchFile;
     "edge default follows the switch file" = edge.patchwork.edge.kraterProduction == switchFile;
+    # Both Krater deployments count a missing ping as their network being
+    # down, so alastor must send it.
+    "edge pings while krater expects it" =
+      edge.patchwork.edge.kraterEdgePing
+      || !(
+        on.patchwork.services.krater.extraEnv.KRATER_EDGE_PING_EXPECTED or "false" == "true"
+        || prod.patchwork.services.krater-production.extraEnv.KRATER_EDGE_PING_EXPECTED or "false" == "true"
+      );
     # Krater holds actions on silent runners when this ping stops arriving.
     "edge pings krater every minute" =
       edgeOff.systemd.timers.krater-edge-ping.timerConfig.OnCalendar == "minutely"

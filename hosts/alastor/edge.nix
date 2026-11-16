@@ -17,6 +17,17 @@ let
   tailnet = "wildebeest-stargazer.ts.net";
   kraterProduction = config.patchwork.edge.kraterProduction;
 
+  # Krater's every-minute ping (`krater.services.network_watch` in Krater):
+  # an HTTPS request to /healthz/edge over the path its runners report on
+  # (Cloudflare, Traefik here, the tailnet to weft). While it arrives,
+  # runners can reach Krater; when it stops, Krater holds what it would do
+  # about machines whose runners went silent, and alerts. Production only
+  # while its routes are on.
+  kraterPingUrls = [
+    "https://krater-staging.patchworklabs.org/healthz/edge"
+  ]
+  ++ lib.optional kraterProduction "https://krater.patchworklabs.org/healthz/edge";
+
   # <router name> = { backend = "<host>"; hosts = [ "<fqdn>" ... ]; };
   routes = {
     # Not `quilt`/`quilt-staging`: those were the router names of the old
@@ -86,10 +97,41 @@ in
   # Set from the one switch for Krater production
   # (../weft/krater-production.nix). An option only so that the test can turn
   # the routes on: set the switch file, not this.
+  options.patchwork.edge.kraterEdgePing = lib.mkOption {
+    type = lib.types.bool;
+    default = true;
+    description = "Ping Krater's /healthz/edge every minute, so it knows its runners can reach it.";
+  };
+
   options.patchwork.edge.kraterProduction = lib.mkOption {
     type = lib.types.bool;
     default = (import ../weft/krater-production.nix).enable;
     description = "Route krater.patchworklabs.org and krater-storage.patchworklabs.org to weft.";
+  };
+
+  config.systemd.services.krater-edge-ping = lib.mkIf config.patchwork.edge.kraterEdgePing {
+    description = "Tell Krater its runners' path to it works";
+    path = [ pkgs.curl ];
+    serviceConfig = {
+      Type = "oneshot";
+      DynamicUser = true;
+    };
+    # Every URL, even after one fails: staging and production are separate.
+    script = ''
+      status=0
+      for url in ${lib.escapeShellArgs kraterPingUrls}; do
+        curl -fsS -o /dev/null --max-time 20 "$url" || { echo "no answer from $url" >&2; status=1; }
+      done
+      exit $status
+    '';
+  };
+
+  config.systemd.timers.krater-edge-ping = lib.mkIf config.patchwork.edge.kraterEdgePing {
+    wantedBy = [ "timers.target" ];
+    timerConfig = {
+      OnCalendar = "minutely";
+      AccuracySec = "5s";
+    };
   };
 
   config.environment.etc."traefik/conf.d/patchwork.toml".source =

@@ -158,6 +158,13 @@ let
     "production vhost follows the switch file" = (vhosts ? krater-prod) == switchFile;
     "production secret follows the switch file" = (on.age.secrets ? krater-env) == switchFile;
     "edge default follows the switch file" = edge.patchwork.edge.kraterProduction == switchFile;
+    # Krater holds actions on silent runners when this ping stops arriving.
+    "edge pings krater every minute" =
+      edgeOff.systemd.timers.krater-edge-ping.timerConfig.OnCalendar == "minutely"
+      && lib.hasInfix "krater-staging.patchworklabs.org/healthz/edge" edgeOff.systemd.services.krater-edge-ping.script
+      && !(lib.hasInfix "//krater.patchworklabs.org" edgeOff.systemd.services.krater-edge-ping.script);
+    "edge pings production while its routes are on" =
+      lib.hasInfix "https://krater.patchworklabs.org/healthz/edge" edgeProd.systemd.services.krater-edge-ping.script;
     "switch off: krater only on hem" =
       !(schemaOff.central.apps ? krater)
       && schemaOff.central.stagingOnlyApps ? krater

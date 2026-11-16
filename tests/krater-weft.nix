@@ -139,6 +139,10 @@ let
     "staging shows the staging marker" = on.patchwork.services.krater.extraEnv.KRATER_STAGING == "true";
     "production has no staging marker" =
       !(prod.patchwork.services.krater-production.extraEnv ? KRATER_STAGING);
+    "staging expects alastor's edge ping" =
+      on.patchwork.services.krater.extraEnv.KRATER_EDGE_PING_EXPECTED == "true";
+    "production does not expect the edge ping yet" =
+      !(prod.patchwork.services.krater-production.extraEnv ? KRATER_EDGE_PING_EXPECTED);
     "staging label prefix" = on.patchwork.services.krater.compute.labelPrefix == "krater-staging-";
     # Each deployment rents with its own Vast key, never the other's.
     "staging compute uses its own key" =

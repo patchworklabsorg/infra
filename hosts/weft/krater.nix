@@ -217,6 +217,11 @@ in
     extraEnv = {
       KRATER_TRUSTED_PROXY_COUNT = trustedProxyCount;
       KRATER_STAGING = "true";
+      # alastor requests /healthz/edge every minute (krater-edge-ping in
+      # ../alastor/edge.nix). With this on, Krater counts a missing or stale
+      # ping as its own network being down: it holds what it would do about
+      # silent runners and alerts admins (patchworklabsorg/krater#84).
+      KRATER_EDGE_PING_EXPECTED = "true";
       # Krater sends its events to Quilt staging. Never set it to production
       # Quilt: staging events would land in the real books. Quilt staging
       # takes them only while its ganymede patch has stagingWeaveClientId as

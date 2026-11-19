@@ -59,6 +59,7 @@ let
   edgeOff = mkEdge { patchwork.edge.kraterProduction = false; };
   edgeOffToml = edgeOff.environment.etc."traefik/conf.d/patchwork.toml".source;
   edgeProd = mkEdge { patchwork.edge.kraterProduction = true; };
+  edgeAlert = mkEdge { patchwork.edge.kraterEdgeAlertWebhookFile = "/run/agenix/krater-edge-alert"; };
   edgeProdToml = edgeProd.environment.etc."traefik/conf.d/patchwork.toml".source;
   units = on.systemd.units;
   pvc = prod.systemd.services;
@@ -175,6 +176,15 @@ let
       edgeOff.systemd.timers.krater-edge-ping.timerConfig.OnCalendar == "minutely"
       && lib.hasInfix "krater-staging.patchworklabs.org/healthz/edge" edgeOff.systemd.services.krater-edge-ping.script
       && !(lib.hasInfix "//krater.patchworklabs.org" edgeOff.systemd.services.krater-edge-ping.script);
+    # Krater can't say it's down: alastor's ping does, once its webhook is set.
+    "edge alert off without its webhook" =
+      edgeOff.patchwork.edge.kraterEdgeAlertWebhookFile == null
+      && !(edgeOff.systemd.services.krater-edge-ping.serviceConfig ? LoadCredential);
+    "edge alert reads its webhook" =
+      edgeAlert.systemd.services.krater-edge-ping.serviceConfig.LoadCredential
+      == [ "webhook:/run/agenix/krater-edge-alert" ]
+      && edgeAlert.systemd.services.krater-edge-ping.serviceConfig.StateDirectory == "krater-edge-ping"
+      && lib.hasInfix "rotating_light" edgeAlert.systemd.services.krater-edge-ping.script;
     "edge pings production while its routes are on" =
       lib.hasInfix "https://krater.patchworklabs.org/healthz/edge" edgeProd.systemd.services.krater-edge-ping.script;
     "switch off: krater only on hem" =

@@ -9,6 +9,7 @@
 # same change in jaspermayone/infra.
 {
   config,
+  options,
   lib,
   pkgs,
   ...
@@ -27,6 +28,19 @@ let
     "https://krater-staging.patchworklabs.org/healthz/edge"
   ]
   ++ lib.optional kraterProduction "https://krater.patchworklabs.org/healthz/edge";
+
+  # Slack when a ping keeps failing, and again when it answers. Krater posts
+  # its own alerts, so it can't say it's down: this is the one that can. A
+  # Slack incoming-webhook URL, alone on one line, in
+  # ../../secrets/krater-edge-alert.age; on as soon as that file exists.
+  alertSecret = ../../secrets/krater-edge-alert.age;
+  haveAlertSecret = builtins.pathExists alertSecret;
+  hasAgenix = options ? age;
+  webhookFile = config.patchwork.edge.kraterEdgeAlertWebhookFile;
+  # Minutes of failed pings before the alert (a deploy or a blip is shorter),
+  # and between reminders while it lasts.
+  alertAfter = 3;
+  remindEvery = 60;
 
   # <router name> = { backend = "<host>"; hosts = [ "<fqdn>" ... ]; };
   routes = {
@@ -109,45 +123,102 @@ in
     description = "Route krater.patchworklabs.org and krater-storage.patchworklabs.org to weft.";
   };
 
-  config.systemd.services.krater-edge-ping = lib.mkIf config.patchwork.edge.kraterEdgePing {
-    description = "Tell Krater its runners' path to it works";
-    path = [ pkgs.curl ];
-    serviceConfig = {
-      Type = "oneshot";
-      DynamicUser = true;
-    };
-    # Every URL, even after one fails: staging and production are separate.
-    script = ''
-      status=0
-      for url in ${lib.escapeShellArgs kraterPingUrls}; do
-        curl -fsS -o /dev/null --max-time 20 "$url" || { echo "no answer from $url" >&2; status=1; }
-      done
-      exit $status
+  options.patchwork.edge.kraterEdgeAlertWebhookFile = lib.mkOption {
+    type = lib.types.nullOr lib.types.str;
+    default = if haveAlertSecret && hasAgenix then config.age.secrets.krater-edge-alert.path else null;
+    description = ''
+      A file holding a Slack incoming-webhook URL. When set, krater-edge-ping
+      posts there after ${toString alertAfter} failed minutes in a row for a
+      URL, every ${toString remindEvery} minutes while it lasts, and once
+      when it answers again. Defaults to the agenix secret
+      krater-edge-alert.age once that file exists.
     '';
   };
 
-  config.systemd.timers.krater-edge-ping = lib.mkIf config.patchwork.edge.kraterEdgePing {
-    wantedBy = [ "timers.target" ];
-    timerConfig = {
-      OnCalendar = "minutely";
-      AccuracySec = "5s";
-    };
-  };
+  # The secret only where agenix is: the edge test's bare system has no `age`
+  # option. Inside `config`, so that reading `options` here can't recurse.
+  config = lib.mkMerge [
+    {
+      systemd.services.krater-edge-ping = lib.mkIf config.patchwork.edge.kraterEdgePing {
+        description = "Tell Krater its runners' path to it works";
+        path = [ pkgs.curl ];
+        serviceConfig = {
+          Type = "oneshot";
+          DynamicUser = true;
+          # Consecutive failures per URL, kept between runs.
+          StateDirectory = "krater-edge-ping";
+        }
+        // lib.optionalAttrs (webhookFile != null) {
+          LoadCredential = [ "webhook:${webhookFile}" ];
+        };
+        # Every URL, even after one fails: staging and production are separate.
+        # A failed Slack post doesn't fail the unit, and doesn't stop the count.
+        script = ''
+          status=0
+          say() {
+            [ -n "''${CREDENTIALS_DIRECTORY:-}" ] && [ -r "$CREDENTIALS_DIRECTORY/webhook" ] || return 0
+            curl -fsS -o /dev/null --max-time 10 -H 'Content-Type: application/json' \
+              --data "{\"text\": \"$1\"}" "$(head -n1 "$CREDENTIALS_DIRECTORY/webhook")" \
+              || echo "couldn't post to Slack" >&2
+          }
+          for url in ${lib.escapeShellArgs kraterPingUrls}; do
+            host=''${url#https://}
+            host=''${host%%/*}
+            file="$STATE_DIRECTORY/$host"
+            failed=$(cat "$file" 2>/dev/null || echo 0)
+            if curl -fsS -o /dev/null --max-time 20 "$url"; then
+              if [ "$failed" -ge ${toString alertAfter} ]; then
+                say ":white_check_mark: alastor reaches $host again, after $failed minutes without an answer."
+              fi
+              echo 0 > "$file"
+            else
+              echo "no answer from $url" >&2
+              status=1
+              failed=$((failed + 1))
+              echo "$failed" > "$file"
+              if [ "$failed" -eq ${toString alertAfter} ]; then
+                say ":rotating_light: alastor has had no answer from $host for $failed minutes (krater-edge-ping). Its runners likely can't reach it either. Check weft and the Krater service; the edge-ping runbook is in docs/guides/compute-runbook.md."
+              elif [ "$failed" -gt ${toString alertAfter} ] && [ $(( (failed - ${toString alertAfter}) % ${toString remindEvery} )) -eq 0 ]; then
+                say ":rotating_light: Still no answer from $host, for $failed minutes now."
+              fi
+            fi
+          done
+          exit $status
+        '';
+      };
 
-  config.environment.etc."traefik/conf.d/patchwork.toml".source =
-    (pkgs.formats.toml { }).generate "patchwork.toml"
-      {
-        http = {
-          routers = lib.mapAttrs (name: r: {
-            rule = lib.concatMapStringsSep " || " (h: "Host(`${h}`)") r.hosts;
-            entryPoints = [ "websecure" ];
-            tls.certResolver = "cloudflare";
-            middlewares = [ "hsts" ];
-            service = name;
-          }) routes;
-          services = lib.mapAttrs (_: r: {
-            loadBalancer.servers = [ { url = "http://${r.backend}.${tailnet}"; } ];
-          }) routes;
+      systemd.timers.krater-edge-ping = lib.mkIf config.patchwork.edge.kraterEdgePing {
+        wantedBy = [ "timers.target" ];
+        timerConfig = {
+          OnCalendar = "minutely";
+          AccuracySec = "5s";
         };
       };
+
+      environment.etc."traefik/conf.d/patchwork.toml".source =
+        (pkgs.formats.toml { }).generate "patchwork.toml"
+          {
+            http = {
+              routers = lib.mapAttrs (name: r: {
+                rule = lib.concatMapStringsSep " || " (h: "Host(`${h}`)") r.hosts;
+                entryPoints = [ "websecure" ];
+                tls.certResolver = "cloudflare";
+                middlewares = [ "hsts" ];
+                service = name;
+              }) routes;
+              services = lib.mapAttrs (_: r: {
+                loadBalancer.servers = [ { url = "http://${r.backend}.${tailnet}"; } ];
+              }) routes;
+            };
+          };
+    }
+    (lib.optionalAttrs hasAgenix {
+      age.secrets = lib.mkIf haveAlertSecret {
+        krater-edge-alert = {
+          file = alertSecret;
+          mode = "400";
+        };
+      };
+    })
+  ];
 }

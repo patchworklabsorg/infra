@@ -333,4 +333,13 @@ in
     weft
     hank
   ];
+
+  # Slack incoming-webhook URL (alone on one line) for alastor's
+  # krater-edge-ping alert (hosts/alastor/edge.nix): posts when Krater stops
+  # answering alastor and when it's back. The alert is on once this file is
+  # committed.
+  "krater-edge-alert.age".publicKeys = [
+    jsp
+    alastor
+  ];
 }
